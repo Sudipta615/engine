@@ -1,0 +1,283 @@
+[workspace]
+members = [".", "crates/config"]
+
+[package]
+name = "engine"
+version = "1.0.0"
+edition = "2021"
+
+[features]
+default = ["audio-output", "resample", "all-codecs"]
+audio-output = ["cpal", "thread-priority"]
+asio = ["cpal/asio"]
+# Native WASAPI exclusive-mode backend (no cpal): a real IAudioClient
+# AUDCLNT_SHAREMODE_EXCLUSIVE stream with OS-level exclusivity verification.
+# Windows-only; ignored on other platforms.
+wasapi-native = ["audio-output"]
+resample = ["rubato"]
+codec-mp3 = ["symphonia/mp3"]
+codec-flac = ["symphonia/flac"]
+codec-ogg = ["symphonia/ogg"]
+codec-wav = ["symphonia/wav"]
+codec-aac = ["symphonia/aac"]
+# ALAC is supplied by Symphonia's maintained ALAC codec feature.
+codec-alac = ["symphonia/alac"]
+# NOTE: Symphonia has NO APE *audio decoder* — its `ape` feature only parses
+# APEv2 *tags* (metadata). Audio decoding is supplied by the `ape-decoder`
+# crate (a pure-Rust, MIT/Apache-2.0 Monkey's Audio decoder), which this
+# feature also enables.
+codec-ape = ["symphonia/ape", "dep:ape-decoder"]
+# DSD (DSF/DFF) decoding, decimation, DoP, and native wire packing are
+# compiled unconditionally (the `src/decode/dsd` module is not feature-gated),
+# so this feature is intentionally a no-op kept for API compatibility.
+codec-dsd = []
+codec-pcm = ["symphonia/pcm"]
+codec-aiff = ["symphonia/aiff"]
+codec-isomp4 = ["symphonia/isomp4"]
+# Matroska audio (MKA/MKV) container: the inner codec is decoded by the
+# codec features above (FLAC/AAC/Vorbis/PCM/...), so this feature only adds
+# the container reader. Pure-Rust (Symphonia's `symphonia-format-mkv`).
+codec-mkv = ["symphonia/mkv"]
+# Pure-Rust Ogg Opus: `ogg` demuxes the container and `opus-decoder`
+# (RFC 8251, no unsafe/FFI) decodes the packets at 48 kHz.
+codec-opus = ["dep:ogg", "dep:opus-decoder"]
+# Pure-Rust TTA (True Audio) decoder — implemented natively in
+# `src/decode/tta.rs` (no FFI, no external crates).
+codec-tta = []
+# NOTE: `codec-wavpack` above enables `wavicle`; keep it ordered after the
+# TTA entry for readability of the feature list.
+# WavPack — pure Rust via `wavicle` (MIT/Apache-2.0, no FFI, 100% safe
+# Rust): lossless v5 decode of 16/24/32-bit integer and 32-bit float,
+# mono/stereo, bit-exact and verified against the reference `wvunpack`.
+# Multichannel / DSD / hybrid WavPack is rejected explicitly at open with
+# a codec-named error (honest partial support — never a silent downmix).
+# The `encode` feature is enabled only for the dev-dependency so tests can
+# generate deterministic `.wv` fixtures at test time (no binary assets).
+codec-wavpack = ["dep:wavicle"]
+codec-musepack = []
+
+all-codecs = [
+    "codec-mp3",
+    "codec-flac",
+    "codec-ogg",
+    "codec-wav",
+    "codec-aac",
+    "codec-alac",
+    "codec-ape",
+    "codec-pcm",
+    "codec-aiff",
+    "codec-isomp4",
+    "codec-mkv",
+    "codec-opus",
+    "codec-tta",
+    "codec-wavpack",
+    "codec-musepack",
+]
+
+
+[dependencies]
+cpal = { version = "0.18", optional = true }
+rubato = { version = "5.0", optional = true }
+symphonia = { version = "0.6.1", default-features = false }
+crossbeam = "0.8"
+arc-swap = "1.9"
+log = "0.4.33"
+thiserror = "2.0"
+num-traits = "0.2"
+num-complex = "0.4"
+realfft = "3.5"
+config = { path = "crates/config" }
+thread-priority = { version = "3.1", optional = true }
+# Pure-Rust Monkey's Audio (APE) decoder, enabled by the `codec-ape` feature.
+ape-decoder = { version = "0.3.2", optional = true }
+# Pure-Rust WavPack v5 decoder (`codec-wavpack`). No FFI; the crate is
+# `#![forbid(unsafe_code)]`. See `src/decode/wavpack.rs`.
+wavicle = { version = "0.1", optional = true }
+# Pure-Rust Ogg demuxer and RFC 8251 Opus decoder, enabled by the
+# `codec-opus` feature.
+ogg = { version = "0.9", optional = true }
+opus-decoder = { version = "0.1.1", optional = true }
+etcetera = "0.11"
+image = "0.25"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# (WavPack previously used a runtime-loaded `libwavpack` via `libloading`;
+# removed — see `codec-wavpack` above. No native codec backend now needs
+# `libloading`.)
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Must stay on the same line as cpal's ALSA requirement (both bind the same
+# `alsa` native library): cpal 0.18 requires alsa >= 0.11.
+alsa = "0.11"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# CoreAudio HAL bindings for hardware endpoint volume
+# (AudioObjectGetPropertyData / AudioObjectSetPropertyData) AND the native
+# hog-mode output backend (`src/output/coreaudio_output`). objc2-core-audio
+# ships pre-generated bindings (no build-time bindgen), unlike the older
+# coreaudio-sys crate. `objc2-core-audio-types` supplies AudioBufferList /
+# AudioStreamBasicDescription / AudioTimeStamp for the render IO proc.
+objc2-core-audio = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "AudioHardware",
+    "objc2-core-audio-types",
+] }
+# CoreAudio HAL data types (AudioStreamBasicDescription / AudioBufferList /
+# AudioTimeStamp / AudioValueRange / LinearPCM format flags) used directly by
+# the hog-mode backend's render IO proc and format negotiation. Same crate the
+# objc2-core-audio bindings re-export internally; feature-unification keeps
+# them on the same 0.3.2 build.
+objc2-core-audio-types = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "CoreAudioBaseTypes",
+] }
+# CFString → Rust String conversion for device UIDs / names read from the
+# HAL (`kAudioDevicePropertyDeviceUID` / `DeviceNameCFString` are CFString
+# properties). Feature-unifies with objc2-core-audio's own dependency.
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "CFString",
+] }
+
+[target.'cfg(windows)'.dependencies]
+# Used only by the native WASAPI backend (`wasapi-native` feature). The API
+# below targets windows 0.59; if the pin is bumped, re-verify the COM call
+# signatures in src/output/wasapi_output.rs.
+# windows-core is a direct dependency so the `#[implement(...)]` COM
+# macro (re-exported as `windows::core::implement`) can resolve the
+# `::windows_core::` paths it generates.
+windows-core = "0.59"
+windows = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_Media_KernelStreaming",
+    "Win32_Media_Multimedia",
+    # Target-device selection: IMMDeviceCollection enumeration + friendly
+    # names (PKEY_Device_FriendlyName via IPropertyStore).
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_UI_Shell_PropertiesSystem",
+] }
+
+[dev-dependencies]
+criterion = "0.8.2"
+approx = "0.5.1"
+# Pure-Rust Opus encoder (BSD-3-Clause), used ONLY by tests to generate
+# deterministic Ogg Opus fixtures at test time (no committed binary assets).
+rusty-opus = "0.9.1"
+# wavicle's `encode` feature, used ONLY by tests to generate deterministic
+# `.wv` fixtures at test time (no committed binary assets).
+wavicle = { version = "0.1", features = ["encode"] }
+
+[[bench]]
+name = "dsp_bench"
+harness = false
+
+[[bench]]
+name = "pipeline_bench"
+harness = false
+
+[[test]]
+name = "eq_frequency_response"
+path = "tests/fidelity/eq_frequency_response.rs"
+
+[[test]]
+name = "limiter_correctness"
+path = "tests/fidelity/limiter_correctness.rs"
+
+[[test]]
+name = "limiter_measurement"
+path = "tests/fidelity/limiter_measurement.rs"
+
+[[test]]
+name = "dither_measurement"
+path = "tests/fidelity/dither_measurement.rs"
+
+[[test]]
+name = "resampler_quality"
+path = "tests/fidelity/resampler_quality.rs"
+
+[[test]]
+name = "resampler_measurement"
+path = "tests/fidelity/resampler_measurement.rs"
+
+[[test]]
+name = "loudness_ebu_r128"
+path = "tests/fidelity/loudness_ebu_r128.rs"
+
+[[test]]
+name = "eq_64band"
+path = "tests/fidelity/eq_64band.rs"
+
+[[test]]
+name = "graphic_eq"
+path = "tests/fidelity/graphic_eq.rs"
+
+[[test]]
+name = "autoeq"
+path = "tests/fidelity/autoeq.rs"
+
+[[test]]
+name = "output_profiles"
+path = "tests/fidelity/output_profiles.rs"
+
+[[test]]
+name = "ring_buffer_stress"
+path = "tests/fidelity/ring_buffer_stress.rs"
+
+[[test]]
+name = "crossfade_gapless"
+path = "tests/fidelity/crossfade_gapless.rs"
+
+[[test]]
+name = "gapless_seek"
+path = "tests/fidelity/gapless_seek.rs"
+
+[[test]]
+name = "timestretch_fidelity"
+path = "tests/fidelity/timestretch_fidelity.rs"
+
+[[test]]
+name = "timestretch_quality"
+path = "tests/fidelity/timestretch_quality.rs"
+
+[[test]]
+name = "golden_reference_vectors"
+path = "tests/fidelity/golden_reference_vectors.rs"
+
+[[test]]
+name = "realtime_allocation"
+path = "tests/fidelity/realtime_allocation.rs"
+
+[[test]]
+name = "multiband_reconstruction"
+path = "tests/fidelity/multiband_reconstruction.rs"
+
+[[test]]
+name = "measurement_reference"
+path = "tests/fidelity/measurement_reference.rs"
+
+[[test]]
+name = "decoder_robustness"
+path = "tests/fidelity/decoder_robustness.rs"
+
+[[test]]
+name = "fuzz_mutation"
+path = "tests/fidelity/fuzz_mutation.rs"
+
+[[test]]
+name = "transition_tails"
+path = "tests/fidelity/transition_tails.rs"
+
+[[test]]
+name = "golden_corpus_expansion"
+path = "tests/fidelity/golden_corpus_expansion.rs"
+
+[[test]]
+name = "multichannel_graph"
+path = "tests/fidelity/multichannel_graph.rs"
