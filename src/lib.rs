@@ -5,29 +5,39 @@ pub mod dsp;
 pub mod dsp_utils;
 #[cfg(feature = "audio-output")]
 pub mod engine;
+pub mod events;
 #[cfg(feature = "audio-output")]
 pub mod output;
 pub mod paths;
 pub mod playback_info;
+pub mod source;
 
-// prelude, so `engine::AudioEngine` and `engine::EngineHandle` work directly (not just via prelude).
+// Re-exports for convenience
+pub use commands::EngineCommand;
+pub use events::EngineEvent;
+pub use playback_info::{PlaybackInfo, PlaybackState};
+pub use source::AudioSource;
+
 #[cfg(feature = "audio-output")]
-pub use engine::{AudioEngine, EngineHandle};
+pub use engine::{AudioEngine, EngineError, EngineHandle};
 
-pub use config::ResamplerQuality;
-pub use decode::{extract_cover_art_to_cache, extract_track_metadata};
+pub use config::{EngineConfig, ResamplerQuality};
+pub use decode::extract_track_metadata;
 
 pub mod prelude {
     #[cfg(feature = "audio-output")]
-    pub use crate::engine::{AudioEngine, EngineHandle, PlaybackStream};
+    pub use crate::engine::{AudioEngine, EngineError, EngineHandle, PlaybackStream};
     pub use crate::{
         buffer::{
             validate_audio_block, AudioBlockError, AudioChunk, AudioFrame, BufferError,
-            EngineCommand, FixedFrameBuffer, PlaybackInfo, PlaybackState, DEFAULT_SAMPLE_RATE,
-            MAX_AUDIO_BLOCK_FRAMES,
+            FixedFrameBuffer, DEFAULT_SAMPLE_RATE, MAX_AUDIO_BLOCK_FRAMES,
         },
-        decode::{extract_cover_art_to_cache, extract_track_metadata},
+        commands::EngineCommand,
+        decode::extract_track_metadata,
         dsp::pipeline::{DspPipeline, OutputSampleFormat},
+        events::EngineEvent,
+        playback_info::{PlaybackInfo, PlaybackState},
+        source::AudioSource,
     };
     pub use config::ResamplerQuality;
 }

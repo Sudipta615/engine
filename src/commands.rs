@@ -1,3 +1,5 @@
+use crate::source::AudioSource;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum EngineCommand {
     Play,
@@ -14,9 +16,10 @@ pub enum EngineCommand {
     /// prefer `SetVolumeDb` for new code.
     SetVolumeDb(f32),
     SetSpeed(f32),
-    NextTrack,
-    PrevTrack,
-    LoadTrack(u64),
+    /// Open an explicit audio source for playback.
+    Open(AudioSource),
+    /// Prepare the next audio source for gapless / crossfade transition.
+    PrepareNext(AudioSource),
     Shutdown,
     SetOutputBackend(config::AudioBackend),
     SetOutputDevice(Option<String>),
@@ -85,14 +88,6 @@ pub enum EngineCommand {
         release_ms: f32,
         makeup_gain_db: f32,
     },
-    /// Set shuffle on/off (used by MPRIS integration to propagate shuffle state to the engine)
-    SetShuffle(bool),
-    /// Set loop status: "None", "Track", "Playlist" (MPRIS-style)
-    SetLoopStatus(String),
-    /// Open a URI for playback (file:// URIs only)
-    OpenUri(String),
-    /// Prepare the next track for crossfading by pre-opening its decoder.
-    PrepareNextTrack(std::path::PathBuf),
     /// Request stream recovery after a device disconnection or error.
     RecoverStream,
     /// Automatically triggered stream recovery from the background monitor thread.
@@ -167,4 +162,3 @@ pub enum EngineCommand {
     /// Set bass management configuration (mains high-pass and shared crossover).
     SetBassManagement(config::BassManagementConfig),
 }
-

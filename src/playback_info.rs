@@ -44,7 +44,7 @@ pub struct PlaybackInfo {
     /// `None` until the first volume change or mode switch.
     pub volume_path: Option<crate::dsp::pipeline::VolumePath>,
     pub speed: f32,
-    pub track_id: Option<u64>,
+    pub current_source: Option<crate::source::AudioSource>,
     pub sample_rate: u32,
     pub cpu_usage_pct: f32,
     /// Number of audio dropouts / CPU overloads detected
@@ -116,7 +116,7 @@ impl Default for PlaybackInfo {
             volume_error: None,
             volume_path: None,
             speed: 1.0,
-            track_id: None,
+            current_source: None,
             sample_rate: DEFAULT_SAMPLE_RATE,
             cpu_usage_pct: 0.0,
             cpu_overloads: 0,

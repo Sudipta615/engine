@@ -471,6 +471,11 @@ impl AudioEngine {
                     }
                     Err(DecodeError::EndOfStream) => {
                         info!("Track ended");
+                        if let Some(ref source) = self.current_source {
+                            self.emit_event(crate::events::EngineEvent::SourceFinished {
+                                source: source.clone(),
+                            });
+                        }
                         self.scratch.crossfade_triggered = false;
                         let mut loaded_next = false;
                         if self.config.transition_mode != config::TransitionMode::Stop {

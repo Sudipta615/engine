@@ -1,40 +1,50 @@
 //! Safe, decoupled client handle for the audio engine (`EngineHandle`).
 //!
-//! `EngineHandle` provides a lightweight, cloneable API bridge between UI/controller
-//! modules and the core audio engine. It operates completely through non-blocking
-//! message passing (`crossbeam::channel::Sender<EngineCommand>`) and lock-free
-//! atomic telemetry reads (`ArcSwap<PlaybackInfo>`), ensuring that the real-time
-//! audio thread is never blocked by UI or network activity.
+//! `EngineHandle` provides a lightweight, cloneable API bridge between host
+//! applications and the core audio engine. It operates completely through non-blocking
+//! message passing (`crossbeam::channel::Sender<EngineCommand>`), lock-free
+//! atomic telemetry reads (`ArcSwap<PlaybackInfo>`), and discrete engine events
+//! (`crossbeam::channel::Receiver<EngineEvent>`), ensuring that the real-time
+//! audio thread is never blocked by UI, networking, or database operations.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use crossbeam::channel::Sender;
+use crossbeam::channel::{Receiver, Sender};
 
 use crate::buffer::{EngineCommand, PlaybackInfo, PlaybackState};
+use crate::events::EngineEvent;
+use crate::source::AudioSource;
 
 /// A thread-safe, cloneable client handle to an active [`AudioEngine`].
 #[derive(Clone)]
 pub struct EngineHandle {
     cmd_tx: Sender<EngineCommand>,
     playback_info: Arc<ArcSwap<PlaybackInfo>>,
+    event_rx: Receiver<EngineEvent>,
 }
 
 impl std::fmt::Debug for EngineHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EngineHandle")
             .field("playback_state", &self.state())
+            .field("current_source", &self.current_source())
             .finish()
     }
 }
 
 impl EngineHandle {
-    /// Create a new `EngineHandle` from a command transmitter and shared telemetry.
-    pub fn new(cmd_tx: Sender<EngineCommand>, playback_info: Arc<ArcSwap<PlaybackInfo>>) -> Self {
+    /// Create a new `EngineHandle` from command channel, shared telemetry, and event receiver.
+    pub fn new(
+        cmd_tx: Sender<EngineCommand>,
+        playback_info: Arc<ArcSwap<PlaybackInfo>>,
+        event_rx: Receiver<EngineEvent>,
+    ) -> Self {
         Self {
             cmd_tx,
             playback_info,
+            event_rx,
         }
     }
 
@@ -50,7 +60,44 @@ impl EngineHandle {
         &self.cmd_tx
     }
 
-    // ── Transport Controls ──────────────────────────────────────────────
+    /// Access the discrete engine event receiver.
+    #[inline]
+    pub fn events(&self) -> &Receiver<EngineEvent> {
+        &self.event_rx
+    }
+
+    /// Clone the event receiver for standalone asynchronous event listening.
+    #[inline]
+    pub fn clone_event_receiver(&self) -> Receiver<EngineEvent> {
+        self.event_rx.clone()
+    }
+
+    // ── Transport & Source Controls ─────────────────────────────────────
+
+    /// Open an explicit [`AudioSource`] (file, URI, or memory) for playback.
+    pub fn open(&self, source: impl Into<AudioSource>) {
+        let _ = self.send_command(EngineCommand::Open(source.into()));
+    }
+
+    /// Open a local file by path for playback.
+    pub fn open_file(&self, path: impl Into<PathBuf>) {
+        let _ = self.send_command(EngineCommand::Open(AudioSource::File(path.into())));
+    }
+
+    /// Open a resource by URI (e.g. `"file:///path/to/song.flac"`).
+    pub fn open_uri(&self, uri: impl Into<String>) {
+        let _ = self.send_command(EngineCommand::Open(AudioSource::Uri(uri.into())));
+    }
+
+    /// Pre-open the next audio source for seamless gapless / crossfade transition.
+    pub fn prepare_next(&self, source: impl Into<AudioSource>) {
+        let _ = self.send_command(EngineCommand::PrepareNext(source.into()));
+    }
+
+    /// Pre-open the next file by path for gapless / crossfade transition.
+    pub fn prepare_next_file(&self, path: impl Into<PathBuf>) {
+        let _ = self.send_command(EngineCommand::PrepareNext(AudioSource::File(path.into())));
+    }
 
     /// Start or resume playback.
     pub fn play(&self) {
@@ -70,31 +117,6 @@ impl EngineHandle {
     /// Seek to a target position in seconds.
     pub fn seek(&self, position_secs: f32) {
         let _ = self.send_command(EngineCommand::Seek(position_secs));
-    }
-
-    /// Advance to the next track.
-    pub fn next_track(&self) {
-        let _ = self.send_command(EngineCommand::NextTrack);
-    }
-
-    /// Go back to the previous track.
-    pub fn prev_track(&self) {
-        let _ = self.send_command(EngineCommand::PrevTrack);
-    }
-
-    /// Open a file URI (e.g. `"file:///path/to/song.flac"`).
-    pub fn open_uri(&self, uri: impl Into<String>) {
-        let _ = self.send_command(EngineCommand::OpenUri(uri.into()));
-    }
-
-    /// Load a track by numeric ID.
-    pub fn load_track(&self, track_id: u64) {
-        let _ = self.send_command(EngineCommand::LoadTrack(track_id));
-    }
-
-    /// Pre-open the next track for seamless gapless / crossfade transition.
-    pub fn prepare_next_track(&self, path: impl Into<PathBuf>) {
-        let _ = self.send_command(EngineCommand::PrepareNextTrack(path.into()));
     }
 
     /// Gracefully shutdown the engine worker thread.
@@ -304,6 +326,11 @@ impl EngineHandle {
     /// Current playback state (`Playing`, `Paused`, `Stopped`, `Buffering`).
     pub fn state(&self) -> PlaybackState {
         self.playback_info.load().state
+    }
+
+    /// Currently loaded audio source, if any.
+    pub fn current_source(&self) -> Option<AudioSource> {
+        self.playback_info.load().current_source.clone()
     }
 
     /// Current playhead position at the decoder in seconds.

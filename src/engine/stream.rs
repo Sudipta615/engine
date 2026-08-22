@@ -13,6 +13,8 @@ use crate::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
+    #[error("Invalid audio source: {0}")]
+    InvalidSource(String),
     #[error("Output error: {0}")]
     Output(#[from] OutputError),
     #[error("Decode error: {0}")]
@@ -28,6 +30,8 @@ pub enum EngineError {
     /// play at the wrong rate/pitch.
     #[error("Resampler error: {0}")]
     Resampler(String),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 impl PlaybackStream {

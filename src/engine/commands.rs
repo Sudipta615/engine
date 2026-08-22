@@ -3,7 +3,7 @@
 use crossbeam::channel::TryRecvError;
 use log::{error, info, warn};
 
-use super::{helpers::percent_decode, AudioEngine, PlaybackStream};
+use super::{AudioEngine, PlaybackStream};
 use crate::buffer::{EngineCommand, PlaybackState};
 use crate::dsp::pipeline::VolumePath;
 
@@ -434,6 +434,9 @@ impl AudioEngine {
                             self.scratch.pending_chunk = None;
                             self.scratch.pending_incoming_chunk = None;
                             self.write_playback_info(|pb| pb.position_secs = clamped_pos);
+                            self.emit_event(crate::events::EngineEvent::SeekCompleted {
+                                position_secs: clamped_pos,
+                            });
                             info!("Seeked to {:.1}s", clamped_pos);
                         }
                         Err(e) => {
@@ -445,6 +448,10 @@ impl AudioEngine {
                             // decoder position, reported as the track start).
                             self.clock.reset_track(self.clock.source_sample_rate);
                             self.write_playback_info(|pb| pb.position_secs = 0.0);
+                            self.emit_event(crate::events::EngineEvent::Error(format!(
+                                "Seek failed: {}",
+                                e
+                            )));
                             warn!("Seek failed: {}", e);
                         }
                     }
@@ -728,15 +735,6 @@ impl AudioEngine {
                     clamped, self.config.speed_mode
                 );
             }
-            EngineCommand::NextTrack => {
-                log::debug!("NextTrack: handled by PlaybackService, not engine");
-            }
-            EngineCommand::PrevTrack => {
-                log::debug!("PrevTrack: handled by PlaybackService, not engine");
-            }
-            EngineCommand::LoadTrack(_id) => {
-                log::debug!("LoadTrack by ID: use load_track() directly on AudioEngine");
-            }
             EngineCommand::Shutdown => {
                 self.stop();
             }
@@ -756,6 +754,9 @@ impl AudioEngine {
                     if let Err(e) = self.recover_output_stream() {
                         error!("Failed to recover stream after device change: {}", e);
                     }
+                    self.emit_event(crate::events::EngineEvent::OutputDeviceChanged {
+                        device,
+                    });
                 }
             }
 
@@ -993,84 +994,38 @@ impl AudioEngine {
                 );
             }
 
-            EngineCommand::SetShuffle(_enabled) => {
-                info!("Shuffle state change requested via MPRIS (handled by playback layer)");
-            }
-            EngineCommand::SetLoopStatus(status) => {
-                info!(
-                    "Loop status set to '{}' via MPRIS (handled by playback layer)",
-                    status
-                );
-            }
-            EngineCommand::OpenUri(uri) => {
-                // Accept both file:// URIs (MPRIS) and plain filesystem paths
-                // (sent by the UI layer). Previously only file:// URIs were
-                // accepted, so every track selected in the UI was silently
-                // rejected and no audio was ever produced.
-                let path_opt = if let Some(stripped) = uri.strip_prefix("file://") {
-                    percent_decode(stripped).map(std::path::PathBuf::from)
-                } else {
-                    Some(std::path::PathBuf::from(uri.clone()))
-                };
-
-                let path = match path_opt {
-                    Some(p) => p,
-                    None => {
-                        warn!("OpenUri: failed to percent-decode URI: {}", uri);
-                        return;
-                    }
-                };
-
-                match std::fs::metadata(&path) {
-                    Ok(metadata) if metadata.is_file() => {}
-                    Ok(_) => {
-                        warn!("OpenUri: path is not a regular file: {}", path.display());
-                        self.update_playback_state(PlaybackState::Stopped);
-                        return;
-                    }
-                    Err(_) => {
-                        warn!("OpenUri: cannot access path: {}", path.display());
-                        self.update_playback_state(PlaybackState::Stopped);
-                        return;
-                    }
-                }
-                let load_path = match path.canonicalize() {
-                    Ok(canonical) => canonical,
-                    Err(e) => {
-                        log::debug!(
-                            "OpenUri: canonicalize failed for {} ({}); using original path",
-                            path.display(),
-                            e
-                        );
-                        path.clone()
-                    }
-                };
-                match self.load_track(&load_path) {
+            EngineCommand::Open(source) => {
+                match self.load_source(&source) {
                     Ok(info) => {
                         info!(
-                            "Loaded URI: {} Hz, {} ch, {:.1}s",
-                            info.sample_rate, info.channels, info.duration_secs
+                            "Loaded source '{}': {} Hz, {} ch, {:.1}s",
+                            source, info.sample_rate, info.channels, info.duration_secs
                         );
                         self.update_playback_state(PlaybackState::Playing);
-                        self.write_playback_info(|pb| {
-                            pb.track_id = self.current_track_id;
-                        });
                     }
                     Err(e) => {
-                        warn!("Failed to load URI '{}': {}", uri, e);
+                        warn!("Failed to load source '{}': {}", source, e);
+                        self.emit_event(crate::events::EngineEvent::Error(format!(
+                            "Failed to load source '{}': {}",
+                            source, e
+                        )));
                         self.update_playback_state(PlaybackState::Stopped);
                     }
                 }
             }
-            EngineCommand::PrepareNextTrack(path) => match self.prepare_next_track(&path) {
+            EngineCommand::PrepareNext(source) => match self.prepare_next_source(&source) {
                 Ok(info) => {
                     info!(
-                        "Prepared next track for crossfade: {} Hz, {:.1}s",
-                        info.sample_rate, info.duration_secs
+                        "Prepared next source '{}' for crossfade: {} Hz, {:.1}s",
+                        source, info.sample_rate, info.duration_secs
                     );
                 }
                 Err(e) => {
-                    warn!("Failed to prepare next track: {}", e);
+                    warn!("Failed to prepare next source '{}': {}", source, e);
+                    self.emit_event(crate::events::EngineEvent::Error(format!(
+                        "Failed to prepare next source '{}': {}",
+                        source, e
+                    )));
                 }
             },
             EngineCommand::RecoverStream => match self.recover_output_stream() {

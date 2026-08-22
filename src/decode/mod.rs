@@ -88,19 +88,6 @@ pub fn extract_loudness_metadata(path: &Path) -> crate::dsp::loudness::LoudnessM
     symphonia_decoder::extract_loudness_metadata_symphonia(path)
 }
 
-/// Extract embedded album art and save it to the local cover cache. Routes
-/// `.opus` (METADATA_BLOCK_PICTURE) to the Opus backend; the shared
-/// `cache_cover_art_bytes` helper applies the same downscale-and-cache policy
-/// to both paths.
-pub fn extract_cover_art_to_cache(path: &Path) -> Option<String> {
-    #[cfg(feature = "codec-opus")]
-    if is_opus_path(path) {
-        let (data, ext) = opus::extract_cover_art(path)?;
-        return symphonia_decoder::cache_cover_art_bytes(path, data, ext);
-    }
-    symphonia_decoder::extract_cover_art_to_cache(path)
-}
-
 // ── Gapless Playback ─────────────────────────────────────────────────────────
 
 /// Encoder/container gapless framing metadata.

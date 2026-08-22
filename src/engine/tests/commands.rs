@@ -116,11 +116,12 @@ fn test_send_command_channel() {
 }
 
 #[test]
-fn test_set_track_id() {
+fn test_set_source() {
     let mut engine = AudioEngine::new_default().unwrap();
-    engine.set_track_id(42);
+    let source = crate::source::AudioSource::File(std::path::PathBuf::from("/path/to/test.flac"));
+    engine.set_source(source.clone());
     let info = engine.playback_info();
-    assert_eq!(info.track_id, Some(42));
+    assert_eq!(info.current_source, Some(source));
 }
 
 #[test]
@@ -192,12 +193,13 @@ fn test_engine_command_debug() {
 }
 
 #[test]
-fn test_percent_decode_simple() {
-    let cmd = EngineCommand::OpenUri("file:///path/to/file.mp3".to_string());
-    if let EngineCommand::OpenUri(uri) = cmd {
-        assert!(uri.starts_with("file://"));
+fn test_audio_source_open_command() {
+    let source = crate::source::AudioSource::Uri("file:///path/to/file.mp3".to_string());
+    let cmd = EngineCommand::Open(source.clone());
+    if let EngineCommand::Open(s) = cmd {
+        assert_eq!(s, source);
     } else {
-        panic!("Expected OpenUri command");
+        panic!("Expected Open command");
     }
 }
 
@@ -877,6 +879,9 @@ fn test_engine_handle_controls_and_telemetry() {
     // 4. Verify debug representation doesn't panic
     let debug_str = format!("{:?}", handle);
     assert!(debug_str.contains("EngineHandle"));
+
+    // 5. Verify events receiver is accessible
+    assert!(handle.events().is_empty());
 }
 
 

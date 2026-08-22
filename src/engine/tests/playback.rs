@@ -159,7 +159,7 @@ fn test_playback_info_default() {
     assert_eq!(info.state, PlaybackState::Stopped);
     assert!((info.volume - 0.75).abs() < 1e-6);
     assert_eq!(info.speed, 1.0);
-    assert_eq!(info.track_id, None);
+    assert_eq!(info.current_source, None);
     assert!(!info.resampler_disabled);
     assert!(!info.convolution_ir_needs_reload);
 }

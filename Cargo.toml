@@ -98,7 +98,6 @@ wavicle = { version = "0.1", optional = true }
 ogg = { version = "0.9", optional = true }
 opus-decoder = { version = "0.1.1", optional = true }
 etcetera = "0.11"
-image = "0.25"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # (WavPack previously used a runtime-loaded `libwavpack` via `libloading`;
@@ -173,6 +172,10 @@ rusty-opus = "0.9.1"
 # wavicle's `encode` feature, used ONLY by tests to generate deterministic
 # `.wv` fixtures at test time (no committed binary assets).
 wavicle = { version = "0.1", features = ["encode"] }
+
+[[bin]]
+name = "audio-engine-cli"
+path = "src/bin/audio_engine_cli.rs"
 
 [[bench]]
 name = "dsp_bench"

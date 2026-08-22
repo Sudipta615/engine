@@ -1,11 +1,19 @@
-# High-Performance Audiophile Core Audio Engine
+# High-Performance Audiophile Independent Core Audio Engine
 
-A reference-grade, bit-perfect, modular audio playback and DSP engine written in 100% pure Rust. Engineered for audiophile listening, pro-audio workstations, low-latency performance, and glitch-free real-time audio playback on modern as well as legacy hardware.
+A reference-grade, bit-perfect, modular, **headless** audio playback and DSP engine written in 100% pure Rust. Engineered for audiophile listening, pro-audio workstations, low-latency performance, and glitch-free real-time audio playback on modern as well as legacy hardware.
+
+The engine is completely independent and headless: it contains zero UI framework dependencies, zero database/library ties, zero playlist policy, and zero OS-specific application assumptions. It is designed to be cleanly embedded into CLI players, desktop GUIs (Slint, Iced, Qt, GTK, egui), streaming daemons, test harnesses, or pro-audio suites.
 
 ---
 
 ## 🌟 Key Highlights
 
+* **Headless & Policy-Free**: Pure audio engine providing playback infrastructure, DSP, and hardware interfacing. Playlist management, queue logic, shuffle/repeat policy, track databases, and MPRIS metadata are left cleanly to the host application.
+* **Explicit Audio Source Abstraction**: First-class [`AudioSource`] enum (`AudioSource::File`, `AudioSource::Uri`, `AudioSource::Memory`) across all loading and crossfading APIs.
+* **Separation of Concerns**:
+  * **Commands (`EngineCommand`)**: One-way asynchronous control protocol from host to engine.
+  * **Telemetry (`PlaybackInfo`)**: Lock-free, atomic, high-frequency state snapshots for UI/monitoring.
+  * **Events (`EngineEvent`)**: Discrete lifecycle notifications (`SourceOpened`, `PlaybackStarted`, `PlaybackPaused`, `PlaybackStopped`, `SourceFinished`, `SeekCompleted`, `OutputDeviceChanged`, `FormatChanged`, `Error`).
 * **Mastering-Grade Dual Precision**: Dual-path processing architecture supporting both ultra-fast `f32` (performance mode) and `f64` double-precision (mastering grade).
 * **Real-Time Safety**: Zero heap allocations on the audio playback path (`realtime_allocation.rs`), guarded by cache-padded lock-free SPSC ring buffers (`FixedFrameBuffer`).
 * **Bit-Perfect Hardware Endpoints**: Native OS-level exclusive backends:
@@ -15,7 +23,7 @@ A reference-grade, bit-perfect, modular audio playback and DSP engine written in
 * **Audiophile Codec & DSD Support**: Lossless playback for FLAC, ALAC, WAV, AIFF, APE, WavPack, TTA, Opus, Ogg Vorbis, AAC, MP3, and 1-bit native DSD (DSF / DFF) up to DSD512 (Native wire & DoP).
 * **True Gapless & Crossfading**: Dual-decoder state machine for sample-accurate gapless transitions and customizable crossfading curves (Linear, Equal Power, Exponential, S-Curve).
 * **Multichannel & Immersive 3D Audio**: Support for mono up to 12-channel 7.1.4 (with 4 height speakers) and custom layouts up to 16 channels, complete with active bass management and per-channel distance delays.
-* **Isolated Client Handle (`EngineHandle`)**: A thread-safe, decoupled client API layer designed for modular UI and controller architectures.
+* **Isolated Client Handle (`EngineHandle`)**: A thread-safe, cloneable client API bridge designed for host applications.
 
 ---
 
@@ -23,13 +31,13 @@ A reference-grade, bit-perfect, modular audio playback and DSP engine written in
 
 ```text
                                ┌──────────────────────────────────────────────┐
-                               │             External UI / Controller         │
+                               │           Host Application (GUI/CLI)         │
                                └──────────────────────┬───────────────────────┘
-                                                      │ Commands / Telemetry
+                                                      │ Commands / Telemetry / Events
                                                       ▼
                                ┌──────────────────────────────────────────────┐
                                │                 EngineHandle                 │
-                               │  (Thread-Safe Client & State Snapshot API)   │
+                               │  (Thread-Safe Client, Event Rx, Telemetry)   │
                                └──────────────────────┬───────────────────────┘
                                                       │ EngineCommand Channel
                                                       ▼
@@ -90,65 +98,25 @@ engine/
 ├── crates/
 │   └── config/               # Standalone, Serde-serializable engine & DSP configuration models
 ├── src/
-│   ├── buffer.rs             # Cache-padded, lock-free ring buffers (FixedFrameBuffer, DsdByteBuffer)
-│   ├── commands.rs           # EngineCommand enum defining the complete control protocol
+│   ├── source.rs             # AudioSource abstraction (File, Uri, Memory)
+│   ├── events.rs             # EngineEvent definitions for discrete lifecycle notifications
+│   ├── commands.rs           # EngineCommand enum defining the control protocol
 │   ├── playback_info.rs      # Real-time PlaybackInfo & EngineStats telemetry models
+│   ├── buffer.rs             # Cache-padded, lock-free ring buffers (FixedFrameBuffer, DsdByteBuffer)
 │   ├── decode/               # Decoders (FLAC, DSD DSF/DFF, WAV, ALAC, APE, Opus, WavPack, TTA, etc.)
 │   ├── dsp/                  # Mastering DSP algorithms (EQ, Limiter, Convolution, Crossfeed, etc.)
-│   │   ├── pipeline/         # Orchestrated DspPipeline signal graph
-│   │   ├── channel_trim.rs   # Multichannel speaker calibration & routing matrix
-│   │   ├── crossfeed.rs      # Binaural headphone spatialization
-│   │   ├── convolution.rs    # Real FFT partitioned convolution engine
-│   │   ├── limiter.rs        # True-peak 4x oversampled lookahead limiter
-│   │   ├── multiband_compressor.rs # 3-band Linkwitz-Riley crossover compressor
-│   │   └── equalizer.rs      # 64-band RBJ biquad equalizer & AutoEQ preset parser
-│   ├── output/               # Hardware audio backends
-│   │   ├── alsa_output/      # Native Linux ALSA direct hw: backend
-│   │   ├── wasapi_output/    # Native Windows WASAPI exclusive IAudioClient backend
-│   │   ├── asio_output/      # Native Windows Steinberg ASIO COM backend
-│   │   ├── coreaudio_output/ # Native macOS CoreAudio Hog Mode HAL backend
-│   │   └── cpal_output/      # Cross-platform shared-mode fallback
+│   ├── output/               # Hardware audio backends (ALSA, WASAPI, ASIO, CoreAudio, CPAL)
 │   ├── engine/               # Dual-decoder state machine, clock, and worker thread
 │   │   ├── handle.rs         # Safe, decoupled EngineHandle client interface
 │   │   ├── commands.rs       # Lock-free command dispatching
 │   │   └── decode_loop.rs    # Real-time decoding, resampling & multichannel routing loop
+│   ├── bin/
+│   │   └── audio_engine_cli.rs # Standalone headless reference player CLI
 │   └── lib.rs                # Crate root and prelude exports
 └── tests/
+    ├── headless_playback.rs  # Headless embedding lifecycle and event integration tests
     └── fidelity/             # Comprehensive DSP fidelity, measurement & stress tests
 ```
-
----
-
-## 🎛️ Feature & Module Breakdown
-
-### 1. Decoding & Format Demuxing (`src/decode/`)
-* **Uncompressed / Lossless**: FLAC, WAV, AIFF, ALAC, Monkey's Audio (APE), WavPack (v5 lossless), True Audio (TTA).
-* **Lossy**: Ogg Opus (RFC 8251 pure-Rust), AAC, MP3, Ogg Vorbis, Matroska Audio (MKA/MKV).
-* **Direct Stream Digital (DSD)**: DSF and DFF file readers with 1-bit native wire packing and DSD-over-PCM (DoP v1.1) formatting (DSD64 to DSD512).
-* **CUE Sheet & Gapless Metadata**: Accurate index parsing, lead-in/lead-out pruning, and gapless sample count extraction.
-
-### 2. Audio DSP & Mastering Suite (`src/dsp/`)
-* **64-Band Parametric EQ**: RBJ filter types (Peaking, Low/High Shelf, Low/High Pass, Band Pass, Notch) with instant AutoEQ preset import.
-* **31-Band ISO Graphic EQ**: Standard 1/3-octave ISO center frequencies with auto-makeup headroom.
-* **Headphone Crossfeed**: Removes "inside-the-head" lateralization via Bauer, ChuMoy, Jan Meier, or custom interaural time delay (ITD) models.
-* **Partitioned Convolution**: Fast, low-latency partitioned FFT convolution for Room Correction and Head-Related Transfer Function (HRTF) binaural 3D audio.
-* **3-Band Multiband Compressor**: 4th-order Linkwitz-Riley (LR4) phase-compensated crossover filters with per-band attack, release, threshold, and makeup gain.
-* **4x True-Peak Lookahead Limiter**: Polyphase FIR oversampling detecting inter-sample peaks with zero distortion.
-* **Loudness Normalization**: EBU R128 and ITU-R BS.1770-4 loudness measurement and normalization with background thread scanning.
-* **High-Order Sinc Resampler**: Band-limited sinc interpolation with sub-sample phase continuity powered by Rubato.
-* **Audiophile Dithering**: Triangular Probability Density Function (TPDF) and noise-shaped dithering when quantizing to 16-bit or 24-bit PCM.
-
-### 3. Multichannel & Spatial Audio
-* **Supported Layouts**: Mono, Stereo, 2.1, 3.0, 3.1, 4.0, 4.1, 5.0, 5.1, 6.1, 7.0, 7.1, and **7.1.4 Immersive** (with 4 height speakers).
-* **Bass Management**: Second-order high-pass filtering on main speakers paired with dedicated subwoofer low-pass crossovers.
-* **Speaker Alignment**: Per-channel fractional millisecond delay (0–100 ms), gain trim, and polarity inversion.
-* **Upmix & Downmix Matrix**: ITU-R BS.775 stereo downmixing, stereo $\to$ 5.1/7.1 upmixing templates, and custom $[N \times M]$ channel routing matrices.
-
-### 4. Bit-Perfect Hardware Endpoints (`src/output/`)
-* **ALSA Direct (`hw:`)**: Linux direct hardware streaming with software mixer bypass.
-* **WASAPI Exclusive (`IAudioClient`)**: Windows bit-perfect streaming with verified OS exclusivity and hardware volume event hooks.
-* **Steinberg ASIO (`IASIO`)**: 100% pure-Rust native ASIO COM driver integration with registry driver enumeration and native 1-bit DSD transport.
-* **CoreAudio Hog Mode**: macOS direct device acquisition with exclusive hardware clock locking.
 
 ---
 
@@ -158,70 +126,78 @@ engine/
 
 ```rust
 use engine::prelude::*;
-use config::EngineConfig;
-use std::path::Path;
+use engine::{AudioEngine, EngineConfig, EngineHandle, AudioSource, EngineEvent};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Initialize engine with default audiophile configuration
+    // 1. Initialize engine
     let config = EngineConfig::default();
     let mut engine = AudioEngine::new(config)?;
     
-    // 2. Obtain the decoupled, cloneable handle for UI / Controller
+    // 2. Obtain decoupled, cloneable handle
     let handle: EngineHandle = engine.handle();
     
-    // 3. Start audio worker thread
-    engine.start()?;
+    // 3. Start audio worker thread / tick loop
+    std::thread::spawn(move || {
+        while engine.is_running() {
+            engine.tick();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    });
 
-    // 4. Send non-blocking commands through the handle
-    handle.open_uri("file:///music/audiophile_track.flac");
+    // 4. Open audio source and command playback
+    handle.open_file("/path/to/song.flac");
     handle.play();
     handle.set_volume_db(-6.0); // Perceptually-correct logarithmic volume
 
     // 5. Inspect atomic telemetry snapshot
     let info = handle.playback_info();
-    println!("State: {:?}, Position: {:.2}s / {:.2}s (Latency: {:.1}ms)",
-        info.state, info.position_secs_compensated, info.duration_secs, info.latency_ms);
+    println!("Source: {:?}, State: {:?}, Position: {:.2}s / {:.2}s",
+        info.current_source, info.state, info.position_secs_compensated, info.duration_secs);
+
+    // 6. Receive discrete engine events
+    let events = handle.clone_event_receiver();
+    std::thread::spawn(move || {
+        while let Ok(event) = events.recv() {
+            match event {
+                EngineEvent::SourceOpened { source, sample_rate, .. } => {
+                    println!("Opened: {} at {} Hz", source, sample_rate);
+                }
+                EngineEvent::PlaybackStarted => println!("Playing!"),
+                EngineEvent::PlaybackStopped => println!("Stopped!"),
+                EngineEvent::SourceFinished { source } => println!("Finished: {}", source),
+                _ => {}
+            }
+        }
+    });
 
     Ok(())
 }
 ```
 
-### 2. Enabling Headphone Crossfeed & Parametric EQ
+### 2. Running the Headless CLI Player
 
-```rust
-use config::CrossfeedProfile;
+The crate includes an interactive reference command-line player `audio-engine-cli`:
 
-// Activate Bauer binaural headphone spatial crossfeed
-handle.set_crossfeed_enabled(true);
-handle.set_crossfeed_profile(CrossfeedProfile::Bauer);
+```bash
+# Launch interactive REPL
+cargo run --bin audio-engine-cli
 
-// Enable 64-band Parametric EQ
-handle.set_eq_enabled(true);
-handle.set_eq_band(0, 100.0, 3.5, 0.7071, true); // +3.5 dB bass boost at 100 Hz
-```
-
-### 3. Configuring Multichannel & Spatial Audio
-
-```rust
-use config::{ChannelMixConfig, ChannelMixTemplate, ChannelPolicy};
-
-// Downmix a 5.1/7.1 track to stereo for 2-channel headphones:
-handle.set_channel_policy(ChannelPolicy::StereoDownmix);
-handle.set_channel_mix(ChannelMixConfig {
-    enabled: true,
-    template: ChannelMixTemplate::FiveOneToStereo,
-});
+# Or directly play an audio file or URI
+cargo run --bin audio-engine-cli -- /path/to/song.flac
 ```
 
 ---
 
 ## 🧪 Verification & Automated Testing
 
-The engine includes a full test suite with 25 specialized fidelity test harnesses, stress tests, and mathematical verifications:
+The engine includes a full test suite with 25+ specialized fidelity test harnesses, headless lifecycle tests, stress tests, and mathematical verifications:
 
 ```bash
-# Run all unit tests and fidelity measurement suites
+# Run all unit tests and headless integration tests
 cargo test
+
+# Run headless playback integration test specifically
+cargo test --test headless_playback
 
 # Run real-time zero-allocation validation suite
 cargo test --test realtime_allocation

@@ -51,7 +51,9 @@ use crate::{
     },
     decode::{DecodeInfo, Decoder},
     dsp::pipeline::{DspPipeline, LatencyReport, OutputSampleFormat, VolumePath},
+    events::EngineEvent,
     output::{create_output, Output, OutputError},
+    source::AudioSource,
 };
 
 /// Precise sample-domain playback clock — the engine's single source of
@@ -184,8 +186,10 @@ pub struct AudioEngine {
     /// Sample-accurate integer playback clock — the single source of truth
     /// for the playhead (position and current source sample rate).
     clock: AudioClock,
-    current_track_id: Option<u64>,
+    current_source: Option<AudioSource>,
     stream_ended: bool,
+    event_tx: Sender<EngineEvent>,
+    event_rx: Receiver<EngineEvent>,
 
     // ── Domain sub-structures ──
     pub(crate) telemetry: EngineTelemetry,
@@ -240,6 +244,7 @@ impl AudioEngine {
                 .map_err(|e| EngineError::Config(format!("Output buffer: {}", e)))?,
         );
         let (cmd_tx, cmd_rx) = channel::bounded(256);
+        let (event_tx, event_rx) = channel::bounded(256);
         let output_sample_rate = DEFAULT_SAMPLE_RATE;
         let pipeline = DspPipeline::from_config(&config, output_sample_rate as f32);
         let graphic_eq = crate::dsp::GraphicEq::from_config(&config.graphic_eq);
@@ -265,8 +270,10 @@ impl AudioEngine {
             output_sample_rate,
             speed: 1.0,
             clock,
-            current_track_id: None,
+            current_source: None,
             stream_ended: false,
+            event_tx,
+            event_rx,
 
             telemetry: EngineTelemetry::default(),
             dsd: DsdTransportState::default(),
@@ -632,9 +639,13 @@ impl AudioEngine {
         self.cmd_tx.clone()
     }
 
-    /// Create a safe, decoupled [`EngineHandle`] for UI and controller layers.
+    /// Create a safe, decoupled [`EngineHandle`] for host applications and controllers.
     pub fn handle(&self) -> EngineHandle {
-        EngineHandle::new(self.cmd_tx.clone(), Arc::clone(&self.playback_info))
+        EngineHandle::new(
+            self.cmd_tx.clone(),
+            Arc::clone(&self.playback_info),
+            self.event_rx.clone(),
+        )
     }
 
     pub fn set_volume(&mut self, vol: f32) {
@@ -1053,8 +1064,8 @@ impl AudioEngine {
         self.pipeline.mixer_mut().start_playing();
 
         self.stream_ended = false;
-
-        let track_id = self.current_track_id;
+        self.current_source = Some(AudioSource::File(path.to_path_buf()));
+        let current_source = self.current_source.clone();
         let speed = self.speed;
         let dop_active = self.dsd.dop_active;
         let native_dsd_active = self.dsd.native_dsd_active;
@@ -1064,7 +1075,7 @@ impl AudioEngine {
             Arc::new(PlaybackInfo {
                 duration_secs: info.duration_secs,
                 sample_rate: info.sample_rate,
-                track_id,
+                current_source: current_source.clone(),
                 speed,
                 dop_active,
                 native_dsd_active,
@@ -1082,11 +1093,74 @@ impl AudioEngine {
             })
         });
 
+        self.emit_event(EngineEvent::SourceOpened {
+            source: AudioSource::File(path.to_path_buf()),
+            sample_rate: info.sample_rate,
+            channels: info.channels,
+            duration_secs: info.duration_secs,
+        });
+        self.emit_event(EngineEvent::FormatChanged {
+            sample_rate: info.sample_rate,
+            channels: info.channels,
+        });
+
         info!(
             "Loaded track: {} Hz, {} ch, {:.1}s",
             info.sample_rate, info.channels, info.duration_secs
         );
         Ok(info)
+    }
+
+    /// Load an explicit [`AudioSource`] (file, URI, or memory) for playback.
+    pub fn load_source(&mut self, source: &AudioSource) -> Result<DecodeInfo, EngineError> {
+        match source {
+            AudioSource::File(path) => {
+                let info = self.load_track(path)?;
+                self.current_source = Some(source.clone());
+                self.write_playback_info(|pb| pb.current_source = Some(source.clone()));
+                Ok(info)
+            }
+            AudioSource::Uri(uri) => {
+                let path_buf = if let Some(stripped) = uri.strip_prefix("file://") {
+                    helpers::percent_decode(stripped)
+                        .map(std::path::PathBuf::from)
+                        .ok_or_else(|| {
+                            EngineError::InvalidSource(format!("Invalid file URI: {}", uri))
+                        })?
+                } else {
+                    std::path::PathBuf::from(uri)
+                };
+                let info = self.load_track(&path_buf)?;
+                self.current_source = Some(source.clone());
+                self.write_playback_info(|pb| pb.current_source = Some(source.clone()));
+                Ok(info)
+            }
+            AudioSource::Memory { .. } => Err(EngineError::InvalidSource(
+                "In-memory audio stream decoding not yet supported in current decoder dispatch".into(),
+            )),
+        }
+    }
+
+    /// Pre-open the next [`AudioSource`] for seamless gapless / crossfade transition.
+    pub fn prepare_next_source(&mut self, source: &AudioSource) -> Result<DecodeInfo, EngineError> {
+        match source {
+            AudioSource::File(path) => self.prepare_next_track(path),
+            AudioSource::Uri(uri) => {
+                let path_buf = if let Some(stripped) = uri.strip_prefix("file://") {
+                    helpers::percent_decode(stripped)
+                        .map(std::path::PathBuf::from)
+                        .ok_or_else(|| {
+                            EngineError::InvalidSource(format!("Invalid file URI: {}", uri))
+                        })?
+                } else {
+                    std::path::PathBuf::from(uri)
+                };
+                self.prepare_next_track(&path_buf)
+            }
+            AudioSource::Memory { .. } => Err(EngineError::InvalidSource(
+                "In-memory audio stream decoding not yet supported in current decoder dispatch".into(),
+            )),
+        }
     }
 
     /// Negotiate native-DSD transport with the output backend (§7).
@@ -1279,7 +1353,8 @@ impl AudioEngine {
 
         self.stream_ended = false;
 
-        let track_id = self.current_track_id;
+        self.current_source = Some(AudioSource::File(path.to_path_buf()));
+        let current_source = self.current_source.clone();
         let speed = self.speed;
         let dop_active = self.dsd.dop_active;
         let native_dsd_active = self.dsd.native_dsd_active;
@@ -1289,7 +1364,7 @@ impl AudioEngine {
             Arc::new(PlaybackInfo {
                 duration_secs: info.duration_secs,
                 sample_rate: info.sample_rate,
-                track_id,
+                current_source: current_source.clone(),
                 speed,
                 dop_active,
                 native_dsd_active,
@@ -1305,6 +1380,17 @@ impl AudioEngine {
 
                 ..Default::default()
             })
+        });
+
+        self.emit_event(EngineEvent::SourceOpened {
+            source: AudioSource::File(path.to_path_buf()),
+            sample_rate: info.sample_rate,
+            channels: info.channels,
+            duration_secs: info.duration_secs,
+        });
+        self.emit_event(EngineEvent::FormatChanged {
+            sample_rate: info.sample_rate,
+            channels: info.channels,
         });
 
         info!(
@@ -1715,9 +1801,10 @@ impl AudioEngine {
         self.running.load(Ordering::Acquire)
     }
 
-    pub fn set_track_id(&mut self, id: u64) {
-        self.current_track_id = Some(id);
-        self.write_playback_info(|pb| pb.track_id = Some(id));
+    /// Set or update the current audio source metadata in the engine telemetry.
+    pub fn set_source(&mut self, source: AudioSource) {
+        self.current_source = Some(source.clone());
+        self.write_playback_info(|pb| pb.current_source = Some(source.clone()));
     }
 
     /// Check if the engine has a pending chunk, which can be used as a proxy for buffer fullness

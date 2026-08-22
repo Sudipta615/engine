@@ -55,7 +55,7 @@ static CACHE: Mutex<Option<(PathBuf, LoudnessCache)>> = Mutex::new(None);
 /// Resolve the default cache file location (app data dir, like covers).
 fn default_cache_file_path() -> Option<PathBuf> {
     let mut dir = crate::paths::data_local_dir()?;
-    dir.push("playtune");
+    dir.push("audio-engine");
     let _ = std::fs::create_dir_all(&dir);
     dir.push("loudness_cache.json");
     Some(dir)

@@ -26,7 +26,7 @@ use symphonia::core::{
     errors::Error as SymphoniaError,
     formats::{probe::Hint, FormatOptions, FormatReader, SeekMode, SeekTo},
     io::MediaSourceStream,
-    meta::{MetadataOptions, StandardTag, StandardVisualKey},
+    meta::{MetadataOptions, StandardTag},
     units::{Time, Timestamp},
 };
 use thiserror::Error;
@@ -612,131 +612,6 @@ pub fn downmix_interleaved_to_stereo(
     }
 
     actual_frames
-}
-
-/// Extract embedded album art from an audio file and save to local cache directory.
-/// Returns the absolute path of the cached image file if artwork is found.
-pub fn extract_cover_art_to_cache(path: &Path) -> Option<String> {
-    let file = File::open(path).ok()?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-    let mut hint = Hint::new();
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(ext);
-    }
-
-    let metadata_opts = MetadataOptions::default();
-    let format_opts = FormatOptions::default();
-
-    if let Ok(mut format_reader) =
-        symphonia::default::get_probe().probe(&hint, mss, format_opts, metadata_opts)
-    {
-        let mut visual_data = None;
-        let mut ext_str = "jpg";
-
-        if let Some(current) = format_reader.metadata().current() {
-            let visuals = &current.media.visuals;
-            let visual = visuals
-                .iter()
-                .find(|v| v.usage == Some(StandardVisualKey::FrontCover))
-                .or_else(|| visuals.iter().find(|v| v.usage.is_some()))
-                .or_else(|| visuals.first());
-
-            if let Some(vis) = visual {
-                visual_data = Some(vis.data.to_vec());
-                if let Some(ref mt) = vis.media_type {
-                    if mt.contains("png") {
-                        ext_str = "png";
-                    }
-                }
-            }
-        }
-
-        if let Some(data) = visual_data {
-            return cache_cover_art_bytes(path, data, ext_str);
-        }
-    }
-    None
-}
-
-/// Downscale (to ≤ 200×200 px), cache on disk, and return the absolute path
-/// of the cached cover image. Shared by all decoders (Symphonia formats and
-/// Ogg Opus via `decode::extract_cover_art_to_cache`), so cover caching
-/// behaves identically regardless of the source format.
-pub fn cache_cover_art_bytes(path: &Path, data: Vec<u8>, ext: &str) -> Option<String> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    use std::path::PathBuf;
-    use std::sync::OnceLock;
-
-    // Cache directory is constant for the process lifetime; resolve it once.
-    static CACHE_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
-    let cache_dir = CACHE_DIR.get_or_init(|| {
-        let mut dir = crate::paths::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
-        dir.push("playtune/covers");
-        // Best-effort: create once. Ignore "already exists" errors.
-        let _ = std::fs::create_dir_all(&dir);
-        Some(dir)
-    });
-    let cache_dir = cache_dir.as_ref()?;
-
-    let mut hasher = DefaultHasher::new();
-    path.to_string_lossy().hash(&mut hasher);
-    let hash_id = hasher.finish();
-
-    // Build both candidate filenames once (a cover cached earlier under the
-    // other extension is still valid for this path).
-    let jpg_path = cache_dir.join(format!("{}.jpg", hash_id));
-    if jpg_path.exists() {
-        return Some(jpg_path.to_string_lossy().to_string());
-    }
-    let png_path = cache_dir.join(format!("{}.png", hash_id));
-    if png_path.exists() {
-        return Some(png_path.to_string_lossy().to_string());
-    }
-
-    let ext_str = if ext == "png" { "png" } else { "jpg" };
-    // Downscale the cover to a maximum of 200×200 px before writing to disk.
-    // This caps the on-disk cover cache at ~270 KB per album (vs. multi-MB
-    // for hi-res album scans), which in turn caps the peak RAM when the
-    // CoverLoader decodes the file.
-    const MAX_COVER_SIDE: u32 = 200;
-    let final_bytes = {
-        let decoded = image::ImageReader::new(std::io::Cursor::new(data.as_slice()))
-            .with_guessed_format()
-            .ok()
-            .and_then(|r| r.decode().ok());
-        match decoded {
-            Some(img) => {
-                let (w, h) = (img.width(), img.height());
-                let longest = w.max(h);
-                if longest > MAX_COVER_SIDE {
-                    let scaled = img.resize(
-                        MAX_COVER_SIDE,
-                        MAX_COVER_SIDE,
-                        image::imageops::FilterType::Lanczos3,
-                    );
-                    let mut buf = std::io::Cursor::new(Vec::new());
-                    let format = if ext_str == "png" {
-                        image::ImageFormat::Png
-                    } else {
-                        image::ImageFormat::Jpeg
-                    };
-                    match scaled.write_to(&mut buf, format) {
-                        Ok(_) => buf.into_inner(),
-                        Err(_) => data, // fallback: raw bytes
-                    }
-                } else {
-                    data
-                }
-            }
-            None => data, // fallback: raw bytes
-        }
-    };
-    let out_path = cache_dir.join(format!("{}.{}", hash_id, ext_str));
-    if std::fs::write(&out_path, &final_bytes).is_ok() {
-        return Some(out_path.to_string_lossy().to_string());
-    }
-    None
 }
 
 /// Extract title, artist, album, duration_secs, and duration_str from an audio file.

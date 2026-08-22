@@ -101,6 +101,7 @@ fn declared_unavailable_codecs_fail_explicitly() {
     // file was. (TTA is a supported, natively-decoded format — see
     // `garbage_bytes…` above for its robustness coverage and
     // `src/decode/tta.rs` for the decoder.)
+    #[allow(unused_mut)]
     let mut codecs: Vec<(&str, &str)> = vec![("tak", "TAK"), ("mpc", "Musepack")];
     #[cfg(not(feature = "codec-wavpack"))]
     codecs.push(("wv", "WavPack"));
