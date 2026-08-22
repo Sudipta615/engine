@@ -2,7 +2,7 @@
 //!
 //! Unlike high-frequency state polling (via `PlaybackInfo` atomic telemetry),
 //! [`EngineEvent`] represents discrete state transitions and lifecycle occurrences
-//! such as track completion, format changes, errors, and output device switches.
+//! such as track completion, format changes, errors, output device switches, and hotplug changes.
 
 use crate::source::AudioSource;
 
@@ -47,6 +47,21 @@ pub enum EngineEvent {
         sample_rate: u32,
         /// Channel count.
         channels: usize,
+    },
+    /// The list of available audio output endpoints changed (e.g. USB DAC plugged in/out).
+    DeviceListChanged {
+        /// Currently available output device names.
+        devices: Vec<String>,
+    },
+    /// An audio output endpoint was connected / arrived.
+    DeviceConnected {
+        /// Name of the connected audio device.
+        device: String,
+    },
+    /// An audio output endpoint was disconnected / removed.
+    DeviceDisconnected {
+        /// Name of the disconnected audio device.
+        device: String,
     },
     /// An engine-level error occurred during playback, recovery, or decoding.
     Error(String),

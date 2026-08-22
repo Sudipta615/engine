@@ -55,6 +55,16 @@ impl AudioSource {
         matches!(self, Self::File(_))
     }
 
+    /// Returns true if this source refers to a URI.
+    pub fn is_uri(&self) -> bool {
+        matches!(self, Self::Uri(_))
+    }
+
+    /// Returns true if this source is held in memory.
+    pub fn is_memory(&self) -> bool {
+        matches!(self, Self::Memory { .. })
+    }
+
     /// Returns a human-readable display label for diagnostics and telemetry.
     pub fn display_name(&self) -> String {
         match self {

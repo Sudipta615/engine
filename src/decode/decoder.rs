@@ -166,6 +166,31 @@ impl Decoder {
         SymphoniaDecoder::open(path).map(Self::Symphonia)
     }
 
+    /// Open in-memory byte buffer for decoding.
+    pub fn open_memory(data: Vec<u8>, extension_hint: Option<&str>) -> Result<Self, DecodeError> {
+        SymphoniaDecoder::open_memory(data, extension_hint).map(Self::Symphonia)
+    }
+
+    /// Open an [`AudioSource`] for decoding.
+    pub fn open_source(source: &crate::source::AudioSource) -> Result<Self, DecodeError> {
+        match source {
+            crate::source::AudioSource::File(path) => Self::open(path),
+            crate::source::AudioSource::Uri(uri) => {
+                if let Some(stripped) = uri.strip_prefix("file://") {
+                    let decoded = crate::engine::helpers::percent_decode(stripped)
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| std::path::PathBuf::from(stripped));
+                    Self::open(&decoded)
+                } else {
+                    Self::open(std::path::Path::new(uri))
+                }
+            }
+            crate::source::AudioSource::Memory { data, extension_hint } => {
+                Self::open_memory(data.clone(), extension_hint.as_deref())
+            }
+        }
+    }
+
     /// Decode the next chunk of up to `max_frames` PCM frames.
     pub fn decode_next(&mut self, max_frames: usize) -> Result<DecodedChunk, DecodeError> {
         match self {

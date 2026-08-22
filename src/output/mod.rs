@@ -9,6 +9,7 @@ pub mod cpal_callbacks;
 pub mod cpal_devices;
 pub mod cpal_output;
 pub mod device_match;
+pub mod device_monitor;
 pub mod format_converter;
 pub mod output;
 pub mod output_info;
@@ -23,6 +24,7 @@ pub use asio_output::AsioOutput;
 pub use capabilities::{OutputAccessMode, OutputCapabilities, OutputValidationError};
 pub use cpal_output::{CpalOutput, OutputError, OutputVolume};
 pub use device_match::{classify_device_name_match, DeviceNameMatch};
+pub use device_monitor::{DeviceDelta, DeviceMonitor};
 pub use format_converter::{AudioFormatConverter, TargetFormat};
 pub use output::{
     create_output, NativeDsdCapability, NativeDsdParams, Output, StreamErrorBatch,

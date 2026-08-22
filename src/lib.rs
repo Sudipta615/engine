@@ -21,7 +21,7 @@ pub use source::AudioSource;
 #[cfg(feature = "audio-output")]
 pub use engine::{AudioEngine, EngineError, EngineHandle};
 
-pub use config::{EngineConfig, ResamplerQuality};
+pub use config::{AudioBackend, EngineConfig, ResamplerQuality};
 pub use decode::extract_track_metadata;
 
 pub mod prelude {
@@ -39,5 +39,5 @@ pub mod prelude {
         playback_info::{PlaybackInfo, PlaybackState},
         source::AudioSource,
     };
-    pub use config::ResamplerQuality;
+    pub use config::{AudioBackend, ResamplerQuality};
 }

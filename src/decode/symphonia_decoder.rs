@@ -17,15 +17,13 @@
 //! [`SymphoniaDecoder::decode_next`] so the engine always receives only
 //! true audio — the reported `duration_secs` reflects the logical (corrected)
 //! duration, not the raw container length.
-#![allow(clippy::incompatible_msrv)]
-
-use std::{fs::File, path::Path};
+use std::{fs::File, io::Cursor, path::Path};
 
 use symphonia::core::{
     codecs::audio::{AudioDecoder, AudioDecoderOptions, CODEC_ID_NULL_AUDIO},
     errors::Error as SymphoniaError,
     formats::{probe::Hint, FormatOptions, FormatReader, SeekMode, SeekTo},
-    io::MediaSourceStream,
+    io::{MediaSource, MediaSourceStream},
     meta::{MetadataOptions, StandardTag},
     units::{Time, Timestamp},
 };
@@ -106,12 +104,36 @@ impl SymphoniaDecoder {
         let file = File::open(path)
             .map_err(|e| DecodeError::FileOpen(format!("Cannot open {}: {}", path.display(), e)))?;
 
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
         let mut hint = Hint::new();
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             hint.with_extension(ext);
         }
+
+        Self::open_media_source(
+            Box::new(file),
+            hint,
+            path.extension().and_then(|e| e.to_str()),
+        )
+    }
+
+    /// Open in-memory byte buffer for decoding with an optional file extension hint.
+    pub fn open_memory(data: Vec<u8>, extension_hint: Option<&str>) -> Result<Self, DecodeError> {
+        let cursor = Cursor::new(data);
+        let mut hint = Hint::new();
+        if let Some(ext) = extension_hint {
+            hint.with_extension(ext);
+        }
+
+        Self::open_media_source(Box::new(cursor), hint, extension_hint)
+    }
+
+    /// Open any `MediaSource` stream for decoding.
+    pub fn open_media_source(
+        media_source: Box<dyn MediaSource>,
+        hint: Hint,
+        container_hint: Option<&str>,
+    ) -> Result<Self, DecodeError> {
+        let mss = MediaSourceStream::new(media_source, Default::default());
 
         let format_opts = FormatOptions::default();
         let metadata_opts = MetadataOptions::default();
@@ -216,9 +238,7 @@ impl SymphoniaDecoder {
 
         let format_info = AudioFormatInfo {
             codec: codec_str.clone(),
-            container: path
-                .extension()
-                .and_then(|e| e.to_str())
+            container: container_hint
                 .unwrap_or("unknown")
                 .to_uppercase(),
             sample_rate,

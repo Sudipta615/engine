@@ -21,6 +21,8 @@ fn print_help() {
     println!("  seek <seconds>       - Seek to position in seconds (e.g. seek 30.5)");
     println!("  volume <val>         - Set linear volume [0.0 - 1.0] or dB (e.g. 0.8 or -6db)");
     println!("  speed <multiplier>   - Set speed multiplier (e.g. speed 1.25)");
+    println!("  devices              - List available audio output endpoints");
+    println!("  device <name>        - Switch active output endpoint (or 'default')");
     println!("  info                 - Display atomic playback telemetry snapshot");
     println!("  events               - Drain and display discrete engine events");
     println!("  help                 - Show this help summary");
@@ -109,8 +111,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         EngineEvent::FormatChanged { sample_rate, channels } => {
                             println!("\n[Engine Event] Format changed: {} Hz, {} ch", sample_rate, channels);
                         }
-                        EngineEvent::Error(ref err) => {
-                            println!("\n[Engine Event Error] {}", err);
+                        EngineEvent::DeviceConnected { ref device } => {
+                            println!("\n[Engine Event] Output device connected: '{}'", device);
+                        }
+                        EngineEvent::DeviceDisconnected { ref device } => {
+                            println!("\n[Engine Event] Output device disconnected: '{}'", device);
+                        }
+                        EngineEvent::DeviceListChanged { ref devices } => {
+                            println!("\n[Engine Event] Available output endpoints updated ({} devices)", devices.len());
+                        }
+                        EngineEvent::Error(ref msg) => {
+                            println!("\n[Engine Event] Error: {}", msg);
                         }
                     },
                     Err(crossbeam::channel::RecvTimeoutError::Timeout) => {}
@@ -234,6 +245,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 } else {
                     println!("Current speed: {:.2}x", handle.speed());
+                }
+            }
+            "devices" => {
+                let devices = handle.available_devices();
+                println!("--- Available Output Endpoints ---");
+                if devices.is_empty() {
+                    println!("  <no devices detected or default system output only>");
+                } else {
+                    for (i, dev) in devices.iter().enumerate() {
+                        println!("  [{}] {}", i + 1, dev);
+                    }
+                }
+                println!("----------------------------------");
+            }
+            "device" => {
+                if let Some(dev_name) = arg {
+                    if dev_name.eq_ignore_ascii_case("default") || dev_name.eq_ignore_ascii_case("none") {
+                        handle.set_output_device(None);
+                        println!("Switched to system default output device.");
+                    } else {
+                        handle.set_output_device(Some(dev_name.to_string()));
+                        println!("Selected output device '{}'.", dev_name);
+                    }
+                } else {
+                    println!("Error: 'device' requires a device name (or 'default'). Use 'devices' to list.");
                 }
             }
             "info" => {

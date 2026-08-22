@@ -89,6 +89,14 @@ impl EngineHandle {
         let _ = self.send_command(EngineCommand::Open(AudioSource::Uri(uri.into())));
     }
 
+    /// Open in-memory byte buffer for playback with an optional format/extension hint.
+    pub fn open_memory(&self, data: Vec<u8>, extension_hint: Option<String>) {
+        let _ = self.send_command(EngineCommand::Open(AudioSource::Memory {
+            data,
+            extension_hint,
+        }));
+    }
+
     /// Pre-open the next audio source for seamless gapless / crossfade transition.
     pub fn prepare_next(&self, source: impl Into<AudioSource>) {
         let _ = self.send_command(EngineCommand::PrepareNext(source.into()));
@@ -97,6 +105,14 @@ impl EngineHandle {
     /// Pre-open the next file by path for gapless / crossfade transition.
     pub fn prepare_next_file(&self, path: impl Into<PathBuf>) {
         let _ = self.send_command(EngineCommand::PrepareNext(AudioSource::File(path.into())));
+    }
+
+    /// Pre-open next in-memory audio source for gapless / crossfade transition.
+    pub fn prepare_next_memory(&self, data: Vec<u8>, extension_hint: Option<String>) {
+        let _ = self.send_command(EngineCommand::PrepareNext(AudioSource::Memory {
+            data,
+            extension_hint,
+        }));
     }
 
     /// Start or resume playback.
@@ -279,6 +295,11 @@ impl EngineHandle {
     /// Select output device by name (or `None` for default).
     pub fn set_output_device(&self, device_name: Option<String>) {
         let _ = self.send_command(EngineCommand::SetOutputDevice(device_name));
+    }
+
+    /// List currently available output devices for the default/active backend.
+    pub fn available_devices(&self) -> Vec<String> {
+        crate::output::cpal_devices::enumerate_devices(config::AudioBackend::default())
     }
 
     /// Set sample rate policy (TrackNative, DevicePreferred, Fixed, etc.).

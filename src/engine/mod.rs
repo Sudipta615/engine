@@ -7,7 +7,7 @@ mod crossfade;
 mod decode_loop;
 mod dsd_state;
 pub mod handle;
-mod helpers;
+pub mod helpers;
 mod loudness_state;
 mod recovery;
 mod stream;
@@ -52,7 +52,7 @@ use crate::{
     decode::{DecodeInfo, Decoder},
     dsp::pipeline::{DspPipeline, LatencyReport, OutputSampleFormat, VolumePath},
     events::EngineEvent,
-    output::{create_output, Output, OutputError},
+    output::{create_output, DeviceMonitor, Output, OutputError},
     source::AudioSource,
 };
 
@@ -190,6 +190,7 @@ pub struct AudioEngine {
     stream_ended: bool,
     event_tx: Sender<EngineEvent>,
     event_rx: Receiver<EngineEvent>,
+    device_monitor: DeviceMonitor,
 
     // ── Domain sub-structures ──
     pub(crate) telemetry: EngineTelemetry,
@@ -253,6 +254,7 @@ impl AudioEngine {
             ..Default::default()
         };
         let clock = AudioClock::new(DEFAULT_SAMPLE_RATE);
+        let device_monitor = DeviceMonitor::new(config.output_backend, Duration::from_millis(1500));
 
         Ok(Self {
             output_buffer,
@@ -274,6 +276,7 @@ impl AudioEngine {
             stream_ended: false,
             event_tx,
             event_rx,
+            device_monitor,
 
             telemetry: EngineTelemetry::default(),
             dsd: DsdTransportState::default(),
@@ -738,7 +741,7 @@ impl AudioEngine {
     }
 
     pub fn load_track(&mut self, path: &std::path::Path) -> Result<DecodeInfo, EngineError> {
-        let mut decoder = match self.scratch.cached_incoming_decoder.take() {
+        let decoder = match self.scratch.cached_incoming_decoder.take() {
             Some(d) if self.loudness_scan.next_track_path.as_deref() == Some(path) => {
                 info!("Using cached decoder for load_track");
                 d
@@ -746,6 +749,26 @@ impl AudioEngine {
             _ => Decoder::open(path)?,
         };
 
+        self.load_opened_decoder(AudioSource::File(path.to_path_buf()), decoder, Some(path))
+    }
+
+    /// Load in-memory byte buffer for decoding.
+    pub fn load_memory(&mut self, data: Vec<u8>, extension_hint: Option<&str>) -> Result<DecodeInfo, EngineError> {
+        let decoder = Decoder::open_memory(data.clone(), extension_hint)?;
+        let source = AudioSource::Memory {
+            data,
+            extension_hint: extension_hint.map(String::from),
+        };
+        self.load_opened_decoder(source, decoder, None)
+    }
+
+    /// Configure and load an opened decoder into the engine pipeline.
+    pub(crate) fn load_opened_decoder(
+        &mut self,
+        source: AudioSource,
+        mut decoder: Decoder,
+        loudness_path: Option<&std::path::Path>,
+    ) -> Result<DecodeInfo, EngineError> {
         // A native DSD output is a different transport, not merely a sample
         // rate. Leave it explicitly before loading any track whose requested
         // policy is PCM/DoP (including a DSD→PCM transition); otherwise a raw
@@ -774,20 +797,7 @@ impl AudioEngine {
         }
 
         // ── DSD output mode selection (§7) ─────────────────────────────────
-        // Three modes are configured via `EngineConfig::dsd_output`:
-        //
-        //   PcmConvert (default): DSD→PCM decimation at 1/32 the bit rate.
-        //   DoP: DSD-over-PCM — raw DSD packed into 24-bit I32 frames for a
-        //        DoP-capable DAC. Requires exclusive I32 output at bit_rate/16.
-        //   NativeDsd: direct hardware DSD transport. Negotiated with the
-        //        output backend (native_dsd_capabilities + set_native_dsd);
-        //        when the device cannot provide native DSD, the engine
-        //        downgrades explicitly — Native → DoP → PCM — recording each
-        //        step in `dsd_transport_report` (§7, §28). Never silent.
         let mut native_dsd_active = false;
-        // One authoritative transport report for BOTH DSD paths (Native and
-        // DoP): requested → actual with every downgrade step recorded in
-        // order (§7, §28). Never a silent fallback.
         let mut dsd_report = if decoder.is_dsd() {
             let requested = match self.config.dsd_output {
                 config::DsdOutput::NativeDsd => crate::decode::DsdTransport::Native,
@@ -808,8 +818,6 @@ impl AudioEngine {
                     dsd_report.wire_format = Some(format);
                     self.dsd.dsd_wire_format = Some(format);
                     self.dsd.dsd_byte_buffer = Some(buffer);
-                    // The backend negotiated the DSD frame rate (e.g. 352.8
-                    // kHz for DSD64 over DSD_U8), not the 2.8224 MHz bit rate.
                     let bit_rate = dsd_report.bit_rate.unwrap_or(2_822_400);
                     self.output_sample_rate = format.frame_rate_hz(bit_rate);
                     info!(
@@ -819,8 +827,6 @@ impl AudioEngine {
                     );
                 }
                 Err(e) => {
-                    // Explicit downgrade: record the step, then fall through
-                    // to the DoP path below.
                     dsd_report.actual = crate::decode::DsdTransport::Dop;
                     dsd_report.step(format!("native DSD unavailable ({e})"));
                     dsd_report.step("fallback: DoP");
@@ -828,8 +834,6 @@ impl AudioEngine {
                 }
             }
         }
-        // DoP is the fallback for NativeDsd (above) and the direct request
-        // for DsdOutput::DoP. PcmConvert never enters DoP mode.
         if !native_dsd_active
             && decoder.is_dsd()
             && self.config.dsd_output != config::DsdOutput::PcmConvert
@@ -845,12 +849,6 @@ impl AudioEngine {
         if let Some(dr) = dop_rate {
             if let Some(ref mut output) = self.audio_output {
                 let out_info = output.output_info();
-                // DoP needs *verified* direct access to the DAC, not the
-                // inferred `is_exclusive` heuristic: a shared mixer would
-                // resample or reformat the 24-bit frames. `is_bit_perfect`
-                // requires both a direct access mode and OS-level
-                // verification (e.g. ALSA hw:, verified WASAPI exclusive,
-                // or the ASIO protocol).
                 let exclusive = out_info.access_state.is_bit_perfect();
                 if exclusive {
                     match output.reconfigure_sample_format(dr, cpal::SampleFormat::I32) {
@@ -884,10 +882,6 @@ impl AudioEngine {
                         }
                     }
                 } else {
-                    // DoP needs direct access to the DAC: a shared mixer
-                    // (PulseAudio/PipeWire/WASAPI shared) would resample or
-                    // reformat the 24-bit frames. Point the user at an
-                    // exclusive backend instead of just failing silently.
                     let reason = dop_exclusive_reason(&out_info, self.config.output_backend);
                     warn!(
                         "DoP requires an exclusive output — {reason}. Using DSD→PCM for this track."
@@ -898,8 +892,6 @@ impl AudioEngine {
                 warn!("DoP requested but no output device is active; using DSD→PCM");
                 dsd_report.step("DoP unavailable: no output device is active");
             }
-            // DoP failed to engage → the report must end at PCM conversion,
-            // never claim a transport that is not actually in use.
             if !dop_active && dsd_report.actual != crate::decode::DsdTransport::PcmConversion {
                 dsd_report.actual = crate::decode::DsdTransport::PcmConversion;
                 dsd_report.step("fallback: DSD→PCM conversion");
@@ -909,8 +901,6 @@ impl AudioEngine {
             && dsd_report.requested != crate::decode::DsdTransport::PcmConversion
             && dsd_report.actual != crate::decode::DsdTransport::PcmConversion
         {
-            // DoP could not even be entered (e.g. a multichannel DSD source
-            // refuses DoP's stereo-only mode): record the downgrade.
             dsd_report.actual = crate::decode::DsdTransport::PcmConversion;
             dsd_report.step("fallback: DSD→PCM conversion");
         }
@@ -923,16 +913,12 @@ impl AudioEngine {
         self.dsd.dop_active = dop_active;
         self.dsd.dop_rate = if dop_active { dop_rate.unwrap_or(0) } else { 0 };
         self.dsd.native_dsd_active = native_dsd_active;
-        // Publish the authoritative transport report (§7): requested vs
-        // actual plus every recorded downgrade step.
         self.dsd.dsd_transport_report = dsd_report;
         if dop_active || native_dsd_active {
             self.pipeline.set_dop_bypass(true);
             if let Some(ref output) = self.audio_output {
                 output.set_dither_enabled(false);
             }
-            // The DSD bitstream is always played at 1.0×; resampling or speed
-            // changes would corrupt the DoP framing or the native bitstream.
             self.speed = 1.0;
             if dop_active {
                 info!(
@@ -948,15 +934,10 @@ impl AudioEngine {
         }
 
         let info = decoder.info().clone();
-
         self.clock.reset_track(info.sample_rate);
         self.duration_secs = info.duration_secs;
         self.recovery.consecutive_decode_errors = 0;
-        self.scratch.crossfade_triggered = false;
 
-        // Dynamically reconfigure output sample rate if policy requests it
-        // (DoP already pinned the rate to bit_rate/16 above; native DSD
-        // already negotiated the DSD frame rate with the backend).
         if !dop_active && !native_dsd_active {
             if let Some(ref mut output) = self.audio_output {
                 let caps = output.capabilities();
@@ -994,11 +975,6 @@ impl AudioEngine {
             && (self.clock.source_sample_rate != self.output_sample_rate
                 || (self.speed - 1.0).abs() > 0.001)
         {
-            // A required rate/speed conversion cannot be performed without a
-            // resampler. Continuing would silently play the track at the
-            // wrong rate/pitch (the decode path treats `resampler == None` as
-            // passthrough), so the load is aborted instead — "fatal" must
-            // actually stop playback, not just set a flag.
             log::error!(
                 "Critical: Resampler required ({} Hz -> {} Hz) but could not be initialized!",
                 self.clock.source_sample_rate,
@@ -1037,34 +1013,37 @@ impl AudioEngine {
         self.scratch.rs_out_buf.clear();
         self.scratch.rs_in_buf.clear();
         self.pipeline.reset();
-        // Re-apply the current volume after reset, which resets GainProcessor to 1.0.
-        // Without this, each new track plays at full volume until the next SetVolume command.
+
         let current_volume = self.playback_info.load().volume;
         self.pipeline.set_volume(current_volume);
         self.pipeline.volume.snap();
-        let mut loudness_meta = crate::decode::extract_loudness_metadata(path);
-        // Reuse a previously scanned result when the file is unchanged, so
-        // tracks are not re-decoded on every load.
-        if loudness_meta.ebu_r128_loudness.is_none() {
-            if let Some(cached) = crate::decode::loudness_cache::lookup(path) {
-                loudness_meta.ebu_r128_loudness = cached.ebu_r128_loudness;
-                loudness_meta.ebu_r128_peak = cached.ebu_r128_peak_dbtp;
-                info!("Loaded cached loudness metadata for {}", path.display());
+
+        let loudness_meta = if let Some(path) = loudness_path {
+            let mut meta = crate::decode::extract_loudness_metadata(path);
+            if meta.ebu_r128_loudness.is_none() {
+                if let Some(cached) = crate::decode::loudness_cache::lookup(path) {
+                    meta.ebu_r128_loudness = cached.ebu_r128_loudness;
+                    meta.ebu_r128_peak = cached.ebu_r128_peak_dbtp;
+                    info!("Loaded cached loudness metadata for {}", path.display());
+                }
             }
-        }
-        self.loudness_scan.current_track_path = Some(path.to_path_buf());
+            meta
+        } else {
+            crate::dsp::LoudnessMetadata::default()
+        };
+
+        self.loudness_scan.current_track_path = loudness_path.map(|p| p.to_path_buf());
         self.loudness_scan.pending_loudness_metadata = Some(loudness_meta);
         self.pipeline
             .apply_loudness_metadata_outgoing(Some(loudness_meta));
-        // If the tags carry no EBU R128 loudness (and no cached result), kick
-        // off a background scan so EbuR128 normalization has data to consume
-        // once it completes.
-        self.start_loudness_scan();
-        // Start the mixer in PlayingCurrent state for the new track.
+        if loudness_path.is_some() {
+            self.start_loudness_scan();
+        }
+
         self.pipeline.mixer_mut().start_playing();
 
         self.stream_ended = false;
-        self.current_source = Some(AudioSource::File(path.to_path_buf()));
+        self.current_source = Some(source.clone());
         let current_source = self.current_source.clone();
         let speed = self.speed;
         let dop_active = self.dsd.dop_active;
@@ -1081,7 +1060,6 @@ impl AudioEngine {
                 native_dsd_active,
                 dsd_transport,
                 dsd_transport_report: dsd_transport_report.clone(),
-                // Preserve fields that survive a track load
                 volume: old.volume,
                 state: if old.state == PlaybackState::Stopped {
                     PlaybackState::Paused
@@ -1094,7 +1072,7 @@ impl AudioEngine {
         });
 
         self.emit_event(EngineEvent::SourceOpened {
-            source: AudioSource::File(path.to_path_buf()),
+            source,
             sample_rate: info.sample_rate,
             channels: info.channels,
             duration_secs: info.duration_secs,
@@ -1105,7 +1083,7 @@ impl AudioEngine {
         });
 
         info!(
-            "Loaded track: {} Hz, {} ch, {:.1}s",
+            "Loaded source: {} Hz, {} ch, {:.1}s",
             info.sample_rate, info.channels, info.duration_secs
         );
         Ok(info)
@@ -1114,12 +1092,7 @@ impl AudioEngine {
     /// Load an explicit [`AudioSource`] (file, URI, or memory) for playback.
     pub fn load_source(&mut self, source: &AudioSource) -> Result<DecodeInfo, EngineError> {
         match source {
-            AudioSource::File(path) => {
-                let info = self.load_track(path)?;
-                self.current_source = Some(source.clone());
-                self.write_playback_info(|pb| pb.current_source = Some(source.clone()));
-                Ok(info)
-            }
+            AudioSource::File(path) => self.load_track(path),
             AudioSource::Uri(uri) => {
                 let path_buf = if let Some(stripped) = uri.strip_prefix("file://") {
                     helpers::percent_decode(stripped)
@@ -1130,14 +1103,11 @@ impl AudioEngine {
                 } else {
                     std::path::PathBuf::from(uri)
                 };
-                let info = self.load_track(&path_buf)?;
-                self.current_source = Some(source.clone());
-                self.write_playback_info(|pb| pb.current_source = Some(source.clone()));
-                Ok(info)
+                self.load_track(&path_buf)
             }
-            AudioSource::Memory { .. } => Err(EngineError::InvalidSource(
-                "In-memory audio stream decoding not yet supported in current decoder dispatch".into(),
-            )),
+            AudioSource::Memory { data, extension_hint } => {
+                self.load_memory(data.clone(), extension_hint.as_deref())
+            }
         }
     }
 
@@ -1157,9 +1127,14 @@ impl AudioEngine {
                 };
                 self.prepare_next_track(&path_buf)
             }
-            AudioSource::Memory { .. } => Err(EngineError::InvalidSource(
-                "In-memory audio stream decoding not yet supported in current decoder dispatch".into(),
-            )),
+            AudioSource::Memory { data, extension_hint } => {
+                let decoder = Decoder::open_memory(data.clone(), extension_hint.as_deref())?;
+                let info = decoder.info().clone();
+                self.scratch.cached_incoming_decoder = Some(decoder);
+                self.loudness_scan.pending_incoming_loudness_metadata =
+                    Some(crate::dsp::LoudnessMetadata::default());
+                Ok(info)
+            }
         }
     }
 
@@ -1422,6 +1397,7 @@ impl AudioEngine {
         self.telemetry.tick_start = Some(now);
 
         self.process_commands();
+        self.poll_device_monitor();
 
         // Fold externally-observed hardware volume changes (OS volume
         // slider, hardware knob, programmatic sets from other processes)
@@ -1822,6 +1798,58 @@ impl AudioEngine {
                 incoming_resampler, ..
             }) => incoming_resampler.as_ref().is_none_or(|r| r.is_disabled()),
             None => false,
+        }
+    }
+
+    /// List currently available audio output endpoint names.
+    pub fn available_devices(&self) -> Vec<String> {
+        self.device_monitor.current_devices().to_vec()
+    }
+
+    /// Periodically poll the audio subsystem for endpoint hotplug events.
+    pub(crate) fn poll_device_monitor(&mut self) {
+        if let Some(delta) = self.device_monitor.poll(false) {
+            for dev in &delta.connected {
+                info!("Audio output device connected: {}", dev);
+                self.emit_event(EngineEvent::DeviceConnected {
+                    device: dev.clone(),
+                });
+            }
+            for dev in &delta.disconnected {
+                warn!("Audio output device disconnected: {}", dev);
+                self.emit_event(EngineEvent::DeviceDisconnected {
+                    device: dev.clone(),
+                });
+            }
+            if delta.changed {
+                self.emit_event(EngineEvent::DeviceListChanged {
+                    devices: delta.current_devices.clone(),
+                });
+
+                // Auto-recovery if the currently selected output device was disconnected
+                if let Some(ref current_dev) = self.config.output_device {
+                    if delta.disconnected.iter().any(|d| d == current_dev) {
+                        warn!(
+                            "Configured output device '{}' was disconnected; attempting stream auto-recovery with fallback",
+                            current_dev
+                        );
+                        if let Err(e) = self.recover_output_stream() {
+                            error!(
+                                "Stream auto-recovery after device disconnection failed: {}",
+                                e
+                            );
+                        }
+                    } else if delta.connected.iter().any(|d| d == current_dev) {
+                        info!(
+                            "Configured output device '{}' reconnected; restoring stream to preferred device",
+                            current_dev
+                        );
+                        if let Err(e) = self.recover_output_stream() {
+                            error!("Stream recovery after device reconnection failed: {}", e);
+                        }
+                    }
+                }
+            }
         }
     }
 
