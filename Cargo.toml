@@ -3,7 +3,7 @@ members = [".", "crates/config"]
 
 [package]
 name = "engine"
-version = "1.0.0"
+version = "2.1.0"
 edition = "2021"
 
 [features]
