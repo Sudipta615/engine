@@ -90,7 +90,9 @@ src/
 │   ├── float.rs              # AudioFloat numeric helpers
 │   └── graph/                # Experimental node-based DSP graph (DspNode trait);
 │                             #   not the active hot path — split by concern into
-│                             #   construction / lifecycle / process / limiter / report
+│                             #   construction / access / controls / lifecycle /
+│                             #   process / limiter / report / plan (compiled
+│                             #   execution plans over a node arena)
 │
 ├── output/                   # ── Output backends ──
 │   ├── mod.rs                # Module wiring + re-exports

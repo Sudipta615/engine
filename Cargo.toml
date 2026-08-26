@@ -3,7 +3,7 @@ members = [".", "crates/config"]
 
 [package]
 name = "engine"
-version = "3.0.0"
+version = "3.1.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"
@@ -229,6 +229,10 @@ harness = false
 name = "pipeline_bench"
 harness = false
 
+[[bench]]
+name = "graph_plan_bench"
+harness = false
+
 [[test]]
 name = "eq_frequency_response"
 path = "tests/fidelity/eq_frequency_response.rs"
@@ -328,3 +332,7 @@ path = "tests/fidelity/golden_corpus_expansion.rs"
 [[test]]
 name = "multichannel_graph"
 path = "tests/fidelity/multichannel_graph.rs"
+
+[[test]]
+name = "graph_pipeline_equivalence"
+path = "tests/fidelity/graph_pipeline_equivalence.rs"

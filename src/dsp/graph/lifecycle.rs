@@ -10,57 +10,62 @@ impl DspGraph {
             return;
         }
         self.sample_rate = sample_rate;
-        self.out_preamp.prepare(sample_rate, MAX_CHANNELS);
-        self.in_preamp.prepare(sample_rate, MAX_CHANNELS);
-        self.out_loudness.prepare(sample_rate, MAX_CHANNELS);
-        self.in_loudness.prepare(sample_rate, MAX_CHANNELS);
-        self.eq.prepare(sample_rate, 2);
-        self.dynamics.prepare(sample_rate, 2);
-        self.convolution.prepare(sample_rate, 2);
-        self.crossfeed.prepare(sample_rate, 2);
-        self.stereo.prepare(sample_rate, 2);
-        self.timestretch.prepare(sample_rate, 2);
-        self.volume.prepare(sample_rate, MAX_CHANNELS);
-        self.seek_fade.prepare(sample_rate, MAX_CHANNELS);
-        self.routing.prepare(sample_rate, MAX_CHANNELS);
-        self.limiter.prepare(sample_rate, MAX_CHANNELS);
-        self.dither.prepare(sample_rate, MAX_CHANNELS);
+        self.out_preamp_mut().prepare(sample_rate, MAX_CHANNELS);
+        self.in_preamp_mut().prepare(sample_rate, MAX_CHANNELS);
+        self.out_loudness_mut().prepare(sample_rate, MAX_CHANNELS);
+        self.in_loudness_mut().prepare(sample_rate, MAX_CHANNELS);
+        self.eq_mut().prepare(sample_rate, 2);
+        self.dynamics_mut().prepare(sample_rate, 2);
+        self.convolution_mut().prepare(sample_rate, 2);
+        self.crossfeed_mut().prepare(sample_rate, 2);
+        self.stereo_mut().prepare(sample_rate, 2);
+        self.timestretch_mut().prepare(sample_rate, 2);
+        self.volume_mut().prepare(sample_rate, MAX_CHANNELS);
+        self.seek_fade_mut().prepare(sample_rate, MAX_CHANNELS);
+        self.routing_mut().prepare(sample_rate, MAX_CHANNELS);
+        self.limiter_mut().prepare(sample_rate, MAX_CHANNELS);
+        self.dither_mut().prepare(sample_rate, MAX_CHANNELS);
     }
 
     /// Reset internal state across all nodes.
+    ///
+    /// Matches `DspPipeline::reset` semantics: volume is USER state, not
+    /// filter state, so it is intentionally NOT reset here (a track change
+    /// must not snap the listener's volume to unity). The graph's volume
+    /// processor previously reset with the filters; the equivalence harness
+    /// (`tests/fidelity/graph_pipeline_equivalence.rs`) pins this alignment.
     pub fn reset(&mut self) {
-        self.out_preamp.reset();
-        self.in_preamp.reset();
-        self.out_loudness.reset();
-        self.in_loudness.reset();
-        self.eq.reset();
-        self.dynamics.reset();
-        self.convolution.reset();
-        self.balance.reset();
-        self.crossfeed.reset();
-        self.stereo.reset();
-        self.timestretch.reset();
-        self.volume.reset();
-        self.seek_fade.reset();
-        self.routing.reset();
-        self.limiter.reset();
-        self.dither.reset();
+        self.out_preamp_mut().reset();
+        self.in_preamp_mut().reset();
+        self.out_loudness_mut().reset();
+        self.in_loudness_mut().reset();
+        self.eq_mut().reset();
+        self.dynamics_mut().reset();
+        self.convolution_mut().reset();
+        self.balance_mut().reset();
+        self.crossfeed_mut().reset();
+        self.stereo_mut().reset();
+        self.timestretch_mut().reset();
+        self.seek_fade_mut().reset();
+        self.routing_mut().reset();
+        self.limiter_mut().reset();
+        self.dither_mut().reset();
     }
 
     /// Reset filter state only without touching volume ramps.
     pub fn reset_filters_only(&mut self) {
-        self.out_preamp.reset();
-        self.in_preamp.reset();
-        self.out_loudness.reset();
-        self.in_loudness.reset();
-        self.eq.reset();
-        self.dynamics.reset();
-        self.convolution.reset();
-        self.crossfeed.reset();
-        self.stereo.reset();
-        self.timestretch.reset();
-        self.routing.reset();
-        self.limiter.reset();
+        self.out_preamp_mut().reset();
+        self.in_preamp_mut().reset();
+        self.out_loudness_mut().reset();
+        self.in_loudness_mut().reset();
+        self.eq_mut().reset();
+        self.dynamics_mut().reset();
+        self.convolution_mut().reset();
+        self.crossfeed_mut().reset();
+        self.stereo_mut().reset();
+        self.timestretch_mut().reset();
+        self.routing_mut().reset();
+        self.limiter_mut().reset();
     }
 
     pub fn set_precision_mode(&mut self, mode: PrecisionMode) {
@@ -74,9 +79,9 @@ impl DspGraph {
     pub fn set_bit_perfect(&mut self, enabled: bool) {
         self.bit_perfect = enabled;
         if enabled {
-            self.volume.processor.set_gain(1.0);
-            self.volume.processor.snap();
-            self.seek_fade.fade.reset();
+            self.volume_mut().processor.set_gain(1.0);
+            self.volume_mut().processor.snap();
+            self.seek_fade_mut().fade.reset();
         }
     }
 
@@ -94,7 +99,7 @@ impl DspGraph {
 
     pub fn set_multichannel_layout(&mut self, layout: &ChannelLayout) {
         self.multichannel_layout = layout.clone();
-        self.routing.trimmer.set_lfe_channels(
+        self.routing_mut().trimmer.set_lfe_channels(
             layout
                 .channel_ids()
                 .iter()
@@ -110,8 +115,9 @@ impl DspGraph {
     }
 
     pub fn set_speed(&mut self, speed: f32) {
-        self.speed = speed.clamp(0.25, 4.0);
-        self.timestretch.stretcher.set_speed(self.speed);
+        let speed = speed.clamp(0.25, 4.0);
+        self.speed = speed;
+        self.timestretch_mut().stretcher.set_speed(speed);
     }
 
     pub fn speed(&self) -> f32 {
