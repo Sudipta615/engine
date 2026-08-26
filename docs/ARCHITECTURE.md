@@ -3,7 +3,9 @@
 This document describes the overall structure of the engine. For the sample
 flow through the DSP chain, see [`SIGNAL_FLOW.md`](SIGNAL_FLOW.md). For
 runnable embedding examples (Rust `EngineHandle` + C FFI), see
-[`EMBEDDING.md`](EMBEDDING.md).
+[`EMBEDDING.md`](EMBEDDING.md). For the phased evolution from the
+single-stream player to the multi-stream graph runtime, see
+[`ROADMAP.md`](ROADMAP.md).
 
 ## Module map
 

@@ -17,7 +17,7 @@
 
 use super::swap::NodeId;
 use super::*;
-use crate::buffer::PcmRingBuffer;
+use crate::buffer::{PcmRingBuffer, MAX_CHANNELS};
 use crate::dsp::{
     crossfade::MixerState,
     equalizer::EqBandParams,
@@ -60,6 +60,11 @@ pub(crate) enum NodeCmd {
     MixTransition(MixTransitionCmd),
     /// Program-gated ducking config (Phase 4 S4); `None` disables.
     SetDuck(Option<DuckState>),
+    /// Aux bus config (Phase 5 S2/S3): enabled + return gain.
+    SetAux {
+        enabled: bool,
+        return_gain: f32,
+    },
     /// Runtime crossfade config (Phase 3 S3): curve / enabled / duration
     /// mirror the pipeline's `TrackMixer` setters the engine calls on
     /// `handle_set_crossfade_config`.
@@ -170,6 +175,20 @@ pub(crate) struct ControlBus {
     /// per block, control-read for telemetry.
     user_slot_peak_db: Vec<AtomicU32>,
     user_slot_rms_db: Vec<AtomicU32>,
+    /// Per-slot send levels (Phase 5 S2): packed `master << 32 | aux` bit
+    /// patterns, mirrored like gain/pan so sends survive a generation swap.
+    user_slot_send: Vec<AtomicU64>,
+    /// Per-slot per-channel trim gains (Phase 5 S1): one `AtomicU32` (bit
+    /// pattern) per channel, plus a packed invert bitmask.
+    user_slot_trim_gain: Vec<[AtomicU32; MAX_CHANNELS]>,
+    user_slot_trim_invert: Vec<AtomicU32>,
+    /// Aux bus user state (Phase 5 S2/S3): enabled flag + return gain,
+    /// mirrored like the per-slot state.
+    user_aux_enabled: AtomicU8,
+    user_aux_return_gain: AtomicU32,
+    /// Aux metering (Phase 5 S3): peak / RMS dBFS of the accumulated sends.
+    user_aux_peak_db: AtomicU32,
+    user_aux_rms_db: AtomicU32,
 }
 
 impl ControlBus {
@@ -205,6 +224,19 @@ impl ControlBus {
             user_slot_rms_db: (0..MAX_MIX_SLOTS)
                 .map(|_| AtomicU32::new((-96.0f32).to_bits()))
                 .collect(),
+            user_slot_send: (0..MAX_MIX_SLOTS)
+                .map(|_| {
+                    AtomicU64::new(((1.0f32.to_bits() as u64) << 32) | 0.0f32.to_bits() as u64)
+                })
+                .collect(),
+            user_slot_trim_gain: (0..MAX_MIX_SLOTS)
+                .map(|_| std::array::from_fn(|_| AtomicU32::new(1.0f32.to_bits())))
+                .collect(),
+            user_slot_trim_invert: (0..MAX_MIX_SLOTS).map(|_| AtomicU32::new(0)).collect(),
+            user_aux_enabled: AtomicU8::new(0),
+            user_aux_return_gain: AtomicU32::new(1.0f32.to_bits()),
+            user_aux_peak_db: AtomicU32::new((-96.0f32).to_bits()),
+            user_aux_rms_db: AtomicU32::new((-96.0f32).to_bits()),
         }
     }
 
@@ -269,31 +301,75 @@ impl ControlBus {
     }
 
     /// Mirror one slot's user state onto the sticky per-slot atomics
-    /// (audio side, at drain). Out-of-range slots are ignored.
-    pub(super) fn set_slot_user_state(
-        &self,
-        slot: usize,
-        gain: f32,
-        balance: f32,
-        pan: f32,
-        mute: bool,
-        active: bool,
-    ) {
+    /// (audio side, at drain). The post-apply `MixInput` is the source of
+    /// truth (dB/ramped commands land as targets); out-of-range slots are
+    /// ignored.
+    pub(super) fn set_slot_user_state(&self, slot: usize, input: &super::nodes::MixInput) {
         if let Some(g) = self.user_slot_gain.get(slot) {
-            g.store(gain.to_bits(), Ordering::Relaxed);
+            g.store(input.gain.target_gain.to_bits(), Ordering::Relaxed);
         }
         if let Some(b) = self.user_slot_balance.get(slot) {
-            b.store(balance.to_bits(), Ordering::Relaxed);
+            b.store(input.balance.to_bits(), Ordering::Relaxed);
         }
         if let Some(p) = self.user_slot_pan.get(slot) {
-            p.store(pan.to_bits(), Ordering::Relaxed);
+            p.store(input.pan.to_bits(), Ordering::Relaxed);
         }
         if let Some(m) = self.user_slot_mute.get(slot) {
-            m.store(mute as u8, Ordering::Relaxed);
+            m.store(input.mute as u8, Ordering::Relaxed);
         }
         if let Some(a) = self.user_slot_active.get(slot) {
-            a.store(active as u8, Ordering::Relaxed);
+            a.store(input.active as u8, Ordering::Relaxed);
         }
+        if let Some(s) = self.user_slot_send.get(slot) {
+            let packed = ((input.send.master_gain.clamp(0.0, 1.0).to_bits() as u64) << 32)
+                | input.send.aux_gain.clamp(0.0, 1.0).to_bits() as u64;
+            s.store(packed, Ordering::Relaxed);
+        }
+        if let Some(gains) = self.user_slot_trim_gain.get(slot) {
+            let mut invert_mask = 0u32;
+            for (c, g) in gains.iter().enumerate().take(MAX_CHANNELS) {
+                let gain = input.trim.gains.get(c).copied().unwrap_or(1.0);
+                g.store(gain.to_bits(), Ordering::Relaxed);
+                if input.trim.invert.get(c).copied().unwrap_or(false) {
+                    invert_mask |= 1 << c;
+                }
+            }
+            if let Some(iv) = self.user_slot_trim_invert.get(slot) {
+                iv.store(invert_mask, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Mirror the aux bus state (Phase 5 S2/S3), audio side at drain.
+    pub(super) fn set_aux_user_state(&self, enabled: bool, return_gain: f32) {
+        self.user_aux_enabled
+            .store(enabled as u8, Ordering::Relaxed);
+        self.user_aux_return_gain
+            .store(return_gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+
+    /// Control-side read of the mirrored aux state.
+    pub(super) fn user_aux(&self) -> (bool, f32) {
+        (
+            self.user_aux_enabled.load(Ordering::Relaxed) != 0,
+            f32::from_bits(self.user_aux_return_gain.load(Ordering::Relaxed)),
+        )
+    }
+
+    /// Publish the aux meters (Phase 5 S3), audio side once per block.
+    pub(super) fn publish_aux_meters(&self, peak_db: f32, rms_db: f32) {
+        self.user_aux_peak_db
+            .store(peak_db.to_bits(), Ordering::Relaxed);
+        self.user_aux_rms_db
+            .store(rms_db.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Control-side read of the aux meters.
+    pub(super) fn aux_meters(&self) -> (f32, f32) {
+        (
+            f32::from_bits(self.user_aux_peak_db.load(Ordering::Relaxed)),
+            f32::from_bits(self.user_aux_rms_db.load(Ordering::Relaxed)),
+        )
     }
 
     /// Atomic snapshot of the current user state, for seeding a generation
@@ -305,13 +381,29 @@ impl ControlBus {
             balance: self.user_balance(),
             speed: self.user_speed(),
             volume_fade_ms: self.user_fade_ms(),
+            aux_enabled: self.user_aux_enabled.load(Ordering::Relaxed) != 0,
+            aux_return_gain: f32::from_bits(self.user_aux_return_gain.load(Ordering::Relaxed)),
             slots: (0..MAX_MIX_SLOTS)
-                .map(|i| SlotState {
-                    gain: f32::from_bits(self.user_slot_gain[i].load(Ordering::Relaxed)),
-                    balance: f32::from_bits(self.user_slot_balance[i].load(Ordering::Relaxed)),
-                    pan: f32::from_bits(self.user_slot_pan[i].load(Ordering::Relaxed)),
-                    mute: self.user_slot_mute[i].load(Ordering::Relaxed) != 0,
-                    active: self.user_slot_active[i].load(Ordering::Relaxed) != 0,
+                .map(|i| {
+                    let packed = self.user_slot_send[i].load(Ordering::Relaxed);
+                    let invert_mask = self.user_slot_trim_invert[i].load(Ordering::Relaxed);
+                    let mut trim_gains = [1.0f32; MAX_CHANNELS];
+                    let mut trim_invert = [false; MAX_CHANNELS];
+                    for (c, g) in self.user_slot_trim_gain[i].iter().enumerate() {
+                        trim_gains[c] = f32::from_bits(g.load(Ordering::Relaxed));
+                        trim_invert[c] = invert_mask & (1 << c) != 0;
+                    }
+                    SlotState {
+                        gain: f32::from_bits(self.user_slot_gain[i].load(Ordering::Relaxed)),
+                        balance: f32::from_bits(self.user_slot_balance[i].load(Ordering::Relaxed)),
+                        pan: f32::from_bits(self.user_slot_pan[i].load(Ordering::Relaxed)),
+                        mute: self.user_slot_mute[i].load(Ordering::Relaxed) != 0,
+                        active: self.user_slot_active[i].load(Ordering::Relaxed) != 0,
+                        send_master_gain: f32::from_bits((packed >> 32) as u32),
+                        send_aux_gain: f32::from_bits((packed & 0xffff_ffff) as u32),
+                        trim_gains,
+                        trim_invert,
+                    }
                 })
                 .collect(),
         }
@@ -633,6 +725,64 @@ impl GraphControlHandle {
         );
     }
 
+    /// Set one channel's trim (Phase 5 S1): gain in dB + polarity inversion.
+    /// Applied on the slot's own planes between its pre-mix chains and the
+    /// sum; all-unity = inactive = bit-exact.
+    pub fn set_slot_trim(&self, input: u8, channel: usize, gain_db: f32, invert: bool) {
+        self.enqueue(
+            node_id::MIX,
+            NodeCmd::MixInput {
+                input,
+                cmd: MixInputCmd::SetSlotTrim {
+                    channel,
+                    gain_db,
+                    invert,
+                },
+            },
+        );
+    }
+
+    /// Set the slot's send levels (Phase 5 S2): post-fader master-send and
+    /// aux-send gains in [0, 1]. The master-send scales the slot's
+    /// contribution to the master sum; the aux-send taps the post-fader
+    /// signal into the aux accumulator.
+    pub fn set_slot_send(&self, input: u8, master_gain: f32, aux_gain: f32) {
+        self.enqueue(
+            node_id::MIX,
+            NodeCmd::MixInput {
+                input,
+                cmd: MixInputCmd::SetSend {
+                    master_gain,
+                    aux_gain,
+                },
+            },
+        );
+    }
+
+    /// Configure the aux bus (Phase 5 S2/S3): `enabled` routes the aux
+    /// return into the master before the post-mix chain; `return_gain` in
+    /// [0, 1] scales the return. Disabled = bit-exact.
+    pub fn set_aux(&self, enabled: bool, return_gain: f32) {
+        self.enqueue(
+            node_id::MIX,
+            NodeCmd::SetAux {
+                enabled,
+                return_gain,
+            },
+        );
+    }
+
+    /// Control-side read of the mirrored aux state (enabled, return gain).
+    pub fn aux_state(&self) -> (bool, f32) {
+        self.bus.user_aux()
+    }
+
+    /// Control-side read of the aux meters (peak_db, rms_db), published once
+    /// per audio block (Phase 5 S3).
+    pub fn aux_meters(&self) -> (f32, f32) {
+        self.bus.aux_meters()
+    }
+
     pub fn set_input_mute(&self, input: u8, mute: bool) {
         self.enqueue(
             node_id::MIX,
@@ -848,15 +998,16 @@ impl DspGraph {
                             // Mirror the *target* gain (the user's intended
                             // setting): the ramped current value may still be
                             // mid-slew with no audio processed yet.
-                            self.bus.set_slot_user_state(
-                                input,
-                                slot.gain.target_gain,
-                                slot.balance,
-                                slot.pan,
-                                slot.mute,
-                                slot.active,
-                            );
+                            self.bus.set_slot_user_state(input, slot);
                         }
+                    }
+                }
+                // Phase 5 S3: mirror the aux bus state post-apply so a
+                // generation swap preserves enabled / return gain.
+                if let NodeCmd::SetAux { .. } = cmd {
+                    if let GraphNode::Mix(mix) = &self.active.nodes[i] {
+                        self.bus
+                            .set_aux_user_state(mix.aux.enabled, mix.aux.return_gain);
                     }
                 }
             }
@@ -891,6 +1042,13 @@ fn apply_node_cmd(node: &mut GraphNode, cmd: &NodeCmd) {
         }
         (GraphNode::Mix(n), NodeCmd::MixTransition(cmd)) => n.apply_transition(*cmd),
         (GraphNode::Mix(n), NodeCmd::SetDuck(cfg)) => n.apply_duck(*cfg),
+        (
+            GraphNode::Mix(n),
+            NodeCmd::SetAux {
+                enabled,
+                return_gain,
+            },
+        ) => n.apply_aux(*enabled, *return_gain),
         (GraphNode::Mix(n), NodeCmd::SetMixCurve(c)) => n.curve = (*c).into(),
         (GraphNode::Mix(n), NodeCmd::SetMixEnabled(e)) => n.crossfade_enabled = *e,
         (GraphNode::Mix(n), NodeCmd::SetMixDurationFrames(f)) => {
@@ -1202,6 +1360,23 @@ impl DspGraph {
 
     pub fn set_input_pan_law(&self, input: u8, law: PanLaw) {
         self.control_handle().set_input_pan_law(input, law);
+    }
+
+    /// Set one channel's trim (Phase 5 S1): gain in dB + polarity.
+    pub fn set_slot_trim(&self, input: u8, channel: usize, gain_db: f32, invert: bool) {
+        self.control_handle()
+            .set_slot_trim(input, channel, gain_db, invert);
+    }
+
+    /// Set the slot's send levels (Phase 5 S2): master-send + aux tap.
+    pub fn set_slot_send(&self, input: u8, master_gain: f32, aux_gain: f32) {
+        self.control_handle()
+            .set_slot_send(input, master_gain, aux_gain);
+    }
+
+    /// Configure the aux bus (Phase 5 S3): enabled + return gain.
+    pub fn set_aux(&self, enabled: bool, return_gain: f32) {
+        self.control_handle().set_aux(enabled, return_gain);
     }
 
     pub fn set_input_mute(&self, input: u8, mute: bool) {

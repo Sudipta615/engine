@@ -24,6 +24,7 @@
 //! multichannel bus mixing is Phase 4 S2.
 
 pub mod envelope;
+pub mod sends;
 pub mod sum;
 
 use crate::buffer::{MAX_AUDIO_BLOCK_FRAMES, MAX_CHANNELS};
@@ -36,6 +37,7 @@ use crate::dsp::{
 };
 
 use super::{GainNode, LoudnessNode};
+use sends::AuxBus;
 
 /// Upper bound on the number of mix-bus slots one generation can carry.
 /// Kept modest so the control bus's per-slot sticky atomics and the arena's
@@ -68,6 +70,12 @@ pub struct MixInput {
     /// breakpoints + audio-side cursor. `None` = no track, which keeps the
     /// sum bit-exact.
     pub(crate) automation: Option<SlotAutomation>,
+    /// Per-channel trim (Phase 5 S1): per-channel gain / polarity applied on
+    /// the slot's own planes after the pre-mix chains. All-unity = inactive
+    /// = bit-exact.
+    pub(crate) trim: PerChannelTrim,
+    /// Send levels (Phase 5 S2): master-send + post-fader aux tap.
+    pub(crate) send: SlotSend,
     /// Mute: the input contributes silence.
     pub mute: bool,
     /// Detached slot: the input contributes nothing and its chains do not
@@ -98,9 +106,11 @@ impl MixInput {
             pan: 0.0,
             pan_law: PanLaw::Linear,
             meters: SlotMeters::default(),
+            automation: None,
+            trim: PerChannelTrim::new(),
+            send: SlotSend::new(),
             mute: false,
             active: true,
-            automation: None,
             channels: 2,
             planes: (0..MAX_CHANNELS)
                 .map(|_| vec![0.0; MAX_AUDIO_BLOCK_FRAMES])
@@ -120,6 +130,11 @@ impl MixInput {
         if auto.count == 0 {
             return None;
         }
+        // A Send track shapes the aux tap, not the front pair — return
+        // without advancing the cursor (the send sampler owns it).
+        if auto.target == AutomationTarget::Send {
+            return None;
+        }
         let v = auto.value_at(absolute);
         match auto.target {
             AutomationTarget::Gain => {
@@ -131,6 +146,53 @@ impl MixInput {
                 let (bl, br) = balance_gains(self.balance);
                 let (pl, pr) = pan_gains(v, self.pan_law);
                 Some((bl * pl, br * pr))
+            }
+            AutomationTarget::Send => unreachable!(),
+        }
+    }
+
+    /// Per-frame aux-send multiplier for a `Send` automation track, or
+    /// `None` when the slot carries no Send track. Only one of
+    /// [`Self::full_front_gains`] / this sampler advances the cursor.
+    fn automation_send_value(&mut self, absolute: usize) -> Option<f32> {
+        let auto = self.automation.as_mut()?;
+        if auto.count == 0 || auto.target != AutomationTarget::Send {
+            return None;
+        }
+        Some(auto.value_at(absolute))
+    }
+
+    /// Apply this slot's per-channel trim (Phase 5 S1) to the master planes
+    /// (slot 0 processes the caller's planes in place). Skipped when unity.
+    fn apply_trim(&self, planes: &mut [&mut [f32]], channels: usize, frames: usize) {
+        if !self.trim.is_active() {
+            return;
+        }
+        let ch = channels.min(planes.len()).min(MAX_CHANNELS);
+        for (c, plane) in planes.iter_mut().take(ch).enumerate() {
+            let g = self.trim.gains[c];
+            if g != 1.0 || self.trim.invert[c] {
+                let sign = if self.trim.invert[c] { -g } else { g };
+                for v in plane[..frames].iter_mut() {
+                    *v *= sign;
+                }
+            }
+        }
+    }
+
+    /// f64 twin of [`Self::apply_trim`]: gains are f32, cast at the multiply.
+    fn apply_trim_f64(&self, planes: &mut [&mut [f64]], channels: usize, frames: usize) {
+        if !self.trim.is_active() {
+            return;
+        }
+        let ch = channels.min(planes.len()).min(MAX_CHANNELS);
+        for (c, plane) in planes.iter_mut().take(ch).enumerate() {
+            let g = self.trim.gains[c] as f64;
+            if g != 1.0 || self.trim.invert[c] {
+                let sign = if self.trim.invert[c] { -g } else { g };
+                for v in plane[..frames].iter_mut() {
+                    *v *= sign;
+                }
             }
         }
     }
@@ -152,6 +214,17 @@ pub enum MixInputCmd {
     SetPan(f32),
     /// Set the per-input pan law (Phase 4 S3).
     SetPanLaw(PanLaw),
+    /// Set one channel's trim (Phase 5 S1): gain in dB + polarity.
+    SetSlotTrim {
+        channel: usize,
+        gain_db: f32,
+        invert: bool,
+    },
+    /// Set the slot's send levels (Phase 5 S2): master-send + aux tap.
+    SetSend {
+        master_gain: f32,
+        aux_gain: f32,
+    },
     /// Replace the slot's automation track (Phase 4 S5). Fixed-array points
     /// keep this `Copy`; a track with `count == 0` is treated as cleared.
     SetAutomation {
@@ -254,7 +327,90 @@ pub enum AutomationTarget {
     /// is active; the static balance still shapes the pair).
     #[default]
     Pan,
+    /// Per-frame aux-send multiplier (Phase 5 S2): modulates the slot's
+    /// post-fader tap into the aux bus without touching the front pair.
+    Send,
 }
+
+/// Per-slot per-channel trim (Phase 5 S1): linear gain + polarity per
+/// channel on the slot's own planes, applied after the pre-mix chains and
+/// before the sum. All-unity = inactive = bit-exact (the pass is skipped).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PerChannelTrim {
+    pub(crate) gains: [f32; MAX_CHANNELS],
+    pub(crate) invert: [bool; MAX_CHANNELS],
+}
+
+impl PerChannelTrim {
+    fn new() -> Self {
+        Self {
+            gains: [1.0; MAX_CHANNELS],
+            invert: [false; MAX_CHANNELS],
+        }
+    }
+
+    /// Whether any channel deviates from unity (the pass can be skipped).
+    fn is_active(&self) -> bool {
+        self.gains.iter().any(|&g| g != 1.0) || self.invert.iter().any(|&b| b)
+    }
+
+    /// Apply this trim to its slot's channel-major plane views (the
+    /// secondary pre-mix path, Phase 5 S1). A `PerChannelTrim` method so the
+    /// caller only borrows the trim field while the views hold the planes.
+    /// Skipped when unity.
+    fn apply_views(&self, views: &mut [&mut [f32]], channels: usize, frames: usize) {
+        if !self.is_active() {
+            return;
+        }
+        let ch = channels.min(views.len()).min(MAX_CHANNELS);
+        for (c, plane) in views.iter_mut().take(ch).enumerate() {
+            let g = self.gains[c];
+            if g != 1.0 || self.invert[c] {
+                let sign = if self.invert[c] { -g } else { g };
+                for v in plane[..frames].iter_mut() {
+                    *v *= sign;
+                }
+            }
+        }
+    }
+
+    /// Set one channel's gain (dB, clamped) and polarity.
+    fn set_channel(&mut self, channel: usize, gain_db: f32, invert: bool) {
+        if channel >= MAX_CHANNELS {
+            return;
+        }
+        let linear = if gain_db.is_finite() {
+            10.0_f32.powf(gain_db.clamp(-60.0, 24.0) / 20.0)
+        } else {
+            1.0
+        };
+        self.gains[channel] = linear;
+        self.invert[channel] = invert;
+    }
+}
+
+/// Per-slot send levels (Phase 5 S2): `master_gain` scales the slot's
+/// contribution to the master sum (0.0 = "sends-only"); `aux_gain` is the
+/// post-fader tap into the aux bus. Both at defaults (1.0 / 0.0) = bit-exact.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SlotSend {
+    pub(crate) master_gain: f32,
+    pub(crate) aux_gain: f32,
+}
+
+impl SlotSend {
+    fn new() -> Self {
+        Self {
+            master_gain: 1.0,
+            aux_gain: 0.0,
+        }
+    }
+}
+
+/// Reserved aux-bus identifier for [`DuckState`] `source` / `targets`
+/// (Phase 5 S3): a source or target of `AUX_BUS_ID` addresses the aux
+/// accumulator instead of a slot.
+pub const AUX_BUS_ID: usize = usize::MAX;
 
 /// A slot's automation track (Phase 4 S5): generation-carried immutable
 /// breakpoints plus an audio-side cursor. The track is replaced wholesale by
@@ -373,6 +529,9 @@ pub struct MixBusNode {
     /// keeps the sum bit-exact. Runtime gain is advanced once per block by
     /// [`Self::duck_tick`] and folded into the target slots' gains.
     pub(crate) duck: Option<DuckRuntime>,
+    /// Aux bus (Phase 5 S2/S3): accumulates the slots' post-fader sends and
+    /// returns into the master before the post-mix chain. Disabled = bit-exact.
+    pub(crate) aux: AuxBus,
 }
 
 /// Ducking configuration plus its audio-side runtime state.
@@ -441,6 +600,7 @@ impl MixBusNode {
             curve: curve.into(),
             crossfade_enabled,
             duck: None,
+            aux: AuxBus::new(),
         }
     }
 
@@ -485,6 +645,18 @@ impl MixBusNode {
                 };
             }
             MixInputCmd::ClearAutomation => slot.automation = None,
+            MixInputCmd::SetSlotTrim {
+                channel,
+                gain_db,
+                invert,
+            } => slot.trim.set_channel(channel, gain_db, invert),
+            MixInputCmd::SetSend {
+                master_gain,
+                aux_gain,
+            } => {
+                slot.send.master_gain = master_gain.clamp(0.0, 1.0);
+                slot.send.aux_gain = aux_gain.clamp(0.0, 1.0);
+            }
             MixInputCmd::SetMute(m) => slot.mute = m,
             MixInputCmd::SetActive(a) => {
                 // Slot 0 is the caller's in-place planes; it cannot be
@@ -654,6 +826,14 @@ impl MixBusNode {
         });
     }
 
+    /// Apply the aux bus config (Phase 5 S2/S3). Control path (queued
+    /// command); the accumulator is only cleared/tapped/returned while
+    /// `enabled`, so disabling is bit-exact.
+    pub fn apply_aux(&mut self, enabled: bool, return_gain: f32) {
+        self.aux.enabled = enabled;
+        self.aux.return_gain = return_gain.clamp(0.0, 1.0);
+    }
+
     /// Advance the duck envelope once per block (Phase 4 S4). `source_peak_db`
     /// is the trigger slot's peak from this block's metering; the trigger is
     /// evaluated block-synchronously and the gain ramps toward the depth
@@ -664,11 +844,16 @@ impl MixBusNode {
         };
         let target_linear = DuckState::linear(duck.cfg.depth_db);
         let threshold = duck.cfg.threshold_db;
-        let source_peak_db = self
-            .inputs
-            .get(duck.cfg.source)
-            .map(|s| s.meters.peak_db)
-            .unwrap_or(-96.0);
+        // Phase 5 S3: a source of AUX_BUS_ID reads the aux accumulator's
+        // meter instead of a slot's.
+        let source_peak_db = if duck.cfg.source == AUX_BUS_ID {
+            self.aux.meters.peak_db
+        } else {
+            self.inputs
+                .get(duck.cfg.source)
+                .map(|s| s.meters.peak_db)
+                .unwrap_or(-96.0)
+        };
         let engaged = source_peak_db > threshold;
         // One-pole step toward the target over the block: after
         // attack/release frames the gain reaches the target.
@@ -700,6 +885,12 @@ impl MixBusNode {
         } else {
             1.0
         }
+    }
+
+    /// Duck gain for the aux return (Phase 5 S3): `current_linear` when the
+    /// aux bus is a duck target, 1.0 otherwise.
+    pub(super) fn aux_duck_gain(&self) -> f32 {
+        self.duck_gain_for(AUX_BUS_ID)
     }
 }
 
@@ -765,18 +956,27 @@ impl DspNode for MixBusNode {
         if channels == 0 {
             return;
         }
+        let frames = planes[0].len();
         // Input 0 pre-mix in place (exactly the old OUT_PREAMP / OUT_LOUDNESS
-        // steps), then the secondary inputs' pre-mix on their own planes.
+        // steps), then its per-channel trim (Phase 5 S1), then the secondary
+        // inputs' pre-mix on their own planes.
         self.inputs[0].preamp.process_block_f32(planes);
         self.inputs[0].loudness.process_block_f32(planes);
+        self.inputs[0].apply_trim(planes, channels, frames);
+        if self.aux.enabled {
+            self.aux.clear(frames);
+        }
         if channels == 2 {
             self.mix_secondary_f32(planes);
             self.mix_stereo(planes);
         } else {
             self.mix_multichannel(planes);
         }
-        let frames = planes[0].len();
+        // Aux return after all slot sums (the aux content joins the master
+        // before the downstream post-mix chain), then the per-slot meters.
+        self.aux.return_into(planes, frames, self.aux_duck_gain());
         self.compute_meters(planes, frames);
+        self.aux.compute_meters(frames);
     }
 
     fn process_block_f64(&mut self, planes: &mut [&mut [f64]]) {
@@ -784,15 +984,22 @@ impl DspNode for MixBusNode {
         if channels == 0 {
             return;
         }
+        let frames = planes[0].len();
         self.inputs[0].preamp.process_block_f64(planes);
         self.inputs[0].loudness.process_block_f64(planes);
+        self.inputs[0].apply_trim_f64(planes, channels, frames);
+        if self.aux.enabled {
+            self.aux.clear(frames);
+        }
         if channels == 2 {
             self.mix_secondary_f64(planes);
             self.mix_stereo_f64(planes);
         } else {
             self.mix_multichannel_f64(planes);
         }
-        let frames = planes[0].len();
+        self.aux
+            .return_into_f64(planes, frames, self.aux_duck_gain());
         self.compute_meters_f64(planes, frames);
+        self.aux.compute_meters(frames);
     }
 }

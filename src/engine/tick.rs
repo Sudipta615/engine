@@ -399,6 +399,8 @@ impl AudioEngine {
                         pan: lane.pan,
                         active: !lane.finished,
                         level_db: peak,
+                        send_master_gain: lane.send_master_gain,
+                        send_aux_gain: lane.send_aux_gain,
                         position_secs: lane.frames_played as f32 / self.output_sample_rate as f32,
                         duration_secs: lane.decoder.duration_secs(),
                     }

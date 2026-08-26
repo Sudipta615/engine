@@ -1018,3 +1018,100 @@ fn automation_pan_track_moves_lane_front_pair() {
         );
     }
 }
+
+#[test]
+fn slot_trim_send_and_aux_bus_shape_the_master() {
+    // Phase 5 S1+S2+S3: per-slot channel trim, post-fader sends, and the
+    // aux bus accumulator. Slot 1 (a lane) gets a -6 dB L-channel trim, a
+    // master-send of 0.5, and an aux-send of 1.0; the aux return joins the
+    // master at unity. Disabled aux + unity sends must stay bit-exact with
+    // the plain sum (covered by the equivalence suite).
+    let sr = 48000.0;
+    let cfg = EngineConfig {
+        mix_slots: 3,
+        ..EngineConfig::default()
+    };
+    let mut graph = DspGraph::from_config(&cfg, sr);
+    let n = 256;
+    let h = graph.control_handle();
+
+    // Baseline: plain lane at unity on the master. Lanes ride slots >= 2
+    // (process_block_lanes feeds lane k into slot k+2), so slot 1 stays
+    // silent while the lane is audible after the pair envelope.
+    let mut l0 = vec![0.0f32; n];
+    let mut r0 = vec![0.0f32; n];
+    let mut l1 = vec![0.5f32; n];
+    let mut r1 = vec![0.25f32; n];
+    graph.process_block_lanes((&mut l0, &mut r0), &mut [(&mut l1, &mut r1)]);
+    let (base_peak, _) = h.slot_meters(0);
+    assert!(
+        (base_peak - (-6.02)).abs() < 0.2,
+        "unity lane sums to ~-6 dB peak (0.5), got {base_peak}"
+    );
+
+    // S1: -6 dB trim on slot 1's L channel halves the left contribution
+    // (0.5 -> 0.25), so the master peak drops to 0.25 (-12.04 dB).
+    graph.set_slot_trim(2, 0, -6.0, false);
+    graph.drain_queued_control();
+    l0.fill(0.0);
+    r0.fill(0.0);
+    l1.fill(0.5);
+    r1.fill(0.25);
+    graph.process_block_lanes((&mut l0, &mut r0), &mut [(&mut l1, &mut r1)]);
+    let (trim_peak, _) = h.slot_meters(0);
+    assert!(
+        (trim_peak - (-12.04)).abs() < 0.2,
+        "L trim -6 dB -> 0.25 peak (-12.04 dB), got {trim_peak}"
+    );
+
+    // S2: master-send 0.5 halves both channels (L 0.5->0.25, R 0.25->0.125);
+    // the master peak tracks the louder L at 0.25 -> -12.04 dB.
+    graph.set_slot_trim(2, 0, 0.0, false);
+    graph.set_slot_send(2, 0.5, 0.0);
+    graph.drain_queued_control();
+    l0.fill(0.0);
+    r0.fill(0.0);
+    l1.fill(0.5);
+    r1.fill(0.25);
+    graph.process_block_lanes((&mut l0, &mut r0), &mut [(&mut l1, &mut r1)]);
+    let (send_peak, _) = h.slot_meters(0);
+    assert!(
+        (send_peak - (-12.04)).abs() < 0.2,
+        "master-send 0.5 -> L 0.25 peak (-12.04 dB), got {send_peak}"
+    );
+
+    // S3: aux-send 1.0 with a unity return adds the post-fader signal back
+    // via the aux bus (master L 0.25 + aux L 0.5 = 0.75, -2.50 dB).
+    graph.set_slot_send(2, 0.5, 1.0);
+    graph.set_aux(true, 1.0);
+    graph.drain_queued_control();
+    l0.fill(0.0);
+    r0.fill(0.0);
+    l1.fill(0.5);
+    r1.fill(0.25);
+    graph.process_block_lanes((&mut l0, &mut r0), &mut [(&mut l1, &mut r1)]);
+    let (aux_peak, _) = h.slot_meters(0);
+    assert!(
+        (aux_peak - (-2.50)).abs() < 0.2,
+        "aux return at unity -> L 0.75 peak (-2.50 dB), got {aux_peak}"
+    );
+    let (aux_peak_m, _) = h.aux_meters();
+    assert!(
+        (aux_peak_m - (-6.02)).abs() < 0.2,
+        "aux bus meters the 0.5 L send (-6.02 dB), got {aux_peak_m}"
+    );
+
+    // Disabling the aux return restores the master-send-only level.
+    graph.set_aux(false, 1.0);
+    graph.drain_queued_control();
+    l0.fill(0.0);
+    r0.fill(0.0);
+    l1.fill(0.5);
+    r1.fill(0.25);
+    graph.process_block_lanes((&mut l0, &mut r0), &mut [(&mut l1, &mut r1)]);
+    let (off_peak, _) = h.slot_meters(0);
+    assert!(
+        (off_peak - (-12.04)).abs() < 0.2,
+        "aux disabled -> 0.25 peak (-12.04 dB), got {off_peak}"
+    );
+}

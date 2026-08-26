@@ -128,6 +128,10 @@ pub struct LaneInfo {
     /// Peak level (dBFS) of the lane's bus slot (max over its channels),
     /// from the graph's per-slot meters (Phase 4 S3).
     pub level_db: f32,
+    /// Post-fader master-send gain in [0, 1] (Phase 5 S2).
+    pub send_master_gain: f32,
+    /// Post-fader aux-send gain in [0, 1] (Phase 5 S2).
+    pub send_aux_gain: f32,
     /// Decoded position in seconds.
     pub position_secs: f32,
     /// Source duration in seconds.

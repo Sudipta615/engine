@@ -309,6 +309,10 @@ impl AudioEngine {
             EngineCommand::RemoveTrack(slot) => self.handle_remove_track(slot),
             EngineCommand::SetTrackGain { slot, gain } => self.handle_set_track_gain(slot, gain),
             EngineCommand::SetTrackPan { slot, pan } => self.handle_set_track_pan(slot, pan),
+            EngineCommand::SetTrackMasterGain { slot, gain } => {
+                self.handle_set_track_master_gain(slot, gain)
+            }
+            EngineCommand::SetTrackSend { slot, gain } => self.handle_set_track_send(slot, gain),
             EngineCommand::DuckTracks {
                 source_slot,
                 targets,

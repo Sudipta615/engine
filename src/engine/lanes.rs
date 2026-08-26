@@ -47,6 +47,10 @@ pub struct LaneTrack {
     pub gain: f32,
     /// User pan target in [-1, 1].
     pub pan: f32,
+    /// Post-fader master-send gain in [0, 1] (Phase 5 S2).
+    pub send_master_gain: f32,
+    /// Post-fader aux-send gain in [0, 1] (Phase 5 S2).
+    pub send_aux_gain: f32,
     /// Set on EndOfStream; the lane contributes silence until removed.
     pub finished: bool,
     /// Consecutive non-EOS decode errors (same circuit breaker as the
@@ -85,6 +89,8 @@ impl LaneTrack {
             frames_played: 0,
             gain: 1.0,
             pan: 0.0,
+            send_master_gain: 1.0,
+            send_aux_gain: 0.0,
             finished: false,
             consecutive_errors: 0,
         }

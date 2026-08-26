@@ -37,6 +37,19 @@ pub enum EngineCommand {
         slot: u8,
         pan: f32,
     },
+    /// Set a lane's post-fader master-send gain in [0, 1] (Phase 5 S2):
+    /// scales the lane's contribution to the master sum. Independent of the
+    /// user gain.
+    SetTrackMasterGain {
+        slot: u8,
+        gain: f32,
+    },
+    /// Set a lane's post-fader aux-send gain in [0, 1] (Phase 5 S2): taps
+    /// the lane's signal into the aux bus accumulator.
+    SetTrackSend {
+        slot: u8,
+        gain: f32,
+    },
     /// Configure program-gated ducking across lanes (Phase 4 S4): when the
     /// `source_slot`'s peak rises above `threshold_db`, the `targets` slots
     /// are attenuated by `depth_db`. `None`-style disabling is done with an

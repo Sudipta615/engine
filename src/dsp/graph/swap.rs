@@ -39,6 +39,15 @@ pub struct SlotState {
     /// Detached: the slot contributes nothing and its chains do not advance.
     /// Slot 0 is never detached.
     pub active: bool,
+    /// Post-fader master-send gain in [0, 1] (Phase 5 S2).
+    pub send_master_gain: f32,
+    /// Post-fader aux-send gain in [0, 1] (Phase 5 S2).
+    pub send_aux_gain: f32,
+    /// Per-channel trim gains (linear, default 1.0), index by channel
+    /// (Phase 5 S1).
+    pub trim_gains: [f32; MAX_CHANNELS],
+    /// Per-channel polarity inversion (Phase 5 S1).
+    pub trim_invert: [bool; MAX_CHANNELS],
 }
 
 impl Default for SlotState {
@@ -49,6 +58,10 @@ impl Default for SlotState {
             pan: 0.0,
             mute: false,
             active: true,
+            send_master_gain: 1.0,
+            send_aux_gain: 0.0,
+            trim_gains: [1.0; MAX_CHANNELS],
+            trim_invert: [false; MAX_CHANNELS],
         }
     }
 }
@@ -72,6 +85,10 @@ pub struct UserState {
     /// generation's slot count is fine (remaining slots keep defaults);
     /// entries beyond the generation's slots are ignored.
     pub slots: Vec<SlotState>,
+    /// Aux bus enabled (Phase 5 S2/S3).
+    pub aux_enabled: bool,
+    /// Aux return gain in [0, 1] (Phase 5 S2/S3).
+    pub aux_return_gain: f32,
 }
 
 impl Default for UserState {
@@ -82,6 +99,8 @@ impl Default for UserState {
             speed: 1.0,
             volume_fade_ms: 10.0,
             slots: Vec::new(),
+            aux_enabled: false,
+            aux_return_gain: 1.0,
         }
     }
 }

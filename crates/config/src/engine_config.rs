@@ -79,6 +79,77 @@ pub struct EngineConfig {
     /// be ≥ 2; larger values are clamped by the graph to its slot bound.
     #[serde(default = "default_mix_slots")]
     pub mix_slots: usize,
+    /// Per-slot channel trim entries (Phase 5 S1): per-channel linear
+    /// gain / polarity shaping applied on each slot's own planes before the
+    /// sum. A slot with no entries is unity (bit-exact).
+    #[serde(default)]
+    pub mix_trims: Vec<SlotTrimEntry>,
+    /// Per-slot send config (Phase 5 S2): the slot's master-send level and
+    /// its post-fader tap into the aux bus. A slot with no entry keeps
+    /// master 1.0 / aux 0.0 (bit-exact).
+    #[serde(default)]
+    pub mix_sends: Vec<SlotSendConfig>,
+    /// Aux bus config (Phase 5 S2/S3): enabled + return gain into the
+    /// master. Disabled = bit-exact.
+    #[serde(default)]
+    pub aux: AuxBusConfig,
+}
+
+/// Per-slot channel trim entry (Phase 5 S1).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SlotTrimEntry {
+    /// Mix-bus slot this entry applies to.
+    pub slot: usize,
+    /// 0-based channel index on the slot's planes.
+    pub channel: usize,
+    /// Gain in dB (0.0 = unity).
+    pub gain_db: f32,
+    /// Invert polarity (flip sign).
+    #[serde(default)]
+    pub invert: bool,
+}
+
+/// Per-slot send config (Phase 5 S2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SlotSendConfig {
+    /// Mix-bus slot this send belongs to.
+    pub slot: usize,
+    /// Linear master-send level in [0, 1] (1.0 = normal sum; 0.0 = a
+    /// "sends-only" slot that feeds only the aux bus).
+    #[serde(default = "default_master_gain")]
+    pub master_gain: f32,
+    /// Linear aux-send level (post-fader tap into the aux bus; 0.0 = no
+    /// send).
+    #[serde(default)]
+    pub aux_gain: f32,
+}
+
+fn default_master_gain() -> f32 {
+    1.0
+}
+
+/// Aux bus config (Phase 5 S2/S3): a parallel accumulator that sums the
+/// slots' post-fader sends and returns into the master. The `insert` seam
+/// (Phase 6) will host a global effect between the accumulator and the
+/// return.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AuxBusConfig {
+    /// Whether the aux bus is active. Disabled = bit-exact (no zeroing, no
+    /// taps, no return).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Linear return gain from the aux accumulator into the master.
+    #[serde(default = "default_master_gain")]
+    pub return_gain: f32,
+}
+
+impl Default for AuxBusConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            return_gain: 1.0,
+        }
+    }
 }
 
 fn default_mix_slots() -> usize {
@@ -120,6 +191,9 @@ impl Default for EngineConfig {
             channel_mix: ChannelMixConfig::default(),
             transition_mode: TransitionMode::default(),
             mix_slots: default_mix_slots(),
+            mix_trims: Vec::new(),
+            mix_sends: Vec::new(),
+            aux: AuxBusConfig::default(),
         }
     }
 }

@@ -46,11 +46,13 @@ fn lane_mixes_onto_bus_and_tracks_gain_and_removal() {
     write_i16_wav(
         &silent,
         44100,
-        &vec![0i16; 44100 * 3],
-        &vec![0i16; 44100 * 3],
+        &vec![0i16; 44100 * 30],
+        &vec![0i16; 44100 * 30],
     );
-    // 0.5-amplitude 440 Hz sine lane, 3 s.
-    let lane_wav = write_custom_wav_at(44100, 44100 * 3, "lane");
+    // 0.5-amplitude 440 Hz sine lane, 30 s (the test's tight tick loop
+    // consumes audio much faster than wall-clock, so a short fixture would
+    // finish before the later send assertions).
+    let lane_wav = write_custom_wav_at(44100, 44100 * 30, "lane");
 
     let config = EngineConfig {
         mix_slots: 3,
@@ -90,6 +92,44 @@ fn lane_mixes_onto_bus_and_tracks_gain_and_removal() {
         "half gain → ≈ -12 dB, got {}",
         master_peak(&mut engine)
     );
+
+    // Phase 5 S2/S3: make the lane send-only (master-send 0, aux-send 1)
+    // with the aux return enabled at unity. The master silences (silent
+    // primary + no master contribution) while the aux meter reports the
+    // lane's level — the post-fader tap is observable end to end.
+    // Send-only observation: master-send 0 + aux-send 1, with the aux
+    // RETURN at zero — the aux accumulator still taps the lane (meter hot)
+    // but returns nothing into the master (master silent). This isolates
+    // the post-fader tap from the return path.
+    engine.send_command(EngineCommand::SetTrackGain { slot: 2, gain: 1.0 });
+    engine.send_command(EngineCommand::SetTrackMasterGain { slot: 2, gain: 0.0 });
+    engine.send_command(EngineCommand::SetTrackSend { slot: 2, gain: 1.0 });
+    engine.pipeline_mut().control_handle().set_aux(true, 0.0);
+    assert!(
+        tick_until(&mut engine, 10.0, |e| {
+            let (aux_peak, _) = e.pipeline_mut().control_handle().aux_meters();
+            aux_peak > -20.0 && master_peak(e) < -40.0
+        }),
+        "send-only lane: aux tapped but master silent (return 0), aux={}, master={}",
+        engine.pipeline_mut().control_handle().aux_meters().0,
+        master_peak(&mut engine)
+    );
+    let (aux_peak, _) = engine.pipeline_mut().control_handle().aux_meters();
+    assert!(
+        (aux_peak - (-6.02)).abs() < 2.0,
+        "aux meters the 0.5-amplitude send ≈ -6 dB, got {aux_peak}"
+    );
+    engine.pipeline_mut().control_handle().set_aux(false, 1.0);
+    engine.send_command(EngineCommand::SetTrackMasterGain { slot: 2, gain: 1.0 });
+    engine.send_command(EngineCommand::SetTrackSend { slot: 2, gain: 0.0 });
+    let (aux_peak, _) = engine.pipeline_mut().control_handle().aux_meters();
+    assert!(
+        (aux_peak - (-6.02)).abs() < 2.0,
+        "aux meters the 0.5-amplitude send ≈ -6 dB, got {aux_peak}"
+    );
+    engine.pipeline_mut().control_handle().set_aux(false, 1.0);
+    engine.send_command(EngineCommand::SetTrackMasterGain { slot: 2, gain: 1.0 });
+    engine.send_command(EngineCommand::SetTrackSend { slot: 2, gain: 0.0 });
 
     // Removing the lane silences the master (silent primary → silence).
     engine.send_command(EngineCommand::RemoveTrack(2));

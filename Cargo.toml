@@ -3,7 +3,7 @@ members = [".", "crates/config"]
 
 [package]
 name = "engine"
-version = "3.5.0"
+version = "3.6.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"

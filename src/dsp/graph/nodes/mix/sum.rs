@@ -41,6 +41,10 @@ impl MixBusNode {
         let (in1_l, in1_r) = (&in1.planes[0][..frames], &in1.planes[1][..frames]);
         let (g0, bal0, mute0) = (&mut in0.gain, in0.balance, in0.mute);
         let (g1, bal1, mute1) = (&mut in1.gain, in1.balance, in1.mute);
+        // Phase 5 S2 master-send levels for the pair (the pair's aux taps are
+        // a later refinement; master sends apply to all slots).
+        let m0 = in0.send.master_gain;
+        let m1 = in1.send.master_gain;
         // Front-pair gains: balance, then pan. At pan = 0 the pan pair is
         // exactly (1, 1), so these products are bit-identical to the
         // pre-pan `balance_gains` values.
@@ -56,14 +60,14 @@ impl MixBusNode {
             let u1 = g1.process_sample(1.0) * d1;
             match state {
                 MixerState::PlayingCurrent => {
-                    if !mute0 && u0 == 1.0 && b0l == 1.0 && b0r == 1.0 {
+                    if !mute0 && u0 == 1.0 && b0l == 1.0 && b0r == 1.0 && m0 == 1.0 {
                         // Pure pre-mix passthrough — bit-exact identity.
                     } else if mute0 {
                         out_l[i] = 0.0;
                         out_r[i] = 0.0;
                     } else {
-                        out_l[i] *= u0 * b0l;
-                        out_r[i] *= u0 * b0r;
+                        out_l[i] *= u0 * b0l * m0;
+                        out_r[i] *= u0 * b0r * m0;
                     }
                 }
                 MixerState::PlayingNext => {
@@ -71,8 +75,8 @@ impl MixBusNode {
                         out_l[i] = 0.0;
                         out_r[i] = 0.0;
                     } else {
-                        out_l[i] = in1_l[i] * (u1 * b1l);
-                        out_r[i] = in1_r[i] * (u1 * b1r);
+                        out_l[i] = in1_l[i] * (u1 * b1l * m1);
+                        out_r[i] = in1_r[i] * (u1 * b1r * m1);
                     }
                 }
                 MixerState::Silent => {
@@ -86,8 +90,8 @@ impl MixBusNode {
                         1.0
                     };
                     let (e0, e1) = Self::envelope_gains(state, t, curve);
-                    let (g0l, g0r) = (e0 * u0 * b0l, e0 * u0 * b0r);
-                    let (g1l, g1r) = (e1 * u1 * b1l, e1 * u1 * b1r);
+                    let (g0l, g0r) = (e0 * u0 * b0l * m0, e0 * u0 * b0r * m0);
+                    let (g1l, g1r) = (e1 * u1 * b1l * m1, e1 * u1 * b1r * m1);
                     let o0l = if mute0 { 0.0 } else { out_l[i] * g0l };
                     let o0r = if mute0 { 0.0 } else { out_r[i] * g0r };
                     let o1l = if mute1 { 0.0 } else { in1_l[i] * g1l };
@@ -132,12 +136,16 @@ impl MixBusNode {
         // slots carrying a track populate them; others stay at unity).
         let mut auto_l = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
         let mut auto_r = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
+        let mut aux_auto = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
+        let mut aux_written = false;
         for k in 2..self.inputs.len() {
             let input = &mut self.inputs[k];
             if !input.active {
                 continue;
             }
             let dk = duck_gains[k];
+            let m = input.send.master_gain;
+            let a = input.send.aux_gain;
             let (b0l, b0r) = balance_gains(input.balance);
             let (p0l, p0r) = pan_gains(input.pan, input.pan_law);
             let (b0l, b0r) = (b0l * p0l, b0r * p0r);
@@ -151,6 +159,9 @@ impl MixBusNode {
                         auto_l[i] = gl;
                         auto_r[i] = gr;
                     }
+                    if let Some(v) = input.automation_send_value(abs) {
+                        aux_auto[i] = v;
+                    }
                 }
                 if let Some(a) = &mut input.automation {
                     a.pos += frames;
@@ -163,25 +174,96 @@ impl MixBusNode {
                 }
                 continue;
             }
-            if has_auto {
-                for i in 0..frames {
-                    let u = g.process_sample(1.0) * dk;
-                    out_l[i] += input.planes[0][i] * (u * auto_l[i]);
-                    out_r[i] += input.planes[1][i] * (u * auto_r[i]);
+            // Phase 5 S2: a slot whose master / aux sends are at defaults
+            // takes the original expressions untouched (bit-exact); otherwise
+            // the contribution is captured once and scaled into both
+            // destinations (post-fader tap).
+            let tap = a != 0.0 && self.aux.enabled;
+            if tap {
+                aux_written = true;
+            }
+            if m == 1.0 && !tap {
+                if has_auto {
+                    for i in 0..frames {
+                        let u = g.process_sample(1.0) * dk;
+                        out_l[i] += input.planes[0][i] * (u * auto_l[i]);
+                        out_r[i] += input.planes[1][i] * (u * auto_r[i]);
+                    }
+                } else if b0l != 1.0 || b0r != 1.0 || dk != 1.0 {
+                    for i in 0..frames {
+                        let u = g.process_sample(1.0) * dk;
+                        out_l[i] += input.planes[0][i] * (u * b0l);
+                        out_r[i] += input.planes[1][i] * (u * b0r);
+                    }
+                } else {
+                    for i in 0..frames {
+                        let u = g.process_sample(1.0);
+                        out_l[i] += input.planes[0][i] * u;
+                        out_r[i] += input.planes[1][i] * u;
+                    }
                 }
-            } else if b0l != 1.0 || b0r != 1.0 || dk != 1.0 {
-                for i in 0..frames {
-                    let u = g.process_sample(1.0) * dk;
-                    out_l[i] += input.planes[0][i] * (u * b0l);
-                    out_r[i] += input.planes[1][i] * (u * b0r);
+                continue;
+            }
+            if tap {
+                let (aux0, aux1) = self.aux.planes.split_at_mut(1);
+                let al = &mut aux0[0][..frames];
+                let ar = &mut aux1[0][..frames];
+                if has_auto {
+                    for i in 0..frames {
+                        let u = g.process_sample(1.0) * dk;
+                        let s = input.planes[0][i] * (u * auto_l[i]);
+                        out_l[i] += s * m;
+                        al[i] += s * (a * aux_auto[i]);
+                        let s = input.planes[1][i] * (u * auto_r[i]);
+                        out_r[i] += s * m;
+                        ar[i] += s * (a * aux_auto[i]);
+                    }
+                } else if b0l != 1.0 || b0r != 1.0 || dk != 1.0 {
+                    for i in 0..frames {
+                        let u = g.process_sample(1.0) * dk;
+                        let s = input.planes[0][i] * (u * b0l);
+                        out_l[i] += s * m;
+                        al[i] += s * a;
+                        let s = input.planes[1][i] * (u * b0r);
+                        out_r[i] += s * m;
+                        ar[i] += s * a;
+                    }
+                } else {
+                    for i in 0..frames {
+                        let u = g.process_sample(1.0);
+                        let s = input.planes[0][i] * u;
+                        out_l[i] += s * m;
+                        al[i] += s * a;
+                        let s = input.planes[1][i] * u;
+                        out_r[i] += s * m;
+                        ar[i] += s * a;
+                    }
                 }
             } else {
-                for i in 0..frames {
-                    let u = g.process_sample(1.0);
-                    out_l[i] += input.planes[0][i] * u;
-                    out_r[i] += input.planes[1][i] * u;
+                // Master-only fold (m != 1.0, no aux tap).
+                if has_auto {
+                    for i in 0..frames {
+                        let u = g.process_sample(1.0) * dk;
+                        out_l[i] += input.planes[0][i] * (u * auto_l[i]) * m;
+                        out_r[i] += input.planes[1][i] * (u * auto_r[i]) * m;
+                    }
+                } else if b0l != 1.0 || b0r != 1.0 || dk != 1.0 {
+                    for i in 0..frames {
+                        let u = g.process_sample(1.0) * dk;
+                        out_l[i] += input.planes[0][i] * (u * b0l) * m;
+                        out_r[i] += input.planes[1][i] * (u * b0r) * m;
+                    }
+                } else {
+                    for i in 0..frames {
+                        let u = g.process_sample(1.0);
+                        out_l[i] += input.planes[0][i] * u * m;
+                        out_r[i] += input.planes[1][i] * u * m;
+                    }
                 }
             }
+        }
+        if aux_written {
+            self.aux.written = true;
         }
     }
 
@@ -210,6 +292,8 @@ impl MixBusNode {
         let (in1_l, in1_r) = (&in1.planes[0][..frames], &in1.planes[1][..frames]);
         let (g0, bal0, mute0) = (&mut in0.gain, in0.balance, in0.mute);
         let (g1, bal1, mute1) = (&mut in1.gain, in1.balance, in1.mute);
+        let m0 = in0.send.master_gain;
+        let m1 = in1.send.master_gain;
         let (b0l, b0r) = balance_gains(bal0);
         let (b1l, b1r) = balance_gains(bal1);
         let (p0l, p0r) = pan_gains(in0.pan, in0.pan_law);
@@ -222,14 +306,14 @@ impl MixBusNode {
             let u1 = g1.process_sample(1.0) as f64 * d1 as f64;
             match state {
                 MixerState::PlayingCurrent => {
-                    if !mute0 && u0 == 1.0 && b0l == 1.0 && b0r == 1.0 {
+                    if !mute0 && u0 == 1.0 && b0l == 1.0 && b0r == 1.0 && m0 == 1.0 {
                         // Pure pre-mix passthrough.
                     } else if mute0 {
                         out_l[i] = 0.0;
                         out_r[i] = 0.0;
                     } else {
-                        out_l[i] *= u0 * b0l as f64;
-                        out_r[i] *= u0 * b0r as f64;
+                        out_l[i] *= u0 * b0l as f64 * m0 as f64;
+                        out_r[i] *= u0 * b0r as f64 * m0 as f64;
                     }
                 }
                 MixerState::PlayingNext => {
@@ -237,8 +321,8 @@ impl MixBusNode {
                         out_l[i] = 0.0;
                         out_r[i] = 0.0;
                     } else {
-                        out_l[i] = in1_l[i] as f64 * (u1 * b1l as f64);
-                        out_r[i] = in1_r[i] as f64 * (u1 * b1r as f64);
+                        out_l[i] = in1_l[i] as f64 * (u1 * b1l as f64 * m1 as f64);
+                        out_r[i] = in1_r[i] as f64 * (u1 * b1r as f64 * m1 as f64);
                     }
                 }
                 MixerState::Silent => {
@@ -252,8 +336,14 @@ impl MixBusNode {
                         1.0
                     };
                     let (e0, e1) = Self::envelope_gains(state, t as f32, curve);
-                    let (g0l, g0r) = (e0 as f64 * u0 * b0l as f64, e0 as f64 * u0 * b0r as f64);
-                    let (g1l, g1r) = (e1 as f64 * u1 * b1l as f64, e1 as f64 * u1 * b1r as f64);
+                    let (g0l, g0r) = (
+                        e0 as f64 * u0 * b0l as f64 * m0 as f64,
+                        e0 as f64 * u0 * b0r as f64 * m0 as f64,
+                    );
+                    let (g1l, g1r) = (
+                        e1 as f64 * u1 * b1l as f64 * m1 as f64,
+                        e1 as f64 * u1 * b1r as f64 * m1 as f64,
+                    );
                     let o0l = if mute0 { 0.0 } else { out_l[i] * g0l };
                     let o0r = if mute0 { 0.0 } else { out_r[i] * g0r };
                     let o1l = if mute1 { 0.0 } else { in1_l[i] as f64 * g1l };
@@ -288,12 +378,16 @@ impl MixBusNode {
         self.duck_tick(frames);
         let mut auto_l = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
         let mut auto_r = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
+        let mut aux_auto = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
+        let mut aux_written = false;
         for k in 2..self.inputs.len() {
             let input = &mut self.inputs[k];
             if !input.active {
                 continue;
             }
             let dk = duck_gains[k];
+            let m = input.send.master_gain;
+            let a = input.send.aux_gain;
             let (b0l, b0r) = balance_gains(input.balance);
             let (p0l, p0r) = pan_gains(input.pan, input.pan_law);
             let (b0l, b0r) = (b0l * p0l, b0r * p0r);
@@ -304,6 +398,9 @@ impl MixBusNode {
                     if let Some((gl, gr)) = input.full_front_gains(abs) {
                         auto_l[i] = gl;
                         auto_r[i] = gr;
+                    }
+                    if let Some(v) = input.automation_send_value(abs) {
+                        aux_auto[i] = v;
                     }
                 }
                 if let Some(a) = &mut input.automation {
@@ -317,25 +414,92 @@ impl MixBusNode {
                 }
                 continue;
             }
-            if has_auto {
-                for i in 0..frames {
-                    let u = g.process_sample(1.0) as f64 * dk as f64;
-                    out_l[i] += input.planes[0][i] as f64 * (u * auto_l[i] as f64);
-                    out_r[i] += input.planes[1][i] as f64 * (u * auto_r[i] as f64);
+            let tap = a != 0.0 && self.aux.enabled;
+            if tap {
+                aux_written = true;
+            }
+            if m == 1.0 && !tap {
+                if has_auto {
+                    for i in 0..frames {
+                        let u = g.process_sample(1.0) as f64 * dk as f64;
+                        out_l[i] += input.planes[0][i] as f64 * (u * auto_l[i] as f64);
+                        out_r[i] += input.planes[1][i] as f64 * (u * auto_r[i] as f64);
+                    }
+                } else if b0l != 1.0 || b0r != 1.0 || dk != 1.0 {
+                    for i in 0..frames {
+                        let u = g.process_sample(1.0) as f64 * dk as f64;
+                        out_l[i] += input.planes[0][i] as f64 * (u * b0l as f64);
+                        out_r[i] += input.planes[1][i] as f64 * (u * b0r as f64);
+                    }
+                } else {
+                    for i in 0..frames {
+                        let u = g.process_sample(1.0) as f64;
+                        out_l[i] += input.planes[0][i] as f64 * u;
+                        out_r[i] += input.planes[1][i] as f64 * u;
+                    }
                 }
-            } else if b0l != 1.0 || b0r != 1.0 || dk != 1.0 {
-                for i in 0..frames {
-                    let u = g.process_sample(1.0) as f64 * dk as f64;
-                    out_l[i] += input.planes[0][i] as f64 * (u * b0l as f64);
-                    out_r[i] += input.planes[1][i] as f64 * (u * b0r as f64);
+                continue;
+            }
+            if tap {
+                let (aux0, aux1) = self.aux.planes.split_at_mut(1);
+                let al = &mut aux0[0][..frames];
+                let ar = &mut aux1[0][..frames];
+                if has_auto {
+                    for i in 0..frames {
+                        let u = g.process_sample(1.0) as f64 * dk as f64;
+                        let s = input.planes[0][i] as f64 * (u * auto_l[i] as f64);
+                        out_l[i] += s * m as f64;
+                        al[i] += (s * (a * aux_auto[i]) as f64) as f32;
+                        let s = input.planes[1][i] as f64 * (u * auto_r[i] as f64);
+                        out_r[i] += s * m as f64;
+                        ar[i] += (s * (a * aux_auto[i]) as f64) as f32;
+                    }
+                } else if b0l != 1.0 || b0r != 1.0 || dk != 1.0 {
+                    for i in 0..frames {
+                        let u = g.process_sample(1.0) as f64 * dk as f64;
+                        let s = input.planes[0][i] as f64 * (u * b0l as f64);
+                        out_l[i] += s * m as f64;
+                        al[i] += (s * a as f64) as f32;
+                        let s = input.planes[1][i] as f64 * (u * b0r as f64);
+                        out_r[i] += s * m as f64;
+                        ar[i] += (s * a as f64) as f32;
+                    }
+                } else {
+                    for i in 0..frames {
+                        let u = g.process_sample(1.0) as f64;
+                        let s = input.planes[0][i] as f64 * u;
+                        out_l[i] += s * m as f64;
+                        al[i] += (s * a as f64) as f32;
+                        let s = input.planes[1][i] as f64 * u;
+                        out_r[i] += s * m as f64;
+                        ar[i] += (s * a as f64) as f32;
+                    }
                 }
             } else {
-                for i in 0..frames {
-                    let u = g.process_sample(1.0) as f64;
-                    out_l[i] += input.planes[0][i] as f64 * u;
-                    out_r[i] += input.planes[1][i] as f64 * u;
+                // Master-only fold (m != 1.0, no aux tap).
+                if has_auto {
+                    for i in 0..frames {
+                        let u = g.process_sample(1.0) as f64 * dk as f64;
+                        out_l[i] += input.planes[0][i] as f64 * (u * auto_l[i] as f64) * m as f64;
+                        out_r[i] += input.planes[1][i] as f64 * (u * auto_r[i] as f64) * m as f64;
+                    }
+                } else if b0l != 1.0 || b0r != 1.0 || dk != 1.0 {
+                    for i in 0..frames {
+                        let u = g.process_sample(1.0) as f64 * dk as f64;
+                        out_l[i] += input.planes[0][i] as f64 * (u * b0l as f64) * m as f64;
+                        out_r[i] += input.planes[1][i] as f64 * (u * b0r as f64) * m as f64;
+                    }
+                } else {
+                    for i in 0..frames {
+                        let u = g.process_sample(1.0) as f64;
+                        out_l[i] += input.planes[0][i] as f64 * u * m as f64;
+                        out_r[i] += input.planes[1][i] as f64 * u * m as f64;
+                    }
                 }
             }
+        }
+        if aux_written {
+            self.aux.written = true;
         }
     }
 
@@ -357,12 +521,14 @@ impl MixBusNode {
     pub(super) fn mix_multichannel(&mut self, planes: &mut [&mut [f32]]) {
         let channels = planes.len();
         let frames = planes[0].len();
-        // Input 0: pre-mixed in place, scaled by its own gain / balance.
+        // Input 0: pre-mixed in place, scaled by its own gain / balance
+        // (Phase 5 S2: the master-send fold applies to the pair here too).
         {
             let input0 = &mut self.inputs[0];
             let g = &mut input0.gain;
             let (b0l, b0r) = balance_gains(input0.balance);
             let balance = input0.balance;
+            let m0 = input0.send.master_gain;
             if input0.mute {
                 for plane in planes.iter_mut() {
                     plane.fill(0.0);
@@ -375,12 +541,19 @@ impl MixBusNode {
                     let u = g.process_sample(1.0);
                     for (ch, plane) in planes.iter_mut().enumerate() {
                         plane[i] *= if ch == 0 {
-                            u * b0l
+                            u * b0l * m0
                         } else if ch == 1 {
-                            u * b0r
+                            u * b0r * m0
                         } else {
-                            u
+                            u * m0
                         };
+                    }
+                }
+            } else if m0 != 1.0 {
+                for i in 0..frames {
+                    let u = g.process_sample(1.0) * m0;
+                    for plane in planes.iter_mut() {
+                        plane[i] *= u;
                     }
                 }
             } else {
@@ -403,6 +576,8 @@ impl MixBusNode {
         self.duck_tick(frames);
         let mut auto_l = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
         let mut auto_r = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
+        let mut aux_auto = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
+        let mut aux_written = false;
         for k in 1..self.inputs.len() {
             let input = &mut self.inputs[k];
             if !input.active || input.mute {
@@ -413,6 +588,8 @@ impl MixBusNode {
                 continue;
             }
             let dk = duck_gains[k];
+            let m = input.send.master_gain;
+            let a = input.send.aux_gain;
             let (b0l, b0r) = balance_gains(input.balance);
             let (p0l, p0r) = pan_gains(input.pan, input.pan_law);
             let (b0l, b0r) = (b0l * p0l, b0r * p0r);
@@ -425,41 +602,118 @@ impl MixBusNode {
                         auto_l[i] = gl;
                         auto_r[i] = gr;
                     }
+                    if let Some(v) = input.automation_send_value(abs) {
+                        aux_auto[i] = v;
+                    }
                 }
                 if let Some(a) = &mut input.automation {
                     a.pos += frames;
                 }
             }
             let g = &mut input.gain;
-            for i in 0..frames {
-                // The gain ramp advances once per frame and the same target
-                // scales every channel (mirrors the pipeline's per-frame
-                // gain law); balance/pan/automation shape only the front
-                // L/R pair.
-                let u = g.process_sample(1.0) * dk;
-                for ch in 0..src_channels {
-                    let bal = if has_auto {
-                        if ch == 0 {
-                            auto_l[i]
-                        } else if ch == 1 {
-                            auto_r[i]
+            // Phase 5 S2: master-send fold + aux tap on the front pair.
+            let tap = a != 0.0 && self.aux.enabled;
+            if tap {
+                aux_written = true;
+            }
+            if m == 1.0 && !tap {
+                for i in 0..frames {
+                    // The gain ramp advances once per frame and the same
+                    // target scales every channel (mirrors the pipeline's
+                    // per-frame gain law); balance/pan/automation shape only
+                    // the front L/R pair.
+                    let u = g.process_sample(1.0) * dk;
+                    for ch in 0..src_channels {
+                        let bal = if has_auto {
+                            if ch == 0 {
+                                auto_l[i]
+                            } else if ch == 1 {
+                                auto_r[i]
+                            } else {
+                                1.0
+                            }
+                        } else if balance != 0.0 {
+                            if ch == 0 {
+                                b0l
+                            } else if ch == 1 {
+                                b0r
+                            } else {
+                                1.0
+                            }
                         } else {
                             1.0
-                        }
-                    } else if balance != 0.0 {
-                        if ch == 0 {
-                            b0l
-                        } else if ch == 1 {
-                            b0r
+                        };
+                        planes[ch][i] += input.planes[ch][i] * (u * bal);
+                    }
+                }
+                continue;
+            }
+            if tap {
+                let (aux0, aux1) = self.aux.planes.split_at_mut(1);
+                let al = &mut aux0[0][..frames];
+                let ar = &mut aux1[0][..frames];
+                for i in 0..frames {
+                    let u = g.process_sample(1.0) * dk;
+                    for ch in 0..src_channels {
+                        let bal = if has_auto {
+                            if ch == 0 {
+                                auto_l[i]
+                            } else if ch == 1 {
+                                auto_r[i]
+                            } else {
+                                1.0
+                            }
+                        } else if balance != 0.0 {
+                            if ch == 0 {
+                                b0l
+                            } else if ch == 1 {
+                                b0r
+                            } else {
+                                1.0
+                            }
                         } else {
                             1.0
+                        };
+                        let s = input.planes[ch][i] * (u * bal);
+                        planes[ch][i] += s * m;
+                        if ch == 0 {
+                            al[i] += s * (a * aux_auto[i]);
+                        } else if ch == 1 {
+                            ar[i] += s * (a * aux_auto[i]);
                         }
-                    } else {
-                        1.0
-                    };
-                    planes[ch][i] += input.planes[ch][i] * (u * bal);
+                    }
+                }
+            } else {
+                // Master-only fold (m != 1.0, no aux tap).
+                for i in 0..frames {
+                    let u = g.process_sample(1.0) * dk;
+                    for ch in 0..src_channels {
+                        let bal = if has_auto {
+                            if ch == 0 {
+                                auto_l[i]
+                            } else if ch == 1 {
+                                auto_r[i]
+                            } else {
+                                1.0
+                            }
+                        } else if balance != 0.0 {
+                            if ch == 0 {
+                                b0l
+                            } else if ch == 1 {
+                                b0r
+                            } else {
+                                1.0
+                            }
+                        } else {
+                            1.0
+                        };
+                        planes[ch][i] += input.planes[ch][i] * (u * bal) * m;
+                    }
                 }
             }
+        }
+        if aux_written {
+            self.aux.written = true;
         }
     }
 
@@ -470,12 +724,14 @@ impl MixBusNode {
     pub(super) fn mix_multichannel_f64(&mut self, planes: &mut [&mut [f64]]) {
         let channels = planes.len();
         let frames = planes[0].len();
-        // Input 0: pre-mixed in place, scaled by its own gain / balance.
+        // Input 0: pre-mixed in place, scaled by its own gain / balance
+        // (Phase 5 S2: the master-send fold applies to the pair here too).
         {
             let input0 = &mut self.inputs[0];
             let g = &mut input0.gain;
             let (b0l, b0r) = balance_gains(input0.balance);
             let balance = input0.balance;
+            let m0 = input0.send.master_gain;
             if input0.mute {
                 for plane in planes.iter_mut() {
                     plane.fill(0.0);
@@ -488,12 +744,19 @@ impl MixBusNode {
                     let u = g.process_sample(1.0) as f64;
                     for (ch, plane) in planes.iter_mut().enumerate() {
                         plane[i] *= if ch == 0 {
-                            u * b0l as f64
+                            u * b0l as f64 * m0 as f64
                         } else if ch == 1 {
-                            u * b0r as f64
+                            u * b0r as f64 * m0 as f64
                         } else {
-                            u
+                            u * m0 as f64
                         };
+                    }
+                }
+            } else if m0 != 1.0 {
+                for i in 0..frames {
+                    let u = g.process_sample(1.0) as f64 * m0 as f64;
+                    for plane in planes.iter_mut() {
+                        plane[i] *= u;
                     }
                 }
             } else {
@@ -511,12 +774,16 @@ impl MixBusNode {
         self.duck_tick(frames);
         let mut auto_l = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
         let mut auto_r = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
+        let mut aux_auto = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
+        let mut aux_written = false;
         for k in 1..self.inputs.len() {
             let input = &mut self.inputs[k];
             if !input.active || input.mute {
                 continue;
             }
             let dk = duck_gains[k];
+            let m = input.send.master_gain;
+            let a = input.send.aux_gain;
             let src_channels = input.channels.min(channels);
             if src_channels == 0 {
                 continue;
@@ -533,37 +800,113 @@ impl MixBusNode {
                         auto_l[i] = gl;
                         auto_r[i] = gr;
                     }
+                    if let Some(v) = input.automation_send_value(abs) {
+                        aux_auto[i] = v;
+                    }
                 }
                 if let Some(a) = &mut input.automation {
                     a.pos += frames;
                 }
             }
             let g = &mut input.gain;
-            for i in 0..frames {
-                let u = g.process_sample(1.0) as f64 * dk as f64;
-                for ch in 0..src_channels {
-                    let bal = if has_auto {
-                        if ch == 0 {
-                            auto_l[i]
-                        } else if ch == 1 {
-                            auto_r[i]
+            let tap = a != 0.0 && self.aux.enabled;
+            if tap {
+                aux_written = true;
+            }
+            if m == 1.0 && !tap {
+                for i in 0..frames {
+                    let u = g.process_sample(1.0) as f64 * dk as f64;
+                    for ch in 0..src_channels {
+                        let bal = if has_auto {
+                            if ch == 0 {
+                                auto_l[i]
+                            } else if ch == 1 {
+                                auto_r[i]
+                            } else {
+                                1.0
+                            }
+                        } else if balance != 0.0 {
+                            if ch == 0 {
+                                b0l
+                            } else if ch == 1 {
+                                b0r
+                            } else {
+                                1.0
+                            }
                         } else {
                             1.0
-                        }
-                    } else if balance != 0.0 {
-                        if ch == 0 {
-                            b0l
-                        } else if ch == 1 {
-                            b0r
+                        };
+                        planes[ch][i] += input.planes[ch][i] as f64 * (u * bal as f64);
+                    }
+                }
+                continue;
+            }
+            if tap {
+                let (aux0, aux1) = self.aux.planes.split_at_mut(1);
+                let al = &mut aux0[0][..frames];
+                let ar = &mut aux1[0][..frames];
+                for i in 0..frames {
+                    let u = g.process_sample(1.0) as f64 * dk as f64;
+                    for ch in 0..src_channels {
+                        let bal = if has_auto {
+                            if ch == 0 {
+                                auto_l[i]
+                            } else if ch == 1 {
+                                auto_r[i]
+                            } else {
+                                1.0
+                            }
+                        } else if balance != 0.0 {
+                            if ch == 0 {
+                                b0l
+                            } else if ch == 1 {
+                                b0r
+                            } else {
+                                1.0
+                            }
                         } else {
                             1.0
+                        };
+                        let s = input.planes[ch][i] as f64 * (u * bal as f64);
+                        planes[ch][i] += s * m as f64;
+                        if ch == 0 {
+                            al[i] += (s * (a * aux_auto[i]) as f64) as f32;
+                        } else if ch == 1 {
+                            ar[i] += (s * (a * aux_auto[i]) as f64) as f32;
                         }
-                    } else {
-                        1.0
-                    };
-                    planes[ch][i] += input.planes[ch][i] as f64 * (u * bal as f64);
+                    }
+                }
+            } else {
+                // Master-only fold (m != 1.0, no aux tap).
+                for i in 0..frames {
+                    let u = g.process_sample(1.0) as f64 * dk as f64;
+                    for ch in 0..src_channels {
+                        let bal = if has_auto {
+                            if ch == 0 {
+                                auto_l[i]
+                            } else if ch == 1 {
+                                auto_r[i]
+                            } else {
+                                1.0
+                            }
+                        } else if balance != 0.0 {
+                            if ch == 0 {
+                                b0l
+                            } else if ch == 1 {
+                                b0r
+                            } else {
+                                1.0
+                            }
+                        } else {
+                            1.0
+                        };
+                        planes[ch][i] += input.planes[ch][i] as f64 * (u * bal as f64) * m as f64;
+                    }
                 }
             }
+        }
+        if aux_written {
+            self.aux.written = true;
         }
     }
 
@@ -598,6 +941,8 @@ impl MixBusNode {
             let channels = slot.channels.clamp(1, MAX_CHANNELS);
             slot.preamp.process_block_f32(&mut views[..channels]);
             slot.loudness.process_block_f32(&mut views[..channels]);
+            slot.trim
+                .apply_views(&mut views[..channels], channels, frames);
             let _ = &mut views;
         }
     }
@@ -621,6 +966,8 @@ impl MixBusNode {
             let channels = slot.channels.clamp(1, MAX_CHANNELS);
             slot.preamp.process_block_f32(&mut views[..channels]);
             slot.loudness.process_block_f32(&mut views[..channels]);
+            slot.trim
+                .apply_views(&mut views[..channels], channels, frames);
             let _ = &mut views;
         }
     }

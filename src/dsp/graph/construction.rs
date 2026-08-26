@@ -136,7 +136,17 @@ impl GraphGeneration {
                 if i != 0 {
                     input.active = slot.active;
                 }
+                // Phase 5 S1/S2: trims and sends are user state that survives
+                // a generation swap (mirrored onto the bus atomics at drain).
+                input.send.master_gain = slot.send_master_gain.clamp(0.0, 1.0);
+                input.send.aux_gain = slot.send_aux_gain.clamp(0.0, 1.0);
+                for (c, g) in input.trim.gains.iter_mut().enumerate() {
+                    *g = slot.trim_gains[c];
+                }
+                input.trim.invert.copy_from_slice(&slot.trim_invert[..]);
             }
+            // Phase 5 S3: aux bus state survives a swap.
+            gen_node!(gen, node_id::MIX, Mix).apply_aux(user.aux_enabled, user.aux_return_gain);
         }
 
         Box::new(gen)

@@ -302,6 +302,10 @@ impl DspGraph {
                 self.bus
                     .publish_slot_meters(i, input.meters.peak_db, input.meters.rms_db);
             }
+            // Phase 5 S3: publish the aux bus meters (post-return, once per
+            // block) so telemetry can read the aux level from any thread.
+            self.bus
+                .publish_aux_meters(mix.aux.meters.peak_db, mix.aux.meters.rms_db);
         }
     }
 

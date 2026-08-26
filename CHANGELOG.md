@@ -2,6 +2,40 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.6.0] — 2026-08-26
+
+Phase 5 S1–S3 of the player → graph-runtime roadmap: the mix bus becomes a
+real mixing surface. Per-slot channel trim banks (S1) shape each slot's
+planes per channel (gain in dB + polarity) between its pre-mix chains and
+its sum. Post-fader sends (S2) split every slot's contribution between the
+master sum (`master_gain`) and a new aux-bus accumulator (`aux_gain`),
+with `Send` automation tracks modulating the tap sample-accurately. The aux
+bus (S3) is a first-class stereo accumulator with its own per-block
+peak/RMS metering, a duck target id (`AUX_BUS_ID`), a return gain into the
+master before the post-mix chain, a Phase-6 insert seam, and full
+survival across generation swaps via the mirrored `SlotState`/`UserState`.
+The engine exposes `SetTrackMasterGain` / `SetTrackSend`, and
+`PlaybackInfo::LaneInfo` reports each lane's sends. All additions are
+disabled-exact — the 27-scenario graph-vs-pipeline equivalence suite stays
+bit-identical.
+
+### Added
+
+- Per-slot `PerChannelTrim` banks: `SetSlotTrim` command, applied on the
+  slot's own planes (all-unity = inactive = bit-exact), mirrored/replayed
+  through generation swaps.
+- Post-fader sends: `SetSend { master_gain, aux_gain }` on every slot; the
+  slot's contribution is captured once and scaled into both destinations.
+- `AutomationTarget::Send`: a send track shapes the aux tap per frame.
+- The aux bus: `SetAux { enabled, return_gain }`, `AuxBus` accumulator in
+  `nodes/mix/sends.rs`, per-block aux meters published to the control bus
+  (`GraphControlHandle::aux_meters`), `AUX_BUS_ID` duck source, and the
+  Phase-6 `insert` seam.
+- Engine commands `SetTrackMasterGain` / `SetTrackSend`; `LaneInfo` now
+  carries `send_master_gain` / `send_aux_gain`.
+- Graph tests for trim/send/aux end-to-end; engine lane test covers the
+  send-only path (aux tapped, master silent at zero return).
+
 ## [3.5.0] — 2026-08-26
 
 Phase 4 S3–S6 of the player → graph-runtime roadmap: the mix bus gains

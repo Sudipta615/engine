@@ -89,6 +89,40 @@ impl super::AudioEngine {
         self.graph.set_input_pan(slot, pan);
     }
 
+    /// Set a lane's post-fader master-send gain in [0, 1] (Phase 5 S2) and
+    /// mirror it to the bus. Independent of the user gain: the master-send
+    /// scales the slot's contribution to the master sum (0.0 = send-only).
+    pub(super) fn handle_set_track_master_gain(&mut self, slot: u8, gain: f32) {
+        let gain = gain.clamp(0.0, 1.0);
+        if let Some(lane) = self.lanes.iter_mut().find(|l| l.slot == slot as usize) {
+            lane.send_master_gain = gain;
+        }
+        let aux = self
+            .lanes
+            .iter()
+            .find(|l| l.slot == slot as usize)
+            .map(|l| l.send_aux_gain)
+            .unwrap_or(0.0);
+        self.graph.set_slot_send(slot, gain, aux);
+    }
+
+    /// Set a lane's post-fader aux-send gain in [0, 1] (Phase 5 S2) and
+    /// mirror it to the bus: taps the lane's signal into the aux bus
+    /// accumulator (0.0 = no aux contribution).
+    pub(super) fn handle_set_track_send(&mut self, slot: u8, gain: f32) {
+        let gain = gain.clamp(0.0, 1.0);
+        if let Some(lane) = self.lanes.iter_mut().find(|l| l.slot == slot as usize) {
+            lane.send_aux_gain = gain;
+        }
+        let master = self
+            .lanes
+            .iter()
+            .find(|l| l.slot == slot as usize)
+            .map(|l| l.send_master_gain)
+            .unwrap_or(1.0);
+        self.graph.set_slot_send(slot, master, gain);
+    }
+
     /// Configure program-gated ducking across lanes (Phase 4 S4). An empty
     /// `targets` list disables ducking. `ms` values are converted to frames
     /// at the output sample rate.
