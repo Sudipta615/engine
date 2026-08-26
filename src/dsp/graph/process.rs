@@ -116,7 +116,9 @@ impl DspGraph {
     }
 
     /// Copy a chunk of a secondary stream into the mix bus's `slot` planes
-    /// (audio-side, no allocation — the planes are preallocated).
+    /// (audio-side, no allocation — the planes are preallocated). Fills the
+    /// slot's channel-major planes from a stereo source (front L/R), marking
+    /// the slot 2-channel. Use [`Self::feed_secondary_slot_mc`] for N-channel.
     fn feed_secondary_slot(
         &mut self,
         slot: usize,
@@ -129,16 +131,82 @@ impl DspGraph {
         if mix.inputs.len() <= slot {
             return;
         }
-        mix.inputs[slot]
-            .planes_l
+        mix.inputs[slot].planes[0]
             .get_mut(..k)
             .expect("input plane capacity >= MAX_AUDIO_BLOCK_FRAMES")
             .copy_from_slice(&input.0[start..end]);
-        mix.inputs[slot]
-            .planes_r
+        mix.inputs[slot].planes[1]
             .get_mut(..k)
             .expect("input plane capacity >= MAX_AUDIO_BLOCK_FRAMES")
             .copy_from_slice(&input.1[start..end]);
+        mix.inputs[slot].channels = 2;
+    }
+
+    /// Feed a secondary slot from an N-channel interleaved source (Phase 4
+    /// S2). `frames * channels` samples are de-interleaved channel-major into
+    /// the slot's preallocated planes and the slot's channel count is set, so
+    /// the channel-wise MC sum includes all of them. Audio-side, no
+    /// allocation.
+    fn feed_secondary_slot_mc(
+        &mut self,
+        slot: usize,
+        interleaved: &[f32],
+        channels: usize,
+        start: usize,
+        end: usize,
+    ) {
+        let k = end - start;
+        let mix = self.mix_mut();
+        if mix.inputs.len() <= slot {
+            return;
+        }
+        let ch = channels.min(mix.inputs[slot].planes.len());
+        mix.inputs[slot].channels = ch;
+        let available = interleaved.len() / channels;
+        for (plane_idx, plane) in mix.inputs[slot].planes.iter_mut().take(ch).enumerate() {
+            let got = plane.len().min(k).min(available);
+            for dst in 0..got {
+                plane[dst] = interleaved[(start + dst) * channels + plane_idx.min(channels - 1)];
+            }
+        }
+    }
+
+    /// Process an interleaved `channels > 2`-channel multichannel block with
+    /// a primary stream and any number of N-channel secondary mix-bus streams
+    /// (Phase 4 S2). The primary is processed in place through the full MC
+    /// plan; each secondary is fed channel-major into its slot and summed
+    /// channel-wise at the mix step. `secondaries` is `(interleaved,
+    /// channels)` per slot — a secondary may carry fewer channels than the
+    /// primary (surround slots feeding a 5.1 bus). Missing tails are silence.
+    /// Transport bypass returns before any stage. Control tick runs once per
+    /// caller block.
+    pub fn process_block_multichannel_streams(
+        &mut self,
+        primary: &mut [f32],
+        primary_channels: usize,
+        secondaries: &mut [(&mut [f32], usize)],
+    ) {
+        self.control_tick();
+        let n = primary.len() / primary_channels.max(1);
+        if n > MAX_AUDIO_BLOCK_FRAMES {
+            let mut start = 0;
+            while start < n {
+                let end = (start + MAX_AUDIO_BLOCK_FRAMES).min(n);
+                for (k, &mut (ref sec, sec_ch)) in secondaries.iter_mut().enumerate() {
+                    self.feed_secondary_slot_mc(k + 1, sec, sec_ch, start, end);
+                }
+                self.process_block_multichannel_inner(
+                    &mut primary[start * primary_channels..end * primary_channels],
+                    primary_channels,
+                );
+                start = end;
+            }
+            return;
+        }
+        for (k, &mut (ref sec, sec_ch)) in secondaries.iter_mut().enumerate() {
+            self.feed_secondary_slot_mc(k + 1, sec, sec_ch, 0, n);
+        }
+        self.process_block_multichannel_inner(primary, primary_channels);
     }
 
     /// Unticked inner path — shared by the public entry and the ≤2-channel

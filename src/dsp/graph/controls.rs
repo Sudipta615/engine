@@ -24,7 +24,7 @@ use crate::dsp::{
     limiter::LimiterMode,
     loudness::{LoudnessMetadata, LoudnessMode},
 };
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
 /// Depth of each per-node control queue. Bounded, so the block-boundary
@@ -154,6 +154,14 @@ pub(crate) struct ControlBus {
     user_balance: AtomicU32,
     user_speed: AtomicU32,
     user_fade_ms: AtomicU32,
+    /// Per-slot user state (Phase 4 S1): one entry per possible mix-bus slot,
+    /// sized to [`MAX_MIX_SLOTS`]. The audio side mirrors each slot's
+    /// gain / balance / mute / active at drain; the control side seeds a
+    /// fresh generation from them so a reconfig never snaps lane settings.
+    user_slot_gain: Vec<AtomicU32>,
+    user_slot_balance: Vec<AtomicU32>,
+    user_slot_mute: Vec<AtomicU8>,
+    user_slot_active: Vec<AtomicU8>,
 }
 
 impl ControlBus {
@@ -172,6 +180,14 @@ impl ControlBus {
             user_balance: AtomicU32::new(0.0f32.to_bits()),
             user_speed: AtomicU32::new(1.0f32.to_bits()),
             user_fade_ms: AtomicU32::new(volume_fade_ms.to_bits()),
+            user_slot_gain: (0..MAX_MIX_SLOTS)
+                .map(|_| AtomicU32::new(1.0f32.to_bits()))
+                .collect(),
+            user_slot_balance: (0..MAX_MIX_SLOTS)
+                .map(|_| AtomicU32::new(0.0f32.to_bits()))
+                .collect(),
+            user_slot_mute: (0..MAX_MIX_SLOTS).map(|_| AtomicU8::new(0)).collect(),
+            user_slot_active: (0..MAX_MIX_SLOTS).map(|_| AtomicU8::new(1)).collect(),
         }
     }
 
@@ -209,14 +225,47 @@ impl ControlBus {
         self.user_fade_ms.store(ms.to_bits(), Ordering::Relaxed);
     }
 
+    /// Mirror one slot's user state onto the sticky per-slot atomics
+    /// (audio side, at drain). Out-of-range slots are ignored.
+    pub(super) fn set_slot_user_state(
+        &self,
+        slot: usize,
+        gain: f32,
+        balance: f32,
+        mute: bool,
+        active: bool,
+    ) {
+        if let Some(g) = self.user_slot_gain.get(slot) {
+            g.store(gain.to_bits(), Ordering::Relaxed);
+        }
+        if let Some(b) = self.user_slot_balance.get(slot) {
+            b.store(balance.to_bits(), Ordering::Relaxed);
+        }
+        if let Some(m) = self.user_slot_mute.get(slot) {
+            m.store(mute as u8, Ordering::Relaxed);
+        }
+        if let Some(a) = self.user_slot_active.get(slot) {
+            a.store(active as u8, Ordering::Relaxed);
+        }
+    }
+
     /// Atomic snapshot of the current user state, for seeding a generation
     /// build on the control side ([`GraphGeneration::build_with_state`]).
     pub(super) fn snapshot(&self) -> super::swap::UserState {
+        use super::swap::SlotState;
         super::swap::UserState {
             volume: self.user_volume(),
             balance: self.user_balance(),
             speed: self.user_speed(),
             volume_fade_ms: self.user_fade_ms(),
+            slots: (0..MAX_MIX_SLOTS)
+                .map(|i| SlotState {
+                    gain: f32::from_bits(self.user_slot_gain[i].load(Ordering::Relaxed)),
+                    balance: f32::from_bits(self.user_slot_balance[i].load(Ordering::Relaxed)),
+                    mute: self.user_slot_mute[i].load(Ordering::Relaxed) != 0,
+                    active: self.user_slot_active[i].load(Ordering::Relaxed) != 0,
+                })
+                .collect(),
         }
     }
 }
@@ -665,6 +714,26 @@ impl DspGraph {
                     _ => {}
                 }
                 apply_node_cmd(&mut self.active.nodes[i], cmd);
+                // Phase 4 S1: mirror the slot's *post-apply* state so the
+                // sticky snapshot carries the linear target even for
+                // dB/ramped commands (the node state is the source of truth).
+                if let NodeCmd::MixInput { input, .. } = cmd {
+                    let input = *input as usize;
+                    if let GraphNode::Mix(mix) = &self.active.nodes[i] {
+                        if let Some(slot) = mix.inputs.get(input) {
+                            // Mirror the *target* gain (the user's intended
+                            // setting): the ramped current value may still be
+                            // mid-slew with no audio processed yet.
+                            self.bus.set_slot_user_state(
+                                input,
+                                slot.gain.target_gain,
+                                slot.balance,
+                                slot.mute,
+                                slot.active,
+                            );
+                        }
+                    }
+                }
             }
         }
     }

@@ -46,8 +46,12 @@ impl GraphGeneration {
         // mod.rs — the execution plans reference stages by index. Phase 3 S1:
         // the four pre-mix slots are absorbed into the mix bus (each bus
         // input owns its preamp + loudness chain).
+        // Phase 4 S1: the bus carries `config.mix_slots` inputs (clamped by
+        // the node); slots 0/1 are the transition pair, slots >= 2 are
+        // independent lanes. A different slot count is a generation rebuild.
         let nodes = vec![
-            GraphNode::Mix(MixBusNode::new(
+            GraphNode::Mix(MixBusNode::with_slots(
+                config.mix_slots,
                 sample_rate,
                 config.crossfade.duration_ms,
                 config.crossfade.enabled,
@@ -114,6 +118,25 @@ impl GraphGeneration {
         gen_node!(gen, node_id::TIMESTRETCH, TimeStretch)
             .stretcher
             .set_speed(user.speed);
+
+        // Phase 4 S1: per-slot user-state replay. The new generation's slot
+        // count comes from `config.mix_slots`; the snapshot may carry more or
+        // fewer entries — replay the overlap, keep defaults for the rest.
+        // Gains are replayed as *targets* (one-pole ramp, same semantics as
+        // the volume replay); balance / mute / active are immediate. Slot 0's
+        // detachment is never replayed (it is the caller's in-place planes).
+        {
+            let mix_slots = gen_node!(gen, node_id::MIX, Mix).inputs.len();
+            for (i, slot) in user.slots.iter().take(mix_slots).enumerate() {
+                let input = &mut gen_node!(gen, node_id::MIX, Mix).inputs[i];
+                input.gain.set_gain(slot.gain.clamp(0.0, 1.0));
+                input.balance = slot.balance.clamp(-1.0, 1.0);
+                input.mute = slot.mute;
+                if i != 0 {
+                    input.active = slot.active;
+                }
+            }
+        }
 
         Box::new(gen)
     }

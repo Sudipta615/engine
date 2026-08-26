@@ -8,15 +8,14 @@
 //!
 //! ## Current status
 //!
-//! `DspGraph` is **not the active hot path**. The engine routes through
-//! [`crate::dsp::pipeline::DspPipeline`] for playback. `DspGraph` is used for:
+//! Since Phase 3 the engine routes through `DspGraph` as its production hot
+//! path (the graph executes the full chain: mix bus, EQ, dynamics,
+//! convolution, balance, crossfeed, stereo, timestretch, volume, seek fade,
+//! routing, resampler, limiter, dither). `DspPipeline` remains as the
+//! reference implementation and the bit-exact oracle for the equivalence
+//! suite.
 //!
-//! - Capability introspection (each node type implements [`DspNode::capability`])
-//! - Unit testing node-level correctness (see `tests.rs`)
-//! - Prototyping future DSP architecture features (reorderable chain,
-//!   conditional nodes, SIMD dispatch)
-//!
-//! Since the Phase-1 refactor, the graph executes **compiled execution plans**:
+//! The graph executes **compiled execution plans**:
 //! all nodes live in a fixed [`GraphNode`] arena (indexed by [`node_id`]) and
 //! [`plan::PlanSet::compile`] orders them into per-mode step lists. The hot
 //! path iterates a plan and dispatches through the enum — stage order is data,

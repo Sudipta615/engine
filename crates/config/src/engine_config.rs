@@ -74,6 +74,15 @@ pub struct EngineConfig {
     /// Track-to-track transition mode.
     #[serde(default)]
     pub transition_mode: TransitionMode,
+    /// Number of mix-bus slots in the DSP graph (Phase 4). Slots 0/1 are the
+    /// transition pair; slots ≥ 2 are independent simultaneous streams. Must
+    /// be ≥ 2; larger values are clamped by the graph to its slot bound.
+    #[serde(default = "default_mix_slots")]
+    pub mix_slots: usize,
+}
+
+fn default_mix_slots() -> usize {
+    2
 }
 
 impl Default for EngineConfig {
@@ -110,6 +119,7 @@ impl Default for EngineConfig {
             bass_management: BassManagementConfig::default(),
             channel_mix: ChannelMixConfig::default(),
             transition_mode: TransitionMode::default(),
+            mix_slots: default_mix_slots(),
         }
     }
 }

@@ -93,11 +93,14 @@ src/
 │                             #   production hot path since Phase 3 — split
 │                             #   by concern into construction / access /
 │                             #   controls / lifecycle / process / limiter /
-│                             #   report / plan / swap / nodes/ (incl. the
-│                             #   MixBusNode arena slot + per-input chains;
-│                             #   Phase 2: per-node SPSC control queues +
-│                             #   publish/swap/retire live generation swap;
-│                             #   Phase 3: engine drives the graph end-to-end)
+│                             #   report / plan / swap / nodes/mix/
+│                             #   (MixBusNode split into mod/envelope/sum:
+│                             #   N-slot + N-channel bus; Phase 2: per-node
+│                             #   SPSC control queues + publish/swap/retire
+│                             #   live generation swap; Phase 3: engine
+│                             #   drives the graph end-to-end; Phase 4 S1+S2:
+│                             #   mix_slots generation parameter + N-channel
+│                             #   secondary planes with channel-wise MC sum)
 │
 ├── output/                   # ── Output backends ──
 │   ├── mod.rs                # Module wiring + re-exports

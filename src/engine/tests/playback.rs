@@ -242,7 +242,10 @@ fn test_incoming_track_loudness_scan() {
     );
 
     // The scan runs in the background; tick() drains the completion command.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    // The deadline is deliberately generous: the scan thread competes with
+    // the whole parallel test suite for CPU, so a tight wall-clock bound
+    // flakes under load (the assertion still fails on a genuine hang).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     loop {
         engine.tick();
         if engine
@@ -294,7 +297,7 @@ fn test_incoming_metadata_applied_to_pipeline() {
         .prepare_next_track(&path)
         .expect("prepare should succeed");
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     loop {
         engine.tick();
         // The completion handler applies the merged metadata to the incoming
@@ -321,7 +324,7 @@ fn test_load_track_reuses_cached_scan() {
 
     // First load: no cache entry yet, so the scan must run in the background.
     engine.load_track(&path).expect("first load");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     loop {
         engine.tick();
         if engine

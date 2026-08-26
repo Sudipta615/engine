@@ -552,13 +552,11 @@ fn mix_stream_slots_sum_independently_and_detach() {
     let sr = 48000.0;
     let mut cfg = EngineConfig::default();
     cfg.crossfade.enabled = false; // begin_crossfade degrades to a gapless switch
+                                   // Phase 4 S1: the slot count is a generation parameter — a 3-slot bus.
+    cfg.mix_slots = 3;
     let mut graph = DspGraph::from_config(&cfg, sr);
+    assert_eq!(graph.mix().inputs.len(), 3, "mix_slots must size the bus");
 
-    // Grow the bus to 3 inputs (Phase-4 groundwork: extra streams).
-    graph
-        .mix_mut()
-        .inputs
-        .push(MixInput::new("extra_preamp", "extra_loudness", 10.0, sr));
     graph.mix_mut().inputs[2].gain.set_gain(0.5);
     graph.mix_mut().inputs[2].gain.snap();
 
@@ -629,5 +627,158 @@ fn mix_stream_slots_sum_independently_and_detach() {
             (v - 0.3125).abs() < 1e-6,
             "PlayingNext 3-input sum mismatch at {i}: {v} (want 0.3125)"
         );
+    }
+}
+
+// ── Phase 4 S1: slot-count parameter + per-slot user state ────────────────
+
+#[test]
+fn mix_slot_count_is_clamped_to_the_bus_bound() {
+    let sr = 48000.0;
+
+    // Below the minimum: a 1-slot request still yields the transition pair.
+    let cfg = EngineConfig {
+        mix_slots: 1,
+        ..EngineConfig::default()
+    };
+    let g = DspGraph::from_config(&cfg, sr);
+    assert_eq!(g.mix().inputs.len(), 2, "mix_slots=1 must clamp up to 2");
+
+    // Above the maximum: clamped to MAX_MIX_SLOTS.
+    let cfg = EngineConfig {
+        mix_slots: 99,
+        ..EngineConfig::default()
+    };
+    let g = DspGraph::from_config(&cfg, sr);
+    assert_eq!(
+        g.mix().inputs.len(),
+        crate::dsp::graph::nodes::mix::MAX_MIX_SLOTS,
+        "mix_slots=99 must clamp down to MAX_MIX_SLOTS"
+    );
+
+    // Default config stays at the canonical 2-slot layout.
+    let g = DspGraph::from_config(&EngineConfig::default(), sr);
+    assert_eq!(g.mix().inputs.len(), 2);
+    assert_eq!(g.mix().inputs[0].name, "out_preamp");
+    assert_eq!(g.mix().inputs[1].name, "in_preamp");
+}
+
+#[test]
+fn per_slot_user_state_survives_reconfigure() {
+    let sr = 48000.0;
+    let cfg = EngineConfig {
+        mix_slots: 3,
+        ..EngineConfig::default()
+    };
+    let mut graph = DspGraph::from_config(&cfg, sr);
+
+    // Set lane 2 (slot 2) gain, balance, mute, and detach it via the queued
+    // control surface, then drain (as a single-threaded caller would).
+    graph.set_input_gain(2, 0.4);
+    graph.set_input_balance(2, 0.25);
+    graph.set_input_mute(2, true);
+    graph.set_input_active(2, false);
+    graph.drain_queued_control();
+
+    // Reconfigure: the fresh generation must inherit the lane's settings.
+    graph.reconfigure(&cfg);
+    graph.drain_queued_control();
+    let mix = graph.mix();
+    let lane = &mix.inputs[2];
+    // The gain is replayed as a *target* (one-pole ramp, like volume).
+    assert_eq!(
+        lane.gain.target_gain, 0.4,
+        "lane gain target must survive reconfig"
+    );
+    assert_eq!(lane.balance, 0.25, "lane balance must survive reconfig");
+    assert!(lane.mute, "lane mute must survive reconfig");
+    assert!(!lane.active, "lane detachment must survive reconfig");
+
+    // Slot 0 cannot be detached even if a snapshot claims otherwise.
+    graph.set_input_active(0, false);
+    graph.drain_queued_control();
+    graph.reconfigure(&cfg);
+    graph.drain_queued_control();
+    assert!(graph.mix().inputs[0].active, "slot 0 is never detached");
+
+    // A snapshot with fewer slots than the generation is fine: missing
+    // entries keep defaults.
+    let small = EngineConfig {
+        mix_slots: 2,
+        ..EngineConfig::default()
+    };
+    graph.reconfigure(&small);
+    graph.drain_queued_control();
+    assert_eq!(graph.mix().inputs.len(), 2);
+    assert_eq!(graph.mix().inputs[1].gain.gain, 1.0, "default gain");
+}
+
+// ── Phase 4 S2: N-channel secondary planes + multichannel bus sum ─────────
+
+#[test]
+fn multichannel_stream_slots_sum_channel_wise() {
+    use crate::decode::ChannelLayout;
+
+    let sr = 48000.0;
+    let cfg = EngineConfig {
+        mix_slots: 3,
+        ..EngineConfig::default()
+    };
+    let mut graph = DspGraph::from_config(&cfg, sr);
+    graph.set_multichannel_layout(&ChannelLayout::FivePointOne);
+
+    let ch = 6; // 5.1
+    let n = 128;
+    let gain2 = 0.5f32;
+    graph.mix_mut().inputs[2].gain.set_gain(gain2);
+    graph.mix_mut().inputs[2].gain.snap();
+
+    // Primary: all channels = 0.25. Secondary 1 (slot 2): all = 0.5.
+    let mut primary = vec![0.25f32; n * ch];
+    let mut sec2 = vec![0.5f32; n * ch];
+    let mut sec1 = vec![0.125f32; n * ch]; // slot 1, gated by pair envelope in stereo but on MC summed too
+
+    graph.process_block_multichannel_streams(
+        &mut primary,
+        ch,
+        &mut [(&mut sec1, ch), (&mut sec2, ch)],
+    );
+
+    // On the MC path the pair envelope is stereo-only (it lives in
+    // mix_stereo), so every secondary slot >= 1 is summed channel-wise at its
+    // per-input gain: 0.25 (primary) + 0.125 (slot 1) + 0.5*0.5 (slot 2)
+    // = 0.625, on every channel.
+    for ch_idx in 0..ch {
+        for i in 0..n {
+            let v = primary[i * ch + ch_idx];
+            assert!(
+                (v - 0.625).abs() < 1e-5,
+                "ch {ch_idx} frame {i}: {v} (want 0.625)"
+            );
+        }
+    }
+    assert_eq!(
+        graph.mix().inputs[2].channels,
+        ch,
+        "slot channel count must be set by the multi-stream feed"
+    );
+
+    // Detach slot 2: only slot 1 remains summed -> 0.25 + 0.125 = 0.375.
+    graph.set_input_active(2, false);
+    graph.drain_queued_control();
+    let mut primary = vec![0.25f32; n * ch];
+    graph.process_block_multichannel_streams(
+        &mut primary,
+        ch,
+        &mut [(&mut sec1, ch), (&mut sec2, ch)],
+    );
+    for ch_idx in 0..ch {
+        for i in 0..n {
+            let v = primary[i * ch + ch_idx];
+            assert!(
+                (v - 0.375).abs() < 1e-5,
+                "detached slot leaked: ch {ch_idx} frame {i}: {v} (want 0.375)"
+            );
+        }
     }
 }
