@@ -7,7 +7,7 @@ impl DspGraph {
         if self.dop_bypass || self.bit_perfect {
             (left, right)
         } else {
-            self.limiter.limiter.process(left, right)
+            self.limiter_mut().limiter.process(left, right)
         }
     }
 
@@ -15,10 +15,10 @@ impl DspGraph {
         if self.dop_bypass || self.bit_perfect {
             return;
         }
-        self.limiter.limiter.process_block(left, right);
+        self.limiter_mut().limiter.process_block(left, right);
     }
 
     pub fn flush_final_limiter(&mut self) -> Vec<(f32, f32)> {
-        self.limiter.limiter.flush()
+        self.limiter_mut().limiter.flush()
     }
 }

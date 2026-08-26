@@ -631,7 +631,7 @@ mod tests {
                     assert_eq!(chunk.channels, 2);
                     assert_eq!(chunk.sample_rate, 176_400);
                     assert_eq!(chunk.samples.len(), chunk.frame_count * 2);
-                    for pair in chunk.samples.chunks_exact(2) {
+                    for pair in chunk.samples.as_chunks::<2>().0 {
                         let wl = word24(pair[0]);
                         let wr = word24(pair[1]);
                         assert_eq!(wl & 0xFFFF, 0);

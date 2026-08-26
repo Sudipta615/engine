@@ -49,8 +49,8 @@ fn graph_block_processing_is_deterministic() {
     cfg.precision_mode = PrecisionMode::Performance;
 
     let mut graph = DspGraph::from_config(&cfg, sr);
-    graph.volume.processor.set_gain(0.7);
-    graph.balance.set_balance(-0.3);
+    graph.volume_mut().processor.set_gain(0.7);
+    graph.balance_mut().set_balance(-0.3);
 
     let n = 2048;
     let mut left = vec![0.0f32; n];
@@ -127,7 +127,7 @@ fn graph_matches_pipeline_exact_block_outputs() {
     let mut graph = DspGraph::from_config(&cfg, sr);
 
     pipeline.set_volume(0.8);
-    graph.volume.processor.set_gain(0.8);
+    graph.volume_mut().processor.set_gain(0.8);
 
     let n = 1024;
     let mut input_l = vec![0.0f32; n];

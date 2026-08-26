@@ -239,13 +239,13 @@ fn convert_pcm_to_f32(bytes: &[u8], bits: u16, out: &mut Vec<f32>) {
         }
         16 => {
             out.reserve(bytes.len() / 2);
-            for c in bytes.chunks_exact(2) {
-                out.push(i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0);
+            for c in bytes.as_chunks::<2>().0 {
+                out.push(i16::from_le_bytes(*c) as f32 / 32768.0);
             }
         }
         24 => {
             out.reserve(bytes.len() / 3);
-            for c in bytes.chunks_exact(3) {
+            for c in bytes.as_chunks::<3>().0 {
                 let u = c[0] as u32 | (c[1] as u32) << 8 | (c[2] as u32) << 16;
                 let s = ((u << 8) as i32) >> 8; // sign-extend the 24-bit value
                 out.push(s as f32 / 8_388_608.0);
@@ -253,8 +253,8 @@ fn convert_pcm_to_f32(bytes: &[u8], bits: u16, out: &mut Vec<f32>) {
         }
         32 => {
             out.reserve(bytes.len() / 4);
-            for c in bytes.chunks_exact(4) {
-                out.push(i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32 / 2_147_483_648.0);
+            for c in bytes.as_chunks::<4>().0 {
+                out.push(i32::from_le_bytes(*c) as f32 / 2_147_483_648.0);
             }
         }
         _ => {

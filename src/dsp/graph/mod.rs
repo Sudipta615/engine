@@ -16,6 +16,12 @@
 //! - Prototyping future DSP architecture features (reorderable chain,
 //!   conditional nodes, SIMD dispatch)
 //!
+//! Since the Phase-1 refactor, the graph executes **compiled execution plans**:
+//! all nodes live in a fixed [`GraphNode`] arena (indexed by [`node_id`]) and
+//! [`plan::PlanSet::compile`] orders them into per-mode step lists. The hot
+//! path iterates a plan and dispatches through the enum — stage order is data,
+//! not code, which is the prerequisite for live reconfiguration (Phase 2).
+//!
 //! The static [`DSP_STAGE_CAPABILITIES`] table in the pipeline module is the
 //! single source of truth for stage metadata; node capability implementations
 //! here mirror those entries.
@@ -27,11 +33,15 @@
 //! concern-scoped files):
 //!
 //! - `construction.rs` — [`DspGraph::from_config`], [`DspGraph::apply_config`],
-//!   [`DspGraph::apply_performance_mode`]
+//!   [`DspGraph::apply_performance_mode`] (builds the arena + plans)
+//! - `plan.rs` — the compiled [`PlanSet`] / [`ExecutionPlan`] / [`PlanStep`]
+//!   representation and the canonical stage order
+//! - `access.rs` — typed node accessors over the arena (replaces the former
+//!   named fields: `graph.volume()` instead of `graph.volume`)
 //! - `lifecycle.rs` — sample-rate updates, resets, mode toggles, and the
 //!   small getters/setters
-//! - `process.rs` — the block signal-processing plans (stereo f32 / f64,
-//!   multichannel, pre-mix / post-mix / front-filter helpers)
+//! - `process.rs` — block entry points (stereo f32/f64, multichannel) that
+//!   split blocks, promote precision, and hand planes to the plan runner
 //! - `limiter.rs` — the output-domain final safety limiter
 //! - `report.rs` — `graph_nodes` and `total_latency_ms` introspection
 
@@ -41,11 +51,16 @@ pub mod nodes;
 #[cfg(test)]
 pub mod tests;
 
+mod access;
 mod construction;
+mod controls;
 mod lifecycle;
 mod limiter;
+mod plan;
 mod process;
 mod report;
+
+use plan::PlanSet;
 
 use crate::buffer::{MAX_AUDIO_BLOCK_FRAMES, MAX_CHANNELS};
 use crate::decode::ChannelLayout;
@@ -55,6 +70,66 @@ use config::{EngineConfig, LoudnessMode as ConfigLoudnessMode, PerformanceMode};
 pub use context::GraphScratch;
 pub use node::DspNode;
 pub use nodes::*;
+
+// ── Node arena ───────────────────────────────────────────────────────────────
+
+/// Stable index into the graph's node arena. Plans reference stages by index
+/// instead of by name, so reordering or replacing a node (Phase 2) only needs
+/// to rebuild the plan, never the executor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NodeIdx(usize);
+
+/// Fixed arena slot order — MUST match the construction order in
+/// [`DspGraph::from_config`].
+mod node_id {
+    pub const OUT_PREAMP: usize = 0;
+    pub const OUT_LOUDNESS: usize = 1;
+    pub const IN_PREAMP: usize = 2;
+    pub const IN_LOUDNESS: usize = 3;
+    pub const EQ: usize = 4;
+    pub const DYNAMICS: usize = 5;
+    pub const CONVOLUTION: usize = 6;
+    pub const BALANCE: usize = 7;
+    pub const CROSSFEED: usize = 8;
+    pub const STEREO: usize = 9;
+    pub const TIMESTRETCH: usize = 10;
+    pub const VOLUME: usize = 11;
+    pub const SEEK_FADE: usize = 12;
+    pub const ROUTING: usize = 13;
+    pub const RESAMPLER: usize = 14;
+    pub const LIMITER: usize = 15;
+    pub const DITHER: usize = 16;
+}
+
+/// Uniform node storage for the arena. The enum enables monomorphized (match)
+/// dispatch on the hot path and keeps every node inline in one contiguous
+/// allocation — no `Box<dyn DspNode>` indirection. The arena order is fixed
+/// by construction and matches the [`node_id`] slot table.
+///
+/// The enum is deliberately large (the largest node, e.g. the limiter or
+/// timestretcher, is ~13 KB, and the arena stores one slot per node kind);
+/// boxing would reintroduce per-node indirection and allocation, so the lint
+/// is allowed — same as `PlaybackStream` in the engine.
+#[allow(clippy::large_enum_variant)]
+enum GraphNode {
+    OutPreamp(GainNode),
+    OutLoudness(LoudnessNode),
+    InPreamp(GainNode),
+    InLoudness(LoudnessNode),
+    Eq(EqNode),
+    Dynamics(DynamicsNode),
+    Convolution(ConvolutionNode),
+    Balance(BalanceNode),
+    Crossfeed(CrossfeedNode),
+    Stereo(StereoNode),
+    TimeStretch(TimeStretchNode),
+    Volume(GainNode),
+    SeekFade(SeekFadeNode),
+    Routing(RoutingNode),
+    Resampler(ResamplerNode),
+    Limiter(LimiterNode),
+    Dither(DitherNode),
+}
 
 const VOLUME_RAMP_DURATION_MS: f32 = 10.0;
 const PREAMP_RAMP_DURATION_MS: f32 = VOLUME_RAMP_DURATION_MS;
@@ -88,31 +163,19 @@ const PREAMP_RAMP_DURATION_MS: f32 = VOLUME_RAMP_DURATION_MS;
 /// The struct only declares the graph's fields and wiring; its behavior lives
 /// in the concern-scoped impl files listed in the module docs.
 pub struct DspGraph {
-    // ── Pre-mix Chain ──
-    pub out_preamp: GainNode,
-    pub out_loudness: LoudnessNode,
-    pub in_preamp: GainNode,
-    pub in_loudness: LoudnessNode,
+    // ── Node arena ──
+    /// Uniform node storage: every graph node lives in one contiguous arena so
+    /// the compiled execution plans can reference stages by stable index
+    /// ([`node_id`]). Arena order is fixed by construction.
+    nodes: Vec<GraphNode>,
 
-    // ── Post-mix Chain ──
-    pub eq: EqNode,
-    pub dynamics: DynamicsNode,
-    pub convolution: ConvolutionNode,
-    pub balance: BalanceNode,
-    pub crossfeed: CrossfeedNode,
-    pub stereo: StereoNode,
-    pub timestretch: TimeStretchNode,
-    pub volume: GainNode,
-    pub seek_fade: SeekFadeNode,
+    /// Compiled execution plans — one per execution mode and channel class
+    /// (see [`plan`]). Built on the control path; the audio path only reads
+    /// them. The canonical stage order lives here, not in the executor.
+    plans: PlanSet,
 
     // ── Routing & Multichannel ──
-    pub routing: RoutingNode,
     pub multichannel_layout: ChannelLayout,
-
-    // ── Output Domain & Safety ──
-    pub resampler: ResamplerNode,
-    pub limiter: LimiterNode,
-    pub dither: DitherNode,
 
     // ── Graph State & Control ──
     sample_rate: f32,

@@ -86,8 +86,10 @@ fn convert_stereo_integer_block<T, Pair, Mono>(
     let mut nans = 0u32;
 
     for (dst, src) in data[..pair_samples]
-        .chunks_exact_mut(2)
-        .zip(scratch[..pair_samples].chunks_exact(2))
+        .as_chunks_mut::<2>()
+        .0
+        .iter_mut()
+        .zip(scratch[..pair_samples].as_chunks::<2>().0)
     {
         let left = src[0];
         let right = src[1];
