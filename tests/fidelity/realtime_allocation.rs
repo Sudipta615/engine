@@ -315,6 +315,90 @@ fn realtime_graph_plan_multichannel_does_not_allocate() {
     );
 }
 
+/// Phase 2: a generation swap executed by the audio thread at a block
+/// boundary must itself be allocation-free. The swap path is exactly
+/// `Box::from_raw` / `mem::replace` / `Box::into_raw` plus the bounded queue
+/// drains — no allocation, no locks. The generations are built and published
+/// on a separate CONTROL thread whose allocations are legal (and unmeasured
+/// via the thread-local counter); the measured audio thread only executes
+/// the swap.
+#[test]
+fn realtime_graph_swap_does_not_allocate_on_audio_thread() {
+    let mut cfg = full_chain_config();
+    cfg.precision_mode = config::PrecisionMode::Performance;
+
+    let mut graph = DspGraph::from_config(&cfg, 48_000.0);
+    let handle = graph.control_handle();
+
+    // Same synthetic IR as the other graph tests.
+    let ir: Vec<(f32, f32)> = (0..2048)
+        .map(|i| {
+            let e = (-i as f32 / 512.0).exp() * 0.5;
+            (e, e * 0.9)
+        })
+        .collect();
+    graph.convolution_mut().engine.set_enabled(true);
+    graph
+        .convolution_mut()
+        .engine
+        .load_ir_from_samples(&ir)
+        .expect("synthetic IR must load");
+    graph.convolution_mut().engine.set_wet_mix(0.3);
+    graph.set_volume(0.8);
+
+    let mut left = [0.0f32; 128];
+    let mut right = [0.0f32; 128];
+
+    // Warm up before the measurement window (drains the queued volume cmd).
+    graph.process_block(&mut left, &mut right);
+    graph.process_final_limiter_block(&mut left, &mut right);
+
+    // Pre-build + pre-send the swap batch during warm-up, when this thread's
+    // allocations are unmeasured. The control thread then publishes them
+    // during the measured window (its allocations are unmeasured too).
+    const N_SWAPS: usize = 40;
+    let (tx, rx) = std::sync::mpsc::channel::<Box<engine::dsp::graph::GraphGeneration>>();
+    for i in 0..N_SWAPS {
+        let mut c2 = full_chain_config();
+        c2.eq.bands[2].gain_db = i as f32 * 0.25;
+        tx.send(engine::dsp::graph::GraphGeneration::from_config(
+            &c2,
+            48_000.0,
+            &graph.multichannel_layout,
+        ))
+        .expect("pre-warm channel send");
+    }
+    drop(tx);
+
+    let ctl_handle = handle.clone();
+    let ctl = std::thread::spawn(move || {
+        while let Ok(gen) = rx.recv() {
+            ctl_handle.publish_generation(gen);
+        }
+    });
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for block in 0..10_000 {
+        let value = (block as f32 * 0.01).sin() * 0.3;
+        left.fill(value);
+        right.fill(-value * 0.8);
+        graph.process_block(&mut left, &mut right);
+        graph.process_final_limiter_block(&mut left, &mut right);
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocations = THREAD_ALLOCS.with(|c| c.get());
+    ctl.join().expect("control thread");
+
+    assert!(handle.generation() >= 1, "swaps must have occurred");
+    assert_eq!(
+        allocations, 0,
+        "generation swap on the audio thread allocated"
+    );
+}
+
 /// A genuine 44.1 → 48 kHz conversion (not the passthrough rate) must also
 /// be allocation-free in steady state.
 #[cfg(feature = "resample")]

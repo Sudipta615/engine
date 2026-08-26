@@ -88,11 +88,13 @@ src/
 │   ├── device_profile.rs     # Per-device DSP defaults
 │   ├── analyzer.rs           # Real-time peak/RMS/spectrum analyzer
 │   ├── float.rs              # AudioFloat numeric helpers
-│   └── graph/                # Experimental node-based DSP graph (DspNode trait);
-│                             #   not the active hot path — split by concern into
+│   └── graph/                # Node-based DSP graph (DspNode trait); not the
+│                             #   active hot path — split by concern into
 │                             #   construction / access / controls / lifecycle /
-│                             #   process / limiter / report / plan (compiled
-│                             #   execution plans over a node arena)
+│                             #   process / limiter / report / plan / swap
+│                             #   (compiled execution plans over a node arena;
+│                             #   Phase 2: per-node SPSC control queues +
+│                             #   publish/swap/retire live generation swap)
 │
 ├── output/                   # ── Output backends ──
 │   ├── mod.rs                # Module wiring + re-exports

@@ -11,13 +11,14 @@ use super::*;
 
 impl DspGraph {
     /// Execute a compiled plan over a planar block in f32. The plan borrows
-    /// `self.plans` (immutably) while nodes borrow `self.nodes` (mutably) —
-    /// disjoint fields, so the hot path stays lock-free and allocation-free.
+    /// the active generation's `plans` (immutably) while nodes borrow its
+    /// `nodes` (mutably) — disjoint fields, so the hot path stays lock-free
+    /// and allocation-free.
     #[inline]
     fn run_plan(&mut self, id: PlanId, planes: &mut [&mut [f32]]) {
-        let plan = self.plans.plan(id);
+        let plan = self.active.plans.plan(id);
         for step in &plan.steps {
-            let node = &mut self.nodes[step.node.0];
+            let node = &mut self.active.nodes[step.node.0];
             match step.scope {
                 StepScope::AllChannels => node.process_block_f32(planes),
                 StepScope::FrontPair => {
@@ -33,9 +34,9 @@ impl DspGraph {
     /// f64 variant of [`Self::run_plan`] (Quality mode).
     #[inline]
     fn run_plan_f64(&mut self, id: PlanId, planes: &mut [&mut [f64]]) {
-        let plan = self.plans.plan(id);
+        let plan = self.active.plans.plan(id);
         for step in &plan.steps {
-            let node = &mut self.nodes[step.node.0];
+            let node = &mut self.active.nodes[step.node.0];
             match step.scope {
                 StepScope::AllChannels => node.process_block_f64(planes),
                 StepScope::FrontPair => {
@@ -56,12 +57,23 @@ impl DspGraph {
     /// (eq → dynamics → convolution → balance → crossfeed → stereo →
     /// timestretch → volume → seek fade).
     pub fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
+        // Phase 2: apply queued control commands and any pending generation
+        // swap once per CALLER block, before any splitting or bypass checks
+        // (bypass governs signal processing, not control application).
+        self.control_tick();
+        self.process_block_inner(left, right);
+    }
+
+    /// Unticked inner path — shared by the public entry and the ≤2-channel
+    /// multichannel delegation so the control tick runs exactly once per
+    /// caller block.
+    fn process_block_inner(&mut self, left: &mut [f32], right: &mut [f32]) {
         let n = left.len().min(right.len());
         if n > MAX_AUDIO_BLOCK_FRAMES {
             let mut start = 0;
             while start < n {
                 let end = (start + MAX_AUDIO_BLOCK_FRAMES).min(n);
-                self.process_block(&mut left[start..end], &mut right[start..end]);
+                self.process_block_inner(&mut left[start..end], &mut right[start..end]);
                 start = end;
             }
             return;
@@ -105,12 +117,17 @@ impl DspGraph {
 
     /// Process a block of stereo frames in f64 precision in place.
     pub fn process_block_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
+        self.control_tick();
+        self.process_block_f64_inner(left, right);
+    }
+
+    fn process_block_f64_inner(&mut self, left: &mut [f64], right: &mut [f64]) {
         let n = left.len().min(right.len());
         if n > MAX_AUDIO_BLOCK_FRAMES {
             let mut start = 0;
             while start < n {
                 let end = (start + MAX_AUDIO_BLOCK_FRAMES).min(n);
-                self.process_block_f64(&mut left[start..end], &mut right[start..end]);
+                self.process_block_f64_inner(&mut left[start..end], &mut right[start..end]);
                 start = end;
             }
             return;
@@ -136,6 +153,11 @@ impl DspGraph {
         if channels == 0 || channels > MAX_CHANNELS {
             return;
         }
+        self.control_tick();
+        self.process_block_multichannel_inner(interleaved, channels);
+    }
+
+    fn process_block_multichannel_inner(&mut self, interleaved: &mut [f32], channels: usize) {
         let n = interleaved.len() / channels;
         if n == 0 {
             return;
@@ -144,7 +166,7 @@ impl DspGraph {
             let mut start = 0;
             while start < n {
                 let end = (start + MAX_AUDIO_BLOCK_FRAMES).min(n);
-                self.process_block_multichannel(
+                self.process_block_multichannel_inner(
                     &mut interleaved[start * channels..end * channels],
                     channels,
                 );
@@ -172,7 +194,7 @@ impl DspGraph {
             }
             {
                 let (front, rest) = planes.split_at_mut(1);
-                self.process_block(&mut front[0][..n], &mut rest[0][..n]);
+                self.process_block_inner(&mut front[0][..n], &mut rest[0][..n]);
             }
             for (i, chunk) in interleaved[..n * channels]
                 .chunks_exact_mut(channels)
