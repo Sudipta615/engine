@@ -62,7 +62,7 @@ impl AudioEngine {
         // the mixer changes the sample sequence even when both envelopes are
         // nominally at unity. Let the normal gapless EOS handoff handle the
         // next track instead.
-        if self.pipeline.is_bit_perfect() {
+        if self.graph.is_bit_perfect() {
             return;
         }
         if self.loudness_scan.next_track_path.is_none() {
@@ -177,15 +177,16 @@ impl AudioEngine {
                     incoming_sample_rate
                 );
 
-                // Tell the pipeline mixer to start the transition with the
-                // configured curve.
-                self.pipeline
-                    .mixer_mut()
-                    .set_curve(self.config.crossfade.curve.into());
+                // Tell the graph's mix bus to start the transition with the
+                // configured curve. The commands queue in order and drain at
+                // the next block boundary (crossfade_enabled=false degrades
+                // a crossfade to a gapless switch, exactly like the mixer).
+                self.graph.set_crossfade_curve(self.config.crossfade.curve);
                 if is_fade {
-                    self.pipeline.mixer_mut().start_fade();
+                    self.graph.begin_fade(self.config.crossfade.duration_ms);
                 } else {
-                    self.pipeline.mixer_mut().start_crossfade();
+                    self.graph
+                        .begin_crossfade(self.config.crossfade.duration_ms);
                 }
 
                 self.stream = Some(PlaybackStream::Transitioning {
@@ -217,7 +218,7 @@ impl AudioEngine {
                         m
                     }
                 };
-                self.pipeline
+                self.graph
                     .apply_loudness_metadata_incoming(Some(incoming_meta));
                 // Kick a scan for the incoming track if its tags lack EBU R128.
                 self.start_incoming_loudness_scan();

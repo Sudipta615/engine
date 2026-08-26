@@ -21,8 +21,8 @@ impl AudioEngine {
         } else {
             0.0
         };
-        if self.pipeline.is_bit_perfect() {
-            self.pipeline.set_volume(1.0);
+        if self.graph.is_bit_perfect() {
+            self.graph.set_volume(1.0);
             self.write_playback_info(|pb| {
                 pb.volume_error = Some(
                     "Bit-Perfect mode: software volume is disabled; use hardware volume or disable Bit-Perfect mode"
@@ -32,7 +32,7 @@ impl AudioEngine {
             });
             return;
         }
-        self.pipeline.set_volume(clamped);
+        self.graph.set_volume(clamped);
         self.write_playback_info(|pb| pb.volume = clamped);
     }
 
@@ -45,8 +45,8 @@ impl AudioEngine {
             );
             return;
         }
-        if self.pipeline.is_bit_perfect() {
-            self.pipeline.set_volume(1.0);
+        if self.graph.is_bit_perfect() {
+            self.graph.set_volume(1.0);
             self.write_playback_info(|pb| {
                 pb.volume_error = Some(
                     "Bit-Perfect mode: software volume is disabled; use hardware volume or disable Bit-Perfect mode"
@@ -56,14 +56,14 @@ impl AudioEngine {
             });
             return;
         }
-        self.pipeline.set_volume_db(db);
+        self.graph.set_volume_db(db);
         let linear = crate::dsp::pipeline::DspPipeline::volume_db_to_linear(db);
         self.write_playback_info(|pb| pb.volume = linear);
     }
 
     /// Read the current volume in dB.
     pub fn volume_db(&self) -> f32 {
-        self.pipeline.volume_db()
+        self.graph.volume_db()
     }
 
     /// Convert a UI percentage (0.0–100.0) to a dB value suitable for
@@ -82,11 +82,11 @@ impl AudioEngine {
 
     /// Enable or disable true-peak detection on the limiter.
     pub fn set_limiter_true_peak(&mut self, enabled: bool) {
-        self.pipeline.set_limiter_true_peak(enabled);
+        self.graph.set_limiter_true_peak(enabled);
     }
 
     /// Whether true-peak detection is currently active on the limiter.
     pub fn limiter_true_peak_enabled(&self) -> bool {
-        self.pipeline.limiter_true_peak_enabled()
+        self.graph.limiter_true_peak_enabled()
     }
 }

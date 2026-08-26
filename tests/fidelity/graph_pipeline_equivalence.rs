@@ -11,9 +11,16 @@
 //! stage order or activation fails here even if the samples happened to line
 //! up.
 //!
-//! Exclusions (documented): crossfade-active configs (the graph has no
-//! `TrackMixer` node yet) and the output domain (resampler / dither), which
-//! the engine drives separately in both designs.
+//! Crossfade-active configs are covered by the 2-input bus cases below:
+//! the graph's `MixBusNode` (Phase 3 S1) reproduces the pipeline's
+//! `TrackMixer` crossfade / fade / gapless path bit-exactly, driven through
+//! `process_block_inputs` against the engine's pre-mix → mix → post-mix
+//! composition. Excluded instead: the output domain (resampler / dither),
+//! which the engine drives separately in both designs. In Quality (f64)
+//! mode the graph keeps the SECONDARY input's pre-mix chain in f32 (S1
+//! precision contract; f64 secondary planes arrive with the engine
+//! migration), so the f64 oracle pre-mixes the incoming stream in f32 and
+//! promotes at the sum — mirroring the graph exactly.
 
 use config::{CompressorDetector, EngineConfig, PrecisionMode};
 use engine::dsp::equalizer::{EqBandParams, EqFilterType};
@@ -22,6 +29,9 @@ use engine::dsp::{DspGraph, DspPipeline};
 
 const SR: f32 = 48_000.0;
 const TAU: f32 = std::f32::consts::TAU;
+/// Frame-offset separation between the primary and secondary streams so the
+/// deterministic generator produces two different signals.
+const INPUT1_OFFSET: usize = 1_000_000_003;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Scenario model
@@ -79,6 +89,16 @@ enum Cmd {
     ConvolutionIr(Vec<(f32, f32)>),
     LoudnessMode(LoudnessMode),
     LoudnessMetadata(LoudnessMetadata),
+    /// Same as [`Cmd::LoudnessMetadata`] but for the mix bus's SECONDARY
+    /// (incoming) input.
+    LoudnessMetadataIncoming(LoudnessMetadata),
+    /// Begin a crossfade from input 0 to input 1 (duration in ms) — mirrors
+    /// `TrackMixer::start_crossfade` (gapless when crossfade is disabled).
+    MixBeginCrossfade(u64),
+    /// Begin a sequential fade (fade-out → gap → fade-in) over `ms`.
+    MixBeginFade(u64),
+    /// Return the bus to single-stream playback (input 0 at unity).
+    MixBeginPlaying,
     BitPerfect(bool),
     DoP(bool),
     Reset,
@@ -94,6 +114,9 @@ struct Case {
     channels: usize,
     blocks: usize,
     overrun: bool,
+    /// Drive a second (incoming) stream through the mix bus vs the
+    /// `TrackMixer` oracle (Phase 3 S1). Stereo-only.
+    second_input: bool,
 }
 
 impl Case {
@@ -114,6 +137,7 @@ impl Case {
             channels,
             blocks,
             overrun: false,
+            second_input: false,
         }
     }
 
@@ -124,6 +148,11 @@ impl Case {
 
     fn with_overrun(mut self) -> Self {
         self.overrun = true;
+        self
+    }
+
+    fn with_second_input(mut self) -> Self {
+        self.second_input = true;
         self
     }
 }
@@ -301,6 +330,24 @@ fn apply_cmd(p: &mut DspPipeline, g: &mut DspGraph, cmd: &Cmd) {
             p.apply_loudness_metadata_outgoing(Some(*meta));
             g.apply_loudness_metadata_outgoing(Some(*meta));
         }
+        Cmd::LoudnessMetadataIncoming(meta) => {
+            p.apply_loudness_metadata_incoming(Some(*meta));
+            g.apply_loudness_metadata_incoming(Some(*meta));
+        }
+        Cmd::MixBeginCrossfade(ms) => {
+            p.mixer_mut().set_duration_ms(*ms, SR);
+            p.mixer_mut().start_crossfade();
+            g.begin_crossfade(*ms);
+        }
+        Cmd::MixBeginFade(ms) => {
+            p.mixer_mut().set_duration_ms(*ms, SR);
+            p.mixer_mut().start_fade();
+            g.begin_fade(*ms);
+        }
+        Cmd::MixBeginPlaying => {
+            p.mixer_mut().start_playing();
+            g.begin_playing();
+        }
         Cmd::BitPerfect(on) => {
             p.set_bit_perfect(*on);
             g.set_bit_perfect(*on);
@@ -310,8 +357,13 @@ fn apply_cmd(p: &mut DspPipeline, g: &mut DspGraph, cmd: &Cmd) {
             g.set_dop_bypass(*on);
         }
         Cmd::Reset => {
+            // Mirror the engine's stop/track-load sequence: `reset` tears
+            // the transition envelope down to `Silent`, then playback
+            // starts by firing `begin_playing` before audio flows.
             p.reset();
+            p.mixer_mut().start_playing();
             g.reset();
+            g.begin_playing();
         }
     }
 }
@@ -350,7 +402,10 @@ fn run_case(case: &Case) -> (Vec<f32>, Vec<f32>) {
             case.block_len
         };
 
-        if case.channels == 2 {
+        if case.channels == 2 && case.second_input {
+            // Two-input mix bus vs TrackMixer oracle (Phase 3 S1).
+            drive_2input(&mut p, &mut g, case, b, frames, &mut out_p, &mut out_g);
+        } else if case.channels == 2 {
             // Stereo via process_block (plan `Normal`).
             let mut input = vec![0.0f32; frames * 2];
             fill_interleaved(&mut input, 2, b * case.block_len, SR);
@@ -457,6 +512,105 @@ fn check_case(case: &Case) {
     compare(case, &ref_out, &got);
 }
 
+/// Drive one block of a 2-input case on both engines.
+///
+/// Graph side: [`DspGraph::process_block_inputs`] — the full plan (per-input
+/// pre-mix chains, envelope sum, post-mix) in one call.
+///
+/// Pipeline oracle: the engine's crossfade-path composition — pre-mix each
+/// stream (`process_outgoing_block` / `process_incoming_block`), mix through
+/// [`TrackMixer::process_block`], then post-mix. In Quality mode the graph's
+/// S1 contract keeps the SECONDARY pre-mix in f32 (promoted at the sum), so
+/// the f64 oracle pre-mixes the incoming stream in f32 and promotes — the
+/// outgoing stream and the envelope run in f64 on both sides.
+#[allow(clippy::too_many_arguments)]
+fn drive_2input(
+    p: &mut DspPipeline,
+    g: &mut DspGraph,
+    case: &Case,
+    b: usize,
+    frames: usize,
+    out_p: &mut Vec<f32>,
+    out_g: &mut Vec<f32>,
+) {
+    let mut in0 = vec![0.0f32; frames * 2];
+    fill_interleaved(&mut in0, 2, b * case.block_len, SR);
+    let mut in0_l = Vec::with_capacity(frames);
+    let mut in0_r = Vec::with_capacity(frames);
+    for pair in in0.as_chunks::<2>().0 {
+        in0_l.push(pair[0]);
+        in0_r.push(pair[1]);
+    }
+    let mut in1 = vec![0.0f32; frames * 2];
+    fill_interleaved(&mut in1, 2, b * case.block_len + INPUT1_OFFSET, SR);
+    let mut in1_l = Vec::with_capacity(frames);
+    let mut in1_r = Vec::with_capacity(frames);
+    for pair in in1.as_chunks::<2>().0 {
+        in1_l.push(pair[0]);
+        in1_r.push(pair[1]);
+    }
+
+    // Graph: one call per caller block (splits internally if oversized).
+    let mut g0_l = in0_l.clone();
+    let mut g0_r = in0_r.clone();
+    let mut g1_l = in1_l.clone();
+    let mut g1_r = in1_r.clone();
+    g.process_block_inputs((&mut g0_l, &mut g0_r), (&mut g1_l, &mut g1_r));
+    out_g.extend_from_slice(&g0_l);
+    out_g.extend_from_slice(&g0_r);
+
+    // Pipeline oracle: pre-mix → mix → post-mix per sub-block (the engine's
+    // decode loop never hands the pre-mix entries more than
+    // `MAX_AUDIO_BLOCK_FRAMES`, so the oracle splits exactly like the graph
+    // does internally).
+    let quality = case.config.precision_mode == PrecisionMode::Quality;
+    let mut p1_l = in1_l;
+    let mut p1_r = in1_r;
+    let mut p1_l64: Vec<f64> = vec![0.0; frames];
+    let mut p1_r64: Vec<f64> = vec![0.0; frames];
+    let mut start = 0;
+    while start < frames {
+        let end = (start + engine::buffer::MAX_AUDIO_BLOCK_FRAMES).min(frames);
+        let p0_l: &mut [f32] = &mut in0_l[start..end];
+        let p0_r: &mut [f32] = &mut in0_r[start..end];
+        let p1_l: &mut [f32] = &mut p1_l[start..end];
+        let p1_r: &mut [f32] = &mut p1_r[start..end];
+        if quality {
+            let mut p0_l64: Vec<f64> = p0_l.iter().map(|&x| x as f64).collect();
+            let mut p0_r64: Vec<f64> = p0_r.iter().map(|&x| x as f64).collect();
+            p.process_outgoing_block_f64(&mut p0_l64, &mut p0_r64);
+            p.process_incoming_block(p1_l, p1_r); // f32 (S1 contract)
+            for (i, x) in p1_l.iter().enumerate() {
+                p1_l64[start + i] = *x as f64;
+            }
+            for (i, x) in p1_r.iter().enumerate() {
+                p1_r64[start + i] = *x as f64;
+            }
+            p.mixer_mut().process_block_f64(
+                &mut p0_l64,
+                &mut p0_r64,
+                &p1_l64[start..end],
+                &p1_r64[start..end],
+            );
+            p.process_post_mix_block_f64(&mut p0_l64, &mut p0_r64);
+            for (i, x) in p0_l64.iter().enumerate() {
+                in0_l[start + i] = *x as f32;
+            }
+            for (i, x) in p0_r64.iter().enumerate() {
+                in0_r[start + i] = *x as f32;
+            }
+        } else {
+            p.process_outgoing_block(p0_l, p0_r);
+            p.process_incoming_block(p1_l, p1_r);
+            p.mixer_mut().process_block(p0_l, p0_r, p1_l, p1_r);
+            p.process_post_mix_block(p0_l, p0_r);
+        }
+        start = end;
+    }
+    out_p.extend_from_slice(&in0_l);
+    out_p.extend_from_slice(&in0_r);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Config helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -504,7 +658,7 @@ fn synthetic_ir() -> Vec<(f32, f32)> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn cases() -> Vec<Case> {
-    let mut v = Vec::with_capacity(21);
+    let mut v = Vec::with_capacity(27);
 
     // 1–2. Default config: nothing dynamic enabled → must be bit-exact.
     v.push(Case::new(
@@ -845,6 +999,153 @@ fn cases() -> Vec<Case> {
         2,
         16,
     ));
+
+    // 22–27. Phase 3 S1: the 2-input mix bus vs the pipeline's TrackMixer
+    // crossfade path. The graph's `process_block_inputs` must reproduce the
+    // engine's pre-mix → mix → post-mix composition bit-exactly through
+    // every transition state and precision mode.
+
+    // 22. Active crossfade, f32: transition starts midstream and completes
+    // (the run continues in PlayingNext). All DSP stages on.
+    let mut xf_cfg = cfg_all_stages();
+    xf_cfg.crossfade.enabled = true;
+    v.push(
+        Case::new(
+            "crossfade_2input_f32",
+            xf_cfg,
+            vec![Cmd::MixBeginPlaying, Cmd::Volume(0.85), Cmd::Balance(-0.2)],
+            256,
+            2,
+            40,
+        )
+        .with_second_input()
+        .with_midstream(vec![(2, Cmd::MixBeginCrossfade(60))]),
+    );
+
+    // 23. Same crossfade in Quality (f64) mode: the envelope and the
+    // outgoing chain run in f64; the secondary pre-mix stays f32 (S1
+    // contract, mirrored by the oracle).
+    let mut xf_cfg64 = EngineConfig {
+        precision_mode: PrecisionMode::Quality,
+        ..cfg_all_stages()
+    };
+    xf_cfg64.crossfade.enabled = true;
+    v.push(
+        Case::new(
+            "crossfade_2input_f64",
+            xf_cfg64,
+            vec![Cmd::MixBeginPlaying, Cmd::Volume(0.85)],
+            256,
+            2,
+            40,
+        )
+        .with_second_input()
+        .with_midstream(vec![(2, Cmd::MixBeginCrossfade(60))]),
+    );
+
+    // 24. Sequential fade (fade-out → silence gap → fade-in): the two
+    // streams are never summed, exercising the fade thirds.
+    v.push(
+        Case::new(
+            "fade_2input",
+            cfg_all_stages(),
+            vec![Cmd::MixBeginPlaying, Cmd::Volume(0.9)],
+            256,
+            2,
+            40,
+        )
+        .with_second_input()
+        .with_midstream(vec![(2, Cmd::MixBeginFade(60))]),
+    );
+
+    // 25. Crossfade disabled: `begin_crossfade` degrades to a gapless
+    // switch — the output becomes the incoming stream at the boundary.
+    let mut gapless_cfg = cfg_all_stages();
+    gapless_cfg.crossfade.enabled = false;
+    v.push(
+        Case::new(
+            "crossfade_disabled_gapless_2input",
+            gapless_cfg,
+            vec![
+                Cmd::MixBeginPlaying,
+                Cmd::Volume(0.8),
+                Cmd::MixBeginCrossfade(60),
+            ],
+            256,
+            2,
+            16,
+        )
+        .with_second_input(),
+    );
+
+    // 26. Everything at once midstream: per-input loudness metadata (EBU
+    // R128 on both inputs), volume moves, and a full transition sequence
+    // (crossfade → fade → playing → crossfade) across the run.
+    v.push(
+        Case::new(
+            "crossfade_2input_midstream_controls",
+            EngineConfig {
+                loudness: config::LoudnessConfig {
+                    mode: config::LoudnessMode::EbuR128,
+                    target_lufs: -16.0,
+                    ..Default::default()
+                },
+                ..cfg_all_stages()
+            },
+            vec![
+                Cmd::MixBeginPlaying,
+                Cmd::Volume(0.9),
+                Cmd::LoudnessMetadata(LoudnessMetadata {
+                    ebu_r128_loudness: Some(-18.0),
+                    ..Default::default()
+                }),
+                Cmd::LoudnessMetadataIncoming(LoudnessMetadata {
+                    ebu_r128_loudness: Some(-22.0),
+                    ..Default::default()
+                }),
+            ],
+            256,
+            2,
+            40,
+        )
+        .with_second_input()
+        .with_midstream(vec![
+            (2, Cmd::MixBeginCrossfade(60)),
+            (
+                8,
+                Cmd::LoudnessMetadataIncoming(LoudnessMetadata {
+                    ebu_r128_loudness: Some(-14.0),
+                    ..Default::default()
+                }),
+            ),
+            (14, Cmd::MixBeginFade(40)),
+            (20, Cmd::MixBeginPlaying),
+            (24, Cmd::MixBeginCrossfade(30)),
+            (30, Cmd::Volume(0.5)),
+        ]),
+    );
+
+    // 27. Oversized caller buffer with an active crossfade: the internal
+    // sub-block splitting path must advance the envelope exactly like the
+    // frame-driven TrackMixer.
+    let mut xf_overrun = cfg_all_stages();
+    xf_overrun.crossfade.enabled = true;
+    v.push(
+        Case::new(
+            "crossfade_2input_overrun_buffer",
+            xf_overrun,
+            vec![
+                Cmd::MixBeginPlaying,
+                Cmd::Volume(0.8),
+                Cmd::MixBeginCrossfade(200),
+            ],
+            engine::buffer::MAX_AUDIO_BLOCK_FRAMES,
+            2,
+            4,
+        )
+        .with_second_input()
+        .with_overrun(),
+    );
 
     v
 }

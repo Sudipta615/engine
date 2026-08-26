@@ -196,7 +196,7 @@ impl AudioEngine {
                             actual_rate = r;
                             self.dsd.dop_active = true;
                             self.dsd.dop_rate = r;
-                            self.pipeline.set_dop_bypass(true);
+                            self.graph.set_dop_bypass(true);
                             new_output.set_dither_enabled(false);
                             needs_start = false;
                             dop_restored = true;
@@ -327,7 +327,7 @@ impl AudioEngine {
                 "Sample rate changed during recovery: {} Hz -> {} Hz",
                 old_rate, actual_rate
             );
-            self.pipeline.update_sample_rate(actual_rate as f32);
+            self.graph.update_sample_rate(actual_rate as f32);
             if old_rate != actual_rate {
                 if let Some(PlaybackStream::Transitioning {
                     crossfade_frames_remaining,
@@ -523,7 +523,7 @@ impl AudioEngine {
         self.dsd.native_dsd_active = false;
         self.dsd.dsd_wire_format = None;
         self.dsd.dsd_byte_buffer = None;
-        self.pipeline.set_dop_bypass(false);
+        self.graph.set_dop_bypass(false);
 
         let old_rate = self.clock.source_sample_rate;
         let new_rate = if let Some(ref mut stream) = self.stream {
@@ -618,7 +618,7 @@ impl AudioEngine {
     fn disable_dop_for_stream(&mut self) {
         self.dsd.dop_active = false;
         self.dsd.dop_rate = 0;
-        self.pipeline.set_dop_bypass(false);
+        self.graph.set_dop_bypass(false);
         if let Some(ref mut stream) = self.stream {
             let old_rate = self.clock.source_sample_rate;
             match stream {

@@ -43,22 +43,17 @@ impl GraphGeneration {
             .set_quality(config.timestretch_quality);
 
         // Build the node arena. Order MUST match the `node_id` slot table in
-        // mod.rs — the execution plans reference stages by index.
+        // mod.rs — the execution plans reference stages by index. Phase 3 S1:
+        // the four pre-mix slots are absorbed into the mix bus (each bus
+        // input owns its preamp + loudness chain).
         let nodes = vec![
-            GraphNode::OutPreamp(GainNode::new(
-                "out_preamp",
-                "pre-mix",
-                PREAMP_RAMP_DURATION_MS,
+            GraphNode::Mix(MixBusNode::new(
                 sample_rate,
-            )),
-            GraphNode::OutLoudness(LoudnessNode::new("out_loudness", "pre-mix", sample_rate)),
-            GraphNode::InPreamp(GainNode::new(
-                "in_preamp",
-                "pre-mix",
+                config.crossfade.duration_ms,
+                config.crossfade.enabled,
+                config.crossfade.curve,
                 PREAMP_RAMP_DURATION_MS,
-                sample_rate,
             )),
-            GraphNode::InLoudness(LoudnessNode::new("in_loudness", "pre-mix", sample_rate)),
             GraphNode::Eq(EqNode::new(num_bands, sample_rate)),
             GraphNode::Dynamics(DynamicsNode::new(sample_rate)),
             GraphNode::Convolution(ConvolutionNode::new(sample_rate, 8192)),
@@ -77,24 +72,10 @@ impl GraphGeneration {
             GraphNode::Resampler(ResamplerNode::new(sample_rate, sample_rate)),
             GraphNode::Limiter(LimiterNode::new(sample_rate)),
             GraphNode::Dither(DitherNode::new(sample_rate)),
-        ];
-
-        // Arena-order contract: every `node_id` slot must hold the node kind
-        // its table entry claims. Debug-only; also keeps the slot constants
-        // referenced so the table cannot silently drift from the arena.
-        debug_assert!(matches!(
-            nodes[node_id::OUT_PREAMP],
-            GraphNode::OutPreamp(_)
-        ));
-        debug_assert!(matches!(
-            nodes[node_id::OUT_LOUDNESS],
-            GraphNode::OutLoudness(_)
-        ));
-        debug_assert!(matches!(nodes[node_id::IN_PREAMP], GraphNode::InPreamp(_)));
-        debug_assert!(matches!(
-            nodes[node_id::IN_LOUDNESS],
-            GraphNode::InLoudness(_)
-        ));
+        ]; // Arena-order contract: every `node_id` slot must hold the node kind
+           // its table entry claims. Debug-only; also keeps the slot constants
+           // referenced so the table cannot silently drift from the arena.
+        debug_assert!(matches!(nodes[node_id::MIX], GraphNode::Mix(_)));
         debug_assert!(matches!(nodes[node_id::EQ], GraphNode::Eq(_)));
         debug_assert!(matches!(nodes[node_id::DYNAMICS], GraphNode::Dynamics(_)));
         debug_assert!(matches!(
@@ -208,30 +189,23 @@ impl GraphGeneration {
             ConfigLoudnessMode::EbuR128 => crate::dsp::LoudnessMode::EbuR128,
         };
         {
-            let loud = gen_node!(self, node_id::OUT_LOUDNESS, OutLoudness);
-            loud.normalizer.set_mode(mode);
-            loud.normalizer.set_target_lufs(config.loudness.target_lufs);
-            loud.normalizer.set_true_peak_guard(
-                config.loudness.true_peak_guard,
-                config.loudness.true_peak_dbtp,
-            );
-            loud.normalizer.set_gain_clamps(
-                config.loudness.max_boost_db,
-                config.loudness.max_attenuation_db,
-            );
-        }
-        {
-            let loud = gen_node!(self, node_id::IN_LOUDNESS, InLoudness);
-            loud.normalizer.set_mode(mode);
-            loud.normalizer.set_target_lufs(config.loudness.target_lufs);
-            loud.normalizer.set_true_peak_guard(
-                config.loudness.true_peak_guard,
-                config.loudness.true_peak_dbtp,
-            );
-            loud.normalizer.set_gain_clamps(
-                config.loudness.max_boost_db,
-                config.loudness.max_attenuation_db,
-            );
+            // Both bus inputs share the master loudness config (each input
+            // carries its own metadata + mode for the engine's per-stream
+            // application in S2).
+            let mix = gen_node!(self, node_id::MIX, Mix);
+            for input in &mut mix.inputs {
+                let loud = &mut input.loudness;
+                loud.normalizer.set_mode(mode);
+                loud.normalizer.set_target_lufs(config.loudness.target_lufs);
+                loud.normalizer.set_true_peak_guard(
+                    config.loudness.true_peak_guard,
+                    config.loudness.true_peak_dbtp,
+                );
+                loud.normalizer.set_gain_clamps(
+                    config.loudness.max_boost_db,
+                    config.loudness.max_attenuation_db,
+                );
+            }
         }
 
         {

@@ -26,14 +26,14 @@ impl AudioEngine {
             cfg.entries.len()
         );
         self.config.channel_trim = cfg.clone();
-        let sr = self.pipeline.sample_rate();
-        self.pipeline.channel_trim.set_config(&cfg, sr);
+        let sr = self.graph.sample_rate();
+        self.graph.routing_mut().trimmer.set_config(&cfg, sr);
     }
 
     pub(super) fn handle_set_channel_routing(&mut self, cfg: config::ChannelRoutingConfig) {
         info!("Channel routing config updated: enabled={}", cfg.enabled);
         self.config.channel_routing = cfg.clone();
-        self.pipeline.channel_trim.set_routing(&cfg);
+        self.graph.routing_mut().trimmer.set_routing(&cfg);
     }
 
     pub(super) fn handle_set_channel_eq(&mut self, cfg: config::ChannelEqConfig) {
@@ -43,8 +43,8 @@ impl AudioEngine {
             cfg.entries.len()
         );
         self.config.channel_eq = cfg.clone();
-        let sr = self.pipeline.sample_rate();
-        self.pipeline.channel_trim.set_channel_eq(&cfg, sr);
+        let sr = self.graph.sample_rate();
+        self.graph.routing_mut().trimmer.set_channel_eq(&cfg, sr);
     }
 
     pub(super) fn handle_set_lfe_config(&mut self, cfg: config::LfeConfig) {
@@ -57,7 +57,7 @@ impl AudioEngine {
         if self.config.bass_management.enabled && lfe.crossover_hz.is_none() && lfe.enabled {
             lfe.crossover_hz = Some(self.config.bass_management.crossover_hz);
         }
-        self.pipeline.channel_trim.set_lfe(&lfe);
+        self.graph.routing_mut().trimmer.set_lfe(&lfe);
     }
 
     pub(super) fn handle_set_bass_management(&mut self, cfg: config::BassManagementConfig) {
@@ -66,12 +66,15 @@ impl AudioEngine {
             cfg.enabled, cfg.crossover_hz
         );
         self.config.bass_management = cfg.clone();
-        let sr = self.pipeline.sample_rate();
-        self.pipeline.channel_trim.set_bass_management(&cfg, sr);
+        let sr = self.graph.sample_rate();
+        self.graph
+            .routing_mut()
+            .trimmer
+            .set_bass_management(&cfg, sr);
         let mut lfe = self.config.lfe.clone();
         if cfg.enabled && lfe.crossover_hz.is_none() && lfe.enabled {
             lfe.crossover_hz = Some(cfg.crossover_hz);
         }
-        self.pipeline.channel_trim.set_lfe(&lfe);
+        self.graph.routing_mut().trimmer.set_lfe(&lfe);
     }
 }

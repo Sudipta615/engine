@@ -279,7 +279,7 @@ impl AudioEngine {
         // once for this decode pass so the multichannel DSP loop remains
         // allocation-free after its scratch buffers are warmed.
         if out_ch > 2 {
-            self.pipeline.set_multichannel_layout(&output_layout);
+            self.graph.set_multichannel_layout(&output_layout);
         }
         'block_loop: while consumed < frames {
             let n = (frames - consumed).min(BATCH_FRAMES);
@@ -380,12 +380,12 @@ impl AudioEngine {
                 // source layout after an upmix/template transform. It was set
                 // once above, keeping LFE role detection and main-speaker
                 // bass management aligned without work in this block loop.
-                self.pipeline
+                self.graph
                     .process_block_multichannel(&mut mc_batch[..n * out_ch], out_ch);
 
                 // Final safety stage runs multichannel lookahead limiting on all channels
                 // (coherent gain reduction across all surround/height/LFE channels).
-                self.pipeline
+                self.graph
                     .process_final_limiter_multichannel(&mut mc_batch[..n * out_ch], out_ch);
 
                 let frames_written = self.push_to_sink(&mc_batch[..n * out_ch], out_ch);
@@ -489,14 +489,14 @@ impl AudioEngine {
             //    passes through unchanged — same as calling process() per
             //    frame. The safety limiter is intentionally NOT part of this
             //    chain: it runs in the output domain, after resampling.
-            self.pipeline
+            self.graph
                 .process_block(&mut plane_l[..n], &mut plane_r[..n]);
 
             if bypass {
                 // 3a. No resampling: this block is already in the output
                 //     domain, so the final safety limiter runs on it directly
                 //     before it is interleaved and flushed.
-                self.pipeline
+                self.graph
                     .process_final_limiter_block(&mut plane_l[..n], &mut plane_r[..n]);
                 for j in 0..n {
                     batch[j * 2] = plane_l[j];
@@ -526,7 +526,7 @@ impl AudioEngine {
                     while let Some((out_l, out_r)) = r.read_f32() {
                         // Final safety stage: enforce the ceiling on the
                         // output-domain (resampled) samples.
-                        let (l, r) = self.pipeline.process_final_limiter(out_l, out_r);
+                        let (l, r) = self.graph.process_final_limiter(out_l, out_r);
                         self.push_pending_back((l, r));
                     }
                 }
@@ -577,7 +577,7 @@ impl AudioEngine {
             #[cfg(feature = "resample")]
             if let Some(ref mut r) = resampler {
                 while let Some((out_l, out_r)) = r.read_f32() {
-                    let (l, r) = self.pipeline.process_final_limiter(out_l, out_r);
+                    let (l, r) = self.graph.process_final_limiter(out_l, out_r);
                     self.push_pending_back((l, r));
                 }
                 // Bulk drain remaining pending frames.

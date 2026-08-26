@@ -48,7 +48,7 @@ use crate::output::DeviceMonitor;
 use crate::{
     buffer::{EngineCommand, FixedFrameBuffer, PlaybackInfo},
     dsp::analyzer::AudioAnalyzer,
-    dsp::pipeline::DspPipeline,
+    dsp::DspGraph,
     events::{EngineEvent, OutputEvent},
     output::Output,
     playlist::Playlist,
@@ -73,9 +73,12 @@ pub struct AudioEngine {
     /// The active output transport (cpal, or the native WASAPI exclusive
     /// backend on Windows with `wasapi-native`).
     audio_output: Option<Box<dyn Output>>,
-    pipeline: DspPipeline,
+    /// The production DSP signal path (Phase 3 S4): the graph owns the
+    /// signal chain end-to-end; the pipeline remains only as the frozen
+    /// equivalence-test oracle.
+    graph: DspGraph,
     /// Graphic EQ model (§9.1) — the slider state compiled into
-    /// `pipeline.eq`. Always present; only authoritative while enabled.
+    /// `graph.eq()`. Always present; only authoritative while enabled.
     graphic_eq: crate::dsp::GraphicEq,
     /// Explicitly selected output profile (§10). When `None`, the engine
     /// auto-selects from the built-in/user profile library by device name.

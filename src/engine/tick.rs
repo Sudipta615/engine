@@ -16,7 +16,8 @@ use config;
 
 use crate::{
     buffer::{PlaybackInfo, PlaybackState},
-    dsp::pipeline::{DspPipeline, LatencyReport, OutputSampleFormat, VolumePath},
+    dsp::pipeline::{LatencyReport, OutputSampleFormat, VolumePath},
+    dsp::DspGraph,
     events::OutputEvent,
     source::AudioSource,
 };
@@ -97,6 +98,12 @@ impl AudioEngine {
         self.telemetry.tick_start = Some(now);
 
         self.process_commands();
+        // The engine is single-threaded: apply any queued graph control
+        // commands immediately after dispatch (the graph's block-boundary
+        // drain would otherwise wait for the next audio block — and there is
+        // none when no stream is playing). Multi-threaded hosts use the
+        // graph's block-boundary tick instead.
+        self.graph.drain_queued_control();
         #[cfg(feature = "audio-output")]
         self.poll_device_monitor();
         self.drain_capture();
@@ -116,7 +123,7 @@ impl AudioEngine {
                 .as_ref()
                 .and_then(|o| o.take_external_volume_change())
             {
-                self.pipeline.set_volume(1.0);
+                self.graph.set_volume(1.0);
                 self.write_playback_info(|pb| {
                     pb.volume = level;
                     pb.volume_error = None;
@@ -169,7 +176,7 @@ impl AudioEngine {
             };
 
             let resampler_disabled = self.is_resampler_disabled();
-            let convolution_ir_needs_reload = self.pipeline.convolution_ir_needs_reload();
+            let convolution_ir_needs_reload = self.graph.convolution_ir_needs_reload();
 
             // Drain the output backend's clip and NaN counters. The counters
             // accumulate in the audio callback (audio thread) and are reset
@@ -271,7 +278,7 @@ impl AudioEngine {
             let (resampler_latency_ms, ring_buffer_latency_ms, output_device_latency_ms) =
                 self.output_latency_terms();
 
-            let mut stats = self.pipeline.engine_stats_with_output_format(
+            let mut stats = self.graph.engine_stats_with_output_format(
                 self.clock.source_sample_rate,
                 self.output_sample_rate,
                 src_depth,
@@ -297,7 +304,7 @@ impl AudioEngine {
                 // (never device-name heuristics) plus the fallback flag, and
                 // the §13 access fields (requested/actual/verified/fallback)
                 // are filled from the same source.
-                let access_report = self.pipeline.bit_perfect_report_with_access(
+                let access_report = self.graph.bit_perfect_report_with_access(
                     self.clock.source_sample_rate,
                     self.output_sample_rate,
                     src_depth,
@@ -315,7 +322,8 @@ impl AudioEngine {
                 bp.source_channels = src_channels;
                 bp.output_channels = o.channels as u32;
                 bp.decoder_lossless = src_lossless;
-                bp.crossfade_active = self.pipeline.mixer().is_crossfading();
+                bp.crossfade_active =
+                    self.graph.mixer_state() == crate::dsp::crossfade::MixerState::Crossfading;
                 bp.dither_active = o.dither_enabled && !out_format.is_float();
                 bp.volume_path = if self.volume_uses_hardware() {
                     VolumePath::Hardware
@@ -329,7 +337,7 @@ impl AudioEngine {
                 stats.bit_perfect = bp.is_bit_perfect;
                 stats.bit_perfect_reason = bp.reason.clone();
             }
-            stats.true_peak_dbtp = self.pipeline.limiter_max_true_peak_dbtp();
+            stats.true_peak_dbtp = self.graph.limiter_max_true_peak_dbtp();
 
             // ── Decoder description ─────────────────────────────────────
             stats.decoder_format = if src_depth > 0 {
@@ -411,11 +419,11 @@ impl AudioEngine {
         Arc::clone(&self.playback_info)
     }
 
-    pub fn pipeline_mut(&mut self) -> &mut DspPipeline {
-        &mut self.pipeline
+    pub fn pipeline_mut(&mut self) -> &mut DspGraph {
+        &mut self.graph
     }
-    pub fn pipeline(&self) -> &DspPipeline {
-        &self.pipeline
+    pub fn pipeline(&self) -> &DspGraph {
+        &self.graph
     }
 
     pub fn config(&self) -> &config::EngineConfig {
@@ -423,7 +431,7 @@ impl AudioEngine {
     }
 
     pub fn set_config(&mut self, config: config::EngineConfig) {
-        self.pipeline.apply_config(&config);
+        self.graph.apply_config(&config);
 
         // Graphic EQ layer (§9.1): when enabled in config it is the
         // authoritative source for the pipeline's EQ bands and preamp (see
@@ -434,18 +442,19 @@ impl AudioEngine {
         }
 
         if config.speed_mode == config::SpeedMode::TimeStretch {
-            self.pipeline.timestretcher_mut().set_speed(self.speed);
+            self.graph.timestretch_mut().stretcher.set_speed(self.speed);
         } else if config.speed_mode == config::SpeedMode::PitchShift {
-            self.pipeline
-                .timestretcher_mut()
+            self.graph
+                .timestretch_mut()
+                .stretcher
                 .set_pitch_ratio(self.speed);
         } else {
-            self.pipeline.timestretcher_mut().set_speed(1.0);
+            self.graph.timestretch_mut().stretcher.set_speed(1.0);
         }
         if config.volume_mode == config::VolumeMode::HardwarePreferred
             || config.volume_mode == config::VolumeMode::HardwareOnly
         {
-            self.pipeline.set_volume(1.0);
+            self.graph.set_volume(1.0);
         }
 
         let backend_changed = config.output_backend != self.config.output_backend
@@ -668,8 +677,7 @@ impl AudioEngine {
     /// See [`LatencyReport`] for the breakdown.
     pub fn graph_latency(&self) -> LatencyReport {
         let (resampler_ms, ring_ms, device_ms) = self.output_latency_terms();
-        self.pipeline
-            .latency_report(resampler_ms, ring_ms, device_ms)
+        self.graph.latency_report(resampler_ms, ring_ms, device_ms)
     }
 
     /// Latency compensation for the playhead: `(total_latency_ms,

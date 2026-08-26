@@ -8,11 +8,11 @@ use crate::dsp::pipeline::VolumePath;
 
 impl AudioEngine {
     pub(super) fn handle_set_stereo_width(&mut self, width: f32) {
-        self.pipeline.set_stereo_width(width);
+        self.graph.set_stereo_width(width);
     }
 
     pub(super) fn handle_set_balance(&mut self, balance: f32) {
-        self.pipeline.set_balance(balance);
+        self.graph.set_balance(balance);
     }
 
     pub(super) fn handle_set_dither_enabled(&mut self, enabled: bool) {
@@ -23,11 +23,11 @@ impl AudioEngine {
     }
 
     pub(super) fn handle_set_crossfeed_enabled(&mut self, enabled: bool) {
-        self.pipeline.set_crossfeed_enabled(enabled);
+        self.graph.set_crossfeed_enabled(enabled);
     }
 
     pub(super) fn handle_set_crossfeed_profile(&mut self, profile: config::CrossfeedProfile) {
-        self.pipeline.set_crossfeed_profile(profile);
+        self.graph.set_crossfeed_profile(profile);
     }
 
     pub(super) fn handle_set_crossfeed_custom_params(
@@ -36,12 +36,12 @@ impl AudioEngine {
         q: f32,
         delay_ms: f32,
     ) {
-        self.pipeline
+        self.graph
             .set_crossfeed_custom_params(frequency_hz, q, delay_ms);
     }
 
     pub(super) fn handle_set_compressor_enabled(&mut self, enabled: bool) {
-        self.pipeline.set_compressor_enabled(enabled);
+        self.graph.set_compressor_enabled(enabled);
     }
 
     pub(super) fn handle_set_compressor_band_params(
@@ -53,7 +53,7 @@ impl AudioEngine {
         release_ms: f32,
         makeup_gain_db: f32,
     ) {
-        self.pipeline.set_compressor_band_params(
+        self.graph.set_compressor_band_params(
             band,
             threshold_db,
             ratio,
@@ -65,15 +65,15 @@ impl AudioEngine {
 
     pub(super) fn handle_set_precision_mode(&mut self, mode: crate::dsp::pipeline::PrecisionMode) {
         info!("DSP precision mode set to {:?}", mode);
-        self.pipeline.set_precision_mode(mode);
+        self.graph.set_precision_mode(mode);
     }
 
     pub(super) fn handle_set_bit_perfect(&mut self, enabled: bool) {
         info!("Bit-perfect mode: {}", if enabled { "on" } else { "off" });
-        self.pipeline.set_bit_perfect(enabled);
+        self.graph.set_bit_perfect(enabled);
         if enabled {
-            self.pipeline.set_volume(1.0);
-            self.pipeline.seek_fade.reset();
+            self.graph.set_volume(1.0);
+            self.graph.seek_fade_mut().fade.reset();
             let uses_hardware = self.volume_uses_hardware();
             self.write_playback_info(|pb| {
                 pb.volume_path = if uses_hardware {
@@ -102,7 +102,7 @@ impl AudioEngine {
 
     pub(super) fn handle_set_limiter_mode(&mut self, mode: crate::dsp::limiter::LimiterMode) {
         info!("Limiter mode set to {:?}", mode);
-        self.pipeline.set_limiter_mode(mode);
+        self.graph.set_limiter_mode(mode);
     }
 
     pub(super) fn handle_set_limiter_true_peak(&mut self, enabled: bool) {
@@ -110,7 +110,7 @@ impl AudioEngine {
             "Limiter true-peak FIR: {}",
             if enabled { "enabled" } else { "disabled" }
         );
-        self.pipeline.set_limiter_true_peak(enabled);
+        self.graph.set_limiter_true_peak(enabled);
     }
 
     pub(super) fn handle_set_resampler_quality(&mut self, quality: config::ResamplerQuality) {
@@ -146,17 +146,15 @@ impl AudioEngine {
             cfg.enabled, cfg.duration_ms, cfg.curve
         );
         self.config.crossfade = cfg.clone();
-        self.pipeline.mixer.set_curve(cfg.curve.into());
-        self.pipeline
-            .mixer
-            .set_duration_ms(cfg.duration_ms, self.output_sample_rate as f32);
-        self.pipeline.mixer.set_enabled(cfg.enabled);
+        self.graph.set_crossfade_curve(cfg.curve);
+        self.graph.set_crossfade_duration_ms(cfg.duration_ms);
+        self.graph.set_crossfade_enabled(cfg.enabled);
     }
 
     pub(super) fn handle_set_crossfade_curve(&mut self, curve: config::CrossfadeCurve) {
         info!("Crossfade curve set to {:?}", curve);
         self.config.crossfade.curve = curve;
-        self.pipeline.mixer.set_curve(curve.into());
+        self.graph.set_crossfade_curve(curve);
     }
 
     pub(super) fn handle_set_transition_mode(&mut self, mode: config::TransitionMode) {

@@ -2,6 +2,56 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.3.0] — 2026-08-27
+
+Phase 3 of the player → graph-runtime roadmap: the mix bus and the engine
+migration. The DSP graph is now the production hot path — the engine drives
+`DspGraph` end-to-end (single stream, crossfade, and the new multi-stream
+slots), and the decode loop no longer owns DSP. The hardcoded dual-decoder
+crossfade hack is replaced by a first-class N-input mix bus whose per-input
+chains (preamp, loudness, user gain/balance/mute) sum under a
+`TrackMixer`-compatible transition envelope.
+
+### Added
+
+- **Mix bus node** (`dsp::graph::nodes::mix_node`): the graph arena absorbs
+  the four global OUT/IN preamp+loudness nodes into a `MixBusNode` whose
+  per-input `MixInput` chains carry preamp, EBU R128/ReplayGain loudness,
+  user gain (one-pole ramp), balance, and mute. The transition envelope
+  (`PlayingCurrent` / `Crossfading` / `Fading` / `PlayingNext` / `Silent`)
+  reuses `TrackMixer`'s exact curve math, so a 2-input bus reproduces the
+  crossfade path bit-for-bit (pinned by the equivalence suite).
+- **Multi-stream entry points**: `DspGraph::process_block_inputs` (primary +
+  secondary stream) and `DspGraph::process_block_streams` (primary + N
+  slots), plus the `MixInputCmd` / `MixTransitionCmd` control surface
+  (`set_input_gain`, `set_input_balance`, `set_input_mute`,
+  `set_input_active`, `begin_crossfade`, `begin_fade`, `begin_playing`,
+  crossfade curve/duration config). Inactive slots contribute nothing and
+  their chains do not advance (Phase-3 S2 stream slots).
+- **Engine migration onto the graph**: `AudioEngine` now owns a `DspGraph`
+  (the `pipeline()` accessor delegates). The crossfade decode path feeds
+  both streams into `process_block_inputs` — per-input pre-mix happens
+  inside the bus instead of the decode loop; the single-stream path runs
+  through the graph's plan; output profiles, EQ/limiter delegates, telemetry
+  reports, sample-rate changes, and filter resets all route through the
+  graph. `reset()` now tears the transition envelope down to `Silent`
+  (mirroring `DspPipeline::reset`), while `reset_filters_only()` preserves
+  an active transition across seeks.
+
+### Fixed
+
+- Stop/track-change now leaves the mixer in `Silent` exactly like the
+  pipeline's `reset()` did, so a subsequent `begin_playing` starts from a
+  clean envelope.
+- The `output_profiles` fidelity test and remaining engine tests that still
+  addressed pipeline internals were migrated to the graph node surface.
+
+### Changed
+
+- The graph is now the production hot path (`docs/SIGNAL_FLOW.md` updated);
+  `DspPipeline` remains as the reference implementation and the oracle for
+  the equivalence suite.
+
 ## [3.2.0] — 2026-08-26
 
 Phase 2 of the player → graph-runtime roadmap: live graph swap. The graph is

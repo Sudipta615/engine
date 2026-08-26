@@ -47,7 +47,7 @@ from C, C++, Python, C#, Node.js, and any language that can call C.
            │
            ▼
    ┌──────────────────────────── AUDIO ENGINE CORE ─────────────────────────────┐
-   │  Decoders ─▶ Dual-decoder mixer ─▶ DSP pipeline ─▶ Safety limiter           │
+   │  Decoders ─▶ Mix bus ─▶ DSP graph ─▶ Safety limiter                         │
    │  (Symphonia + native DSD/Opus/TTA/WavPack)  (f32 or f64, multichannel)      │
    │  ──────────────────────────────────────────────▶ FixedFrameBuffer ring      │
    └────────────────────────────────────────────────────────────────────────────┘
@@ -74,14 +74,14 @@ path and precision/bypass modes.
 
 ### DSP signal chain
 
-The production chain (`dsp/pipeline`) runs in a fixed order with pre-allocated scratch —
+The production chain (`dsp/graph`) runs in a fixed order with pre-allocated scratch —
 no allocation on the hot path:
 
 ```
 Source frames
   ├─ Channel trim / routing / bass management / LFE   (multichannel path)
-  ├─ Input & output preamp + loudness normalizer      (EBU R128 / ReplayGain)
-  ├─ Track mixer                                       (gapless / crossfade blend)
+  ├─ Mix bus: per-input preamp + loudness normalizer  (EBU R128 / ReplayGain)
+  │  + user gain/balance/mute, summed under a          (gapless / crossfade blend)
   ├─ 64-band parametric EQ (+ AutoEQ presets)          (post-mix)
   ├─ Graphic EQ layer (10 / 15 / 31 ISO bands)
   ├─ 3-band multiband compressor
@@ -101,9 +101,9 @@ Two **hard bypass modes** bypass the entire graph:
 - **DoP bypass** — pure passthrough for DSD-over-PCM bitstreams (24-bit DoP words must reach
   the DAC unmodified; not even volume is applied).
 
-A parallel, experimental **node-based DSP graph** (`dsp/graph`) exists for capability
-introspection and future reorderable-chain features; the production hot path routes
-through `DspPipeline`.
+`DspPipeline` (`dsp/pipeline`) remains as the reference implementation and the
+bit-exact oracle for the graph equivalence suite; the production hot path routes
+through `DspGraph`.
 
 ---
 

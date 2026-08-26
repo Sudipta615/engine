@@ -208,7 +208,7 @@ fn test_realtime_fifo_capacity_contract() {
         engine.push_pending_back((i as f32, 0.0));
     }
     for i in 0..engine.scratch.mix_l.capacity() {
-        engine.push_mix_frame(i as f32, 0.0);
+        engine.push_mix_frame(i as f32, 0.0, 0.0, 0.0);
     }
 
     assert_eq!(engine.scratch.rs_out_buf.len(), rs_out_capacity);
@@ -282,9 +282,14 @@ fn test_incoming_metadata_applied_to_pipeline() {
     // produces a real gain target.
     engine
         .pipeline_mut()
-        .in_loudness
+        .in_loudness_mut()
+        .normalizer
         .set_mode(crate::dsp::LoudnessMode::EbuR128);
-    engine.pipeline_mut().in_loudness.set_target_lufs(-23.0);
+    engine
+        .pipeline_mut()
+        .in_loudness_mut()
+        .normalizer
+        .set_target_lufs(-23.0);
     engine
         .prepare_next_track(&path)
         .expect("prepare should succeed");
@@ -295,7 +300,7 @@ fn test_incoming_metadata_applied_to_pipeline() {
         // The completion handler applies the merged metadata to the incoming
         // loudness chain: a -0.02 LUFS track targeted at -23 LUFS requires
         // ≈ -22.98 dB of gain.
-        let gain_db = engine.pipeline().in_loudness.target_gain_db();
+        let gain_db = engine.pipeline().in_loudness().normalizer.target_gain_db();
         if gain_db < -20.0 {
             break;
         }
@@ -353,7 +358,7 @@ fn test_load_track_reuses_cached_scan() {
 #[test]
 fn test_long_realtime_pipeline_stress_keeps_fixed_storage() {
     let mut engine = AudioEngine::new_default().expect("engine construction");
-    let scratch_capacity = engine.pipeline.realtime_scratch_capacity();
+    let scratch_capacity = engine.graph.realtime_scratch_capacity();
     let output_capacity = engine.output_buffer.capacity();
 
     // Simulate over a minute of callback-sized playback without opening an OS
@@ -374,7 +379,7 @@ fn test_long_realtime_pipeline_stress_keeps_fixed_storage() {
             right[i] = sample * 0.9;
             phase = (phase + 440.0 / 48_000.0).fract();
         }
-        engine.pipeline.process_block(&mut left, &mut right);
+        engine.graph.process_block(&mut left, &mut right);
         for i in 0..BLOCK {
             assert!(left[i].is_finite() && right[i].is_finite());
             interleaved[i * 2] = left[i];
@@ -390,10 +395,7 @@ fn test_long_realtime_pipeline_stress_keeps_fixed_storage() {
     const {
         assert!(MAX_AUDIO_BLOCK_FRAMES >= BLOCK);
     }
-    assert_eq!(
-        engine.pipeline.realtime_scratch_capacity(),
-        scratch_capacity
-    );
+    assert_eq!(engine.graph.realtime_scratch_capacity(), scratch_capacity);
     assert_eq!(engine.output_buffer.capacity(), output_capacity);
     assert_eq!(engine.output_buffer.available(), 0);
 }
@@ -479,7 +481,7 @@ fn test_playback_state_machine_script() {
         );
     }
     assert_eq!(engine.playback_info().state, PlaybackState::Playing);
-    assert!(engine.pipeline.mixer().is_crossfading());
+    assert!(engine.graph.mixer_state() == crate::dsp::crossfade::MixerState::Crossfading);
 
     // 7. Pause during the crossfade: state Paused, transition frozen (not
     //    torn down, not promoted to Single prematurely).
@@ -497,7 +499,7 @@ fn test_playback_state_machine_script() {
     assert_eq!(engine.playback_info().state, PlaybackState::Stopped);
     assert!(engine.stream.is_none(), "stop must drop the transition");
     assert_eq!(engine.playback_info().position_secs, 0.0);
-    assert!(!engine.pipeline.mixer().is_crossfading());
+    assert!(engine.graph.mixer_state() != crate::dsp::crossfade::MixerState::Crossfading);
 
     let _ = std::fs::remove_file(track);
     let _ = std::fs::remove_file(next);

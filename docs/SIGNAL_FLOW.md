@@ -28,13 +28,11 @@ file / URI / memory
 │  └────────────────┬────────────────┘         │
 │                   ▼                          │
 │  ┌────────────────┴──────────────┐           │
-│  │ Preamp + loudness normalizer  │  pre-mix: gain ramps + EBU R128 /
-│  │ (out & in)                    │  ReplayGain (optional)
-│  └────────────────┬──────────────┘           │
-│                   ▼                          │
-│  ┌────────────────┴──────────────┐           │
-│  │ Track mixer                   │  gapless / crossfade blend
-│  │ (dual-decoder)                │  (pre→post mixing boundary)
+│  │ Mix bus (MixBusNode)          │  N per-input chains: preamp + loudness
+│  │ per-input pre-mix + sum       │  + user gain/balance/mute, summed under
+│  │                               │  a TrackMixer-compatible envelope
+│  │                               │  (gapless / crossfade / fade; the
+│  │                               │  pre→post mixing boundary)
 │  └────────────────┬──────────────┘           │
 │                   ▼                          │
 │  ┌────────────────┴──────────────┐           │

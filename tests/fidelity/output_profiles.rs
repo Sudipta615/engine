@@ -84,15 +84,15 @@ fn profile_application_reaches_the_dsp_and_config() {
     engine.tick();
 
     // EQ: bands + preamp reached the parametric stage.
-    assert!(engine.pipeline().eq.is_enabled());
-    assert!((engine.pipeline().eq.preamp_db() - (-2.0)).abs() < 1e-4);
-    let band = engine.pipeline().eq.band_params(0).unwrap();
+    assert!(engine.pipeline().eq().eq.is_enabled());
+    assert!((engine.pipeline().eq().eq.preamp_db() - (-2.0)).abs() < 1e-4);
+    let band = engine.pipeline().eq().eq.band_params(0).unwrap();
     assert!((band.frequency - 1000.0).abs() < 1e-3);
     assert!((band.gain_db - 4.0).abs() < 1e-4);
 
     // Crossfeed and limiter ceiling reached the pipeline.
-    assert!(engine.pipeline().crossfeed.is_enabled());
-    assert!((engine.pipeline().limiter.ceiling_db() - (-1.5)).abs() < 1e-3);
+    assert!(engine.pipeline().crossfeed().crossfeed.is_enabled());
+    assert!((engine.pipeline().limiter().limiter.ceiling_db() - (-1.5)).abs() < 1e-3);
 
     // Transport preferences landed in the engine configuration.
     assert_eq!(
@@ -129,13 +129,13 @@ fn profile_change_switches_dsp_bundle() {
         "dac-a", "DAC A", -1.0,
     )));
     engine.tick();
-    assert!((engine.pipeline().limiter.ceiling_db() - (-1.0)).abs() < 1e-3);
+    assert!((engine.pipeline().limiter().limiter.ceiling_db() - (-1.0)).abs() < 1e-3);
 
     engine.send_command(EngineCommand::SetOutputProfile(profile(
         "dac-b", "DAC B", -3.0,
     )));
     engine.tick();
-    assert!((engine.pipeline().limiter.ceiling_db() - (-3.0)).abs() < 1e-3);
+    assert!((engine.pipeline().limiter().limiter.ceiling_db() - (-3.0)).abs() < 1e-3);
     assert_eq!(
         engine.playback_info().active_output_profile.as_deref(),
         Some("dac-b")

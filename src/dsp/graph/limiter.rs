@@ -19,6 +19,27 @@ impl DspGraph {
     }
 
     pub fn flush_final_limiter(&mut self) -> Vec<(f32, f32)> {
-        self.limiter_mut().limiter.flush()
+        if self.dop_bypass || self.bit_perfect {
+            Vec::new()
+        } else {
+            self.limiter_mut().limiter.flush()
+        }
+    }
+
+    pub fn process_final_limiter_multichannel(&mut self, interleaved: &mut [f32], channels: usize) {
+        if self.dop_bypass || self.bit_perfect {
+            return;
+        }
+        self.limiter_mut()
+            .limiter
+            .process_block_multichannel(interleaved, channels);
+    }
+
+    pub fn flush_final_limiter_multichannel(&mut self, channels: usize) -> Vec<f32> {
+        if self.dop_bypass || self.bit_perfect {
+            Vec::new()
+        } else {
+            self.limiter_mut().limiter.flush_multichannel(channels)
+        }
     }
 }

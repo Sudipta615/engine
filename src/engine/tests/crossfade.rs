@@ -266,7 +266,7 @@ fn test_crossfade_at_192k_does_not_drop_resampled_frames() {
 
     let mut engine = AudioEngine::new(config).unwrap();
     engine.output_sample_rate = 192_000;
-    engine.pipeline.update_sample_rate(192_000.0);
+    engine.graph.update_sample_rate(192_000.0);
 
     let info = engine.load_track(&outgoing).expect("load outgoing");
     engine
@@ -317,7 +317,7 @@ fn test_crossfade_at_192k_does_not_drop_resampled_frames() {
         );
     }
 
-    assert!(!engine.pipeline.mixer().is_crossfading());
+    assert!(engine.graph.mixer_state() != crate::dsp::crossfade::MixerState::Crossfading);
     assert_eq!(engine.scratch.rs_out_buf.capacity(), scratch_cap_out);
     assert_eq!(engine.scratch.rs_in_buf.capacity(), scratch_cap_in);
     assert!(
@@ -344,7 +344,7 @@ fn test_fade_transition_is_sequential_fade_out_gap_fade_in() {
     config.crossfade.duration_ms = 300; // fade-out 100 ms, gap 100 ms, fade-in 100 ms
     let mut engine = AudioEngine::new(config).unwrap();
     engine.output_sample_rate = sr;
-    engine.pipeline.update_sample_rate(sr as f32);
+    engine.graph.update_sample_rate(sr as f32);
 
     let info = engine.load_track(&a).expect("load outgoing A");
     engine.prepare_next_track(&b).expect("prepare incoming B");
@@ -463,7 +463,7 @@ fn test_single_track_resampler_tail_flushed_at_eos() {
 
     let mut engine = AudioEngine::new(config.clone()).unwrap();
     engine.output_sample_rate = out_rate;
-    engine.pipeline.update_sample_rate(out_rate as f32);
+    engine.graph.update_sample_rate(out_rate as f32);
 
     #[cfg(feature = "resample")]
     let ref_count = {
@@ -521,7 +521,7 @@ fn test_single_track_resampler_tail_flushed_at_eos() {
 
     let _ = std::fs::remove_file(&path);
 
-    let limiter_delay = engine.pipeline.limiter.lookahead_samples();
+    let limiter_delay = engine.graph.limiter().limiter.lookahead_samples();
     let expected = ref_count as i64 + limiter_delay as i64;
     let diff = total as i64 - expected;
     assert!(
@@ -558,7 +558,7 @@ fn same_rate_gapless_handoff_impl(precision: config::PrecisionMode) {
     config.precision_mode = precision;
     let mut engine = AudioEngine::new(config.clone()).unwrap();
     engine.output_sample_rate = out_rate;
-    engine.pipeline.update_sample_rate(out_rate as f32);
+    engine.graph.update_sample_rate(out_rate as f32);
     engine.set_volume(1.0);
 
     let seg_a = quantized_sine_samples(sr, n_frames);
@@ -637,7 +637,7 @@ fn different_rates_gapless_handoff_impl(precision: config::PrecisionMode) {
     config.precision_mode = precision;
     let mut engine = AudioEngine::new(config.clone()).unwrap();
     engine.output_sample_rate = out_rate;
-    engine.pipeline.update_sample_rate(out_rate as f32);
+    engine.graph.update_sample_rate(out_rate as f32);
     engine.set_volume(1.0);
 
     let seg_a = quantized_sine_samples(sr_a, n_frames);
@@ -725,7 +725,7 @@ fn loudness_eq_gapless_handoff_impl(precision: config::PrecisionMode) {
 
     let mut engine = AudioEngine::new(config.clone()).unwrap();
     engine.output_sample_rate = out_rate;
-    engine.pipeline.update_sample_rate(out_rate as f32);
+    engine.graph.update_sample_rate(out_rate as f32);
     engine.set_volume(1.0);
 
     let meta_a = LoudnessMetadata {
@@ -740,9 +740,7 @@ fn loudness_eq_gapless_handoff_impl(precision: config::PrecisionMode) {
     };
 
     engine.load_track(&a).expect("load A");
-    engine
-        .pipeline
-        .apply_loudness_metadata_outgoing(Some(meta_a));
+    engine.graph.apply_loudness_metadata_outgoing(Some(meta_a));
     engine.prepare_next_track(&b).expect("prepare B");
     engine.loudness_scan.pending_incoming_loudness_metadata = Some(meta_b);
 

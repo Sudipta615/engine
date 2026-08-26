@@ -39,7 +39,7 @@ impl AudioEngine {
         }
         self.scratch.pending_output_frames.clear();
         self.clock.set_source_frames(0);
-        self.pipeline.reset();
+        self.graph.reset();
         self.stream = None;
         self.stream_ended = false;
         self.scratch.crossfade_triggered = false;
@@ -79,13 +79,13 @@ impl AudioEngine {
                 let incoming_meta = self.loudness_scan.pending_incoming_loudness_metadata.take();
                 self.loudness_scan.pending_loudness_metadata = incoming_meta;
                 if let Some(meta) = incoming_meta {
-                    self.pipeline.apply_loudness_metadata_outgoing(Some(meta));
+                    self.graph.apply_loudness_metadata_outgoing(Some(meta));
                 }
                 self.stream = Some(PlaybackStream::Single {
                     decoder: incoming_decoder,
                     resampler: incoming_resampler,
                 });
-                self.pipeline.mixer_mut().start_playing();
+                self.graph.begin_playing();
             }
         }
 
@@ -107,7 +107,7 @@ impl AudioEngine {
                 self.sample_sink.reset();
             }
 
-            self.pipeline.begin_seek_fadeout();
+            self.graph.begin_seek_fadeout();
 
             if !self.dsd.dop_active {
                 for _ in 0..128 {
@@ -116,10 +116,14 @@ impl AudioEngine {
                     {
                         break;
                     }
-                    let (l, r) = self.pipeline.process(0.0, 0.0);
+                    // Advance the seek-fade envelope on a silence frame (the
+                    // per-frame pipeline entry became the graph's block path).
+                    let mut l = [0.0f32];
+                    let mut r = [0.0f32];
+                    self.graph.process_block(&mut l, &mut r);
                     super::super::decode_loop::push_pending_back_bounded(
                         &mut self.scratch.pending_output_frames,
-                        (l, r),
+                        (l[0], r[0]),
                     );
                 }
             }
@@ -134,8 +138,8 @@ impl AudioEngine {
                     }
                     #[cfg(not(feature = "resample"))]
                     let _ = resampler;
-                    self.pipeline.reset_filters_only();
-                    self.pipeline.begin_seek_fadein();
+                    self.graph.reset_filters_only();
+                    self.graph.begin_seek_fadein();
                     self.scratch.crossfade_triggered = false;
                     self.scratch.pending_chunk = None;
                     self.scratch.pending_incoming_chunk = None;
@@ -146,7 +150,7 @@ impl AudioEngine {
                     info!("Seeked to {:.1}s", clamped_pos);
                 }
                 Err(e) => {
-                    self.pipeline.begin_seek_fadein();
+                    self.graph.begin_seek_fadein();
                     self.clock.reset_track(self.clock.source_sample_rate);
                     self.write_playback_info(|pb| pb.position_secs = 0.0);
                     self.emit_event(crate::events::EngineEvent::Error(format!(
@@ -173,17 +177,20 @@ impl AudioEngine {
 
         match self.config.speed_mode {
             config::SpeedMode::TimeStretch => {
-                self.pipeline.timestretcher_mut().set_speed(clamped);
+                self.graph.timestretch_mut().stretcher.set_speed(clamped);
                 #[cfg(feature = "resample")]
                 self.resampler_set_speed_all(1.0);
             }
             config::SpeedMode::PitchShift => {
-                self.pipeline.timestretcher_mut().set_pitch_ratio(clamped);
+                self.graph
+                    .timestretch_mut()
+                    .stretcher
+                    .set_pitch_ratio(clamped);
                 #[cfg(feature = "resample")]
                 self.resampler_set_speed_all(1.0);
             }
             config::SpeedMode::Varispeed => {
-                self.pipeline.timestretcher_mut().set_speed(1.0);
+                self.graph.timestretch_mut().stretcher.set_speed(1.0);
                 #[cfg(feature = "resample")]
                 self.resampler_set_speed_all(clamped);
             }
@@ -232,8 +239,9 @@ impl AudioEngine {
         }
         let clamped = semitones.clamp(-24.0, 24.0);
         info!("Pitch shift set to {:.2} semitones", clamped);
-        self.pipeline
-            .timestretcher_mut()
+        self.graph
+            .timestretch_mut()
+            .stretcher
             .set_pitch_semitones(clamped);
     }
 

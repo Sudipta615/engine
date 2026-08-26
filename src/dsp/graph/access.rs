@@ -6,62 +6,58 @@
 use super::*;
 
 impl DspGraph {
-    // ── Pre-mix Chain ──────────────────────────────────────────────────────
+    // ── Mix bus (pre-mix chain) ────────────────────────────────────────────
+
+    pub fn mix(&self) -> &MixBusNode {
+        match &self.active.nodes[node_id::MIX] {
+            GraphNode::Mix(n) => n,
+            _ => unreachable!("arena slot MIX holds a MixBusNode"),
+        }
+    }
+
+    pub fn mix_mut(&mut self) -> &mut MixBusNode {
+        match &mut self.active.nodes[node_id::MIX] {
+            GraphNode::Mix(n) => n,
+            _ => unreachable!("arena slot MIX holds a MixBusNode"),
+        }
+    }
+
+    // ── Pre-mix accessors — input-0 / input-1 aliases into the mix bus ────
+    //
+    // Backward-compatible with the Phase-1 named pre-mix accessors: input 0
+    // is the outgoing (primary) chain, input 1 the incoming (secondary)
+    // chain. The bus owns N inputs, so these read the first two.
 
     pub fn out_preamp(&self) -> &GainNode {
-        match &self.active.nodes[node_id::OUT_PREAMP] {
-            GraphNode::OutPreamp(n) => n,
-            _ => unreachable!("arena slot OUT_PREAMP holds a GainNode"),
-        }
+        &self.mix().inputs[0].preamp
     }
 
     pub fn out_preamp_mut(&mut self) -> &mut GainNode {
-        match &mut self.active.nodes[node_id::OUT_PREAMP] {
-            GraphNode::OutPreamp(n) => n,
-            _ => unreachable!("arena slot OUT_PREAMP holds a GainNode"),
-        }
+        &mut self.mix_mut().inputs[0].preamp
     }
 
     pub fn out_loudness(&self) -> &LoudnessNode {
-        match &self.active.nodes[node_id::OUT_LOUDNESS] {
-            GraphNode::OutLoudness(n) => n,
-            _ => unreachable!("arena slot OUT_LOUDNESS holds a LoudnessNode"),
-        }
+        &self.mix().inputs[0].loudness
     }
 
     pub fn out_loudness_mut(&mut self) -> &mut LoudnessNode {
-        match &mut self.active.nodes[node_id::OUT_LOUDNESS] {
-            GraphNode::OutLoudness(n) => n,
-            _ => unreachable!("arena slot OUT_LOUDNESS holds a LoudnessNode"),
-        }
+        &mut self.mix_mut().inputs[0].loudness
     }
 
     pub fn in_preamp(&self) -> &GainNode {
-        match &self.active.nodes[node_id::IN_PREAMP] {
-            GraphNode::InPreamp(n) => n,
-            _ => unreachable!("arena slot IN_PREAMP holds a GainNode"),
-        }
+        &self.mix().inputs[1].preamp
     }
 
     pub fn in_preamp_mut(&mut self) -> &mut GainNode {
-        match &mut self.active.nodes[node_id::IN_PREAMP] {
-            GraphNode::InPreamp(n) => n,
-            _ => unreachable!("arena slot IN_PREAMP holds a GainNode"),
-        }
+        &mut self.mix_mut().inputs[1].preamp
     }
 
     pub fn in_loudness(&self) -> &LoudnessNode {
-        match &self.active.nodes[node_id::IN_LOUDNESS] {
-            GraphNode::InLoudness(n) => n,
-            _ => unreachable!("arena slot IN_LOUDNESS holds a LoudnessNode"),
-        }
+        &self.mix().inputs[1].loudness
     }
 
     pub fn in_loudness_mut(&mut self) -> &mut LoudnessNode {
-        match &mut self.active.nodes[node_id::IN_LOUDNESS] {
-            GraphNode::InLoudness(n) => n,
-            _ => unreachable!("arena slot IN_LOUDNESS holds a LoudnessNode"),
-        }
+        &mut self.mix_mut().inputs[1].loudness
     }
 
     // ── Post-mix Chain ─────────────────────────────────────────────────────
