@@ -124,5 +124,70 @@ fn bench_graph_vs_pipeline(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_graph_plan, bench_graph_vs_pipeline);
+/// Phase 2: live reconfiguration cost. A generation swap lands at a block
+/// boundary every K blocks (build + publish on the control side, swap on the
+/// audio side) while the hot path runs uninterrupted. Reconfigs are rare
+/// events; these groups report the marginal per-block cost of a live reconfig
+/// cadence over the base block cost measured in `bench_graph_plan`.
+fn bench_graph_live_reconfig(c: &mut Criterion) {
+    let config = full_config();
+    let mut graph = DspGraph::from_config(&config, 44100.0);
+    let handle = graph.control_handle();
+
+    const BLOCK_4K: usize = 4096;
+    let mut group = c.benchmark_group("graph_live_reconfig");
+    group.throughput(Throughput::Elements(BLOCK_4K as u64));
+
+    // Same-thread cadence: reconfigure() (build + publish + swap) every 8
+    // blocks. The generation build is the control-side cost; the swap itself
+    // is two atomic exchanges plus the Box pointer juggling.
+    let mut cfg_a = full_config();
+    group.bench_function("block_4096/reconfigure_every_8_blocks", |b| {
+        let mut left = vec![0.5f32; BLOCK_4K];
+        let mut right = vec![0.3f32; BLOCK_4K];
+        b.iter(|| {
+            for k in 0..8 {
+                if k == 0 {
+                    cfg_a.eq.bands[2].gain_db += 0.25;
+                    graph.reconfigure(&cfg_a);
+                }
+                graph.process_block(&mut left, &mut right);
+            }
+            black_box(&left);
+        });
+    });
+
+    // Cross-thread cadence: a pre-built generation is published from the
+    // control side every 64 blocks, isolating the audio-side swap cost from
+    // the generation build (which happens on the control side, unmeasured).
+    let mut cfg_b = full_config();
+    group.bench_function("block_4096/swap_every_64_blocks", |b| {
+        let mut left = vec![0.5f32; BLOCK_4K];
+        let mut right = vec![0.3f32; BLOCK_4K];
+        b.iter(|| {
+            for k in 0..64 {
+                if k % 64 == 0 {
+                    cfg_b.eq.bands[2].gain_db += 0.25;
+                    let gen = engine::dsp::graph::GraphGeneration::from_config(
+                        &cfg_b,
+                        44100.0,
+                        &engine::decode::ChannelLayout::Stereo,
+                    );
+                    handle.publish_generation(gen);
+                }
+                graph.process_block(&mut left, &mut right);
+            }
+            black_box(&left);
+        });
+    });
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_graph_plan,
+    bench_graph_vs_pipeline,
+    bench_graph_live_reconfig
+);
 criterion_main!(benches);

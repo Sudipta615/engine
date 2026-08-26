@@ -76,21 +76,21 @@ impl DspGraph {
         self.precision_mode
     }
 
-    pub fn set_bit_perfect(&mut self, enabled: bool) {
-        self.bit_perfect = enabled;
-        if enabled {
-            self.volume_mut().processor.set_gain(1.0);
-            self.volume_mut().processor.snap();
-            self.seek_fade_mut().fade.reset();
-        }
+    /// Toggle bit-perfect transport. Queued: the flag and its side effects
+    /// (volume snap, seek-fade reset) apply at the next block boundary, so
+    /// the call is safe from any thread that holds a control handle.
+    pub fn set_bit_perfect(&self, enabled: bool) {
+        self.control_handle()
+            .enqueue(NodeId::SHELL.0, NodeCmd::SetBitPerfect(enabled));
     }
 
     pub fn is_bit_perfect(&self) -> bool {
         self.bit_perfect
     }
 
-    pub fn set_dop_bypass(&mut self, enabled: bool) {
-        self.dop_bypass = enabled;
+    pub fn set_dop_bypass(&self, enabled: bool) {
+        self.control_handle()
+            .enqueue(NodeId::SHELL.0, NodeCmd::SetDoPBypass(enabled));
     }
 
     pub fn is_dop_bypass(&self) -> bool {
@@ -114,10 +114,9 @@ impl DspGraph {
         self.sample_rate
     }
 
-    pub fn set_speed(&mut self, speed: f32) {
-        let speed = speed.clamp(0.25, 4.0);
-        self.speed = speed;
-        self.timestretch_mut().stretcher.set_speed(speed);
+    pub fn set_speed(&self, speed: f32) {
+        self.control_handle()
+            .enqueue(NodeId::SHELL.0, NodeCmd::SetSpeed(speed));
     }
 
     pub fn speed(&self) -> f32 {
@@ -130,5 +129,6 @@ impl DspGraph {
 
     pub fn set_volume_fade_ms(&mut self, ms: f32) {
         self.volume_fade_ms = ms;
+        self.bus.set_user_fade_ms(ms);
     }
 }

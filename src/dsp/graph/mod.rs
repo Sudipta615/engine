@@ -32,12 +32,16 @@
 //! [`crate::dsp::pipeline`] (struct + wiring in `mod.rs`, behavior in
 //! concern-scoped files):
 //!
-//! - `construction.rs` — [`DspGraph::from_config`], [`DspGraph::apply_config`],
-//!   [`DspGraph::apply_performance_mode`] (builds the arena + plans)
+//! - `construction.rs` — [`DspGraph::from_config`], [`DspGraph::reconfigure`],
+//!   and the generation builder (builds the arena + plans)
 //! - `plan.rs` — the compiled [`PlanSet`] / [`ExecutionPlan`] / [`PlanStep`]
 //!   representation and the canonical stage order
+//! - `swap.rs` — stable [`NodeId`] identity and the swappable
+//!   [`swap::GraphGeneration`] container
 //! - `access.rs` — typed node accessors over the arena (replaces the former
 //!   named fields: `graph.volume()` instead of `graph.volume`)
+//! - `controls.rs` — the queued control surface: per-node SPSC command
+//!   queues, the publish/swap/retire handshake, and the block-boundary drain
 //! - `lifecycle.rs` — sample-rate updates, resets, mode toggles, and the
 //!   small getters/setters
 //! - `process.rs` — block entry points (stereo f32/f64, multichannel) that
@@ -59,8 +63,10 @@ mod limiter;
 mod plan;
 mod process;
 mod report;
+mod swap;
 
 use plan::PlanSet;
+use std::sync::Arc;
 
 use crate::buffer::{MAX_AUDIO_BLOCK_FRAMES, MAX_CHANNELS};
 use crate::decode::ChannelLayout;
@@ -68,19 +74,28 @@ use crate::dsp::pipeline::{DspNodeInfo, PrecisionMode, DSP_STAGE_CAPABILITIES};
 use config::{EngineConfig, LoudnessMode as ConfigLoudnessMode, PerformanceMode};
 
 pub use context::GraphScratch;
+pub use controls::GraphControlHandle;
 pub use node::DspNode;
 pub use nodes::*;
+
+pub use swap::GraphGeneration;
+
+pub(super) use controls::{ControlBus, NodeCmd};
+pub(super) use swap::{NodeId, UserState};
 
 // ── Node arena ───────────────────────────────────────────────────────────────
 
 /// Stable index into the graph's node arena. Plans reference stages by index
-/// instead of by name, so reordering or replacing a node (Phase 2) only needs
-/// to rebuild the plan, never the executor.
+/// instead of by name, so reordering or replacing a node only needs to
+/// rebuild the plan, never the executor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct NodeIdx(usize);
 
-/// Fixed arena slot order — MUST match the construction order in
-/// [`DspGraph::from_config`].
+/// Canonical `NodeId` values (the arena slot table): the per-node control
+/// queues are addressed by [`swap::NodeId`], and in the default layout these
+/// values coincide with the arena slot order, which MUST match the
+/// construction order in [`DspGraph::from_config`]. The shell slot is
+/// [`swap::NodeId::SHELL`].
 mod node_id {
     pub const OUT_PREAMP: usize = 0;
     pub const OUT_LOUDNESS: usize = 1;
@@ -99,6 +114,8 @@ mod node_id {
     pub const RESAMPLER: usize = 14;
     pub const LIMITER: usize = 15;
     pub const DITHER: usize = 16;
+    /// Number of canonical node slots (also the first non-node `NodeId`).
+    pub const NODE_COUNT: usize = 17;
 }
 
 /// Uniform node storage for the arena. The enum enables monomorphized (match)
@@ -111,7 +128,7 @@ mod node_id {
 /// boxing would reintroduce per-node indirection and allocation, so the lint
 /// is allowed — same as `PlaybackStream` in the engine.
 #[allow(clippy::large_enum_variant)]
-enum GraphNode {
+pub(super) enum GraphNode {
     OutPreamp(GainNode),
     OutLoudness(LoudnessNode),
     InPreamp(GainNode),
@@ -163,16 +180,16 @@ const PREAMP_RAMP_DURATION_MS: f32 = VOLUME_RAMP_DURATION_MS;
 /// The struct only declares the graph's fields and wiring; its behavior lives
 /// in the concern-scoped impl files listed in the module docs.
 pub struct DspGraph {
-    // ── Node arena ──
-    /// Uniform node storage: every graph node lives in one contiguous arena so
-    /// the compiled execution plans can reference stages by stable index
-    /// ([`node_id`]). Arena order is fixed by construction.
-    nodes: Vec<GraphNode>,
+    // ── Active generation (audio thread owns this) ──
+    /// The currently-executed graph configuration: node arena + compiled
+    /// plans + stable node identities. Swapped atomically at block boundaries
+    /// via the publish/swap/retire handshake (see [`controls`]).
+    active: Box<swap::GraphGeneration>,
 
-    /// Compiled execution plans — one per execution mode and channel class
-    /// (see [`plan`]). Built on the control path; the audio path only reads
-    /// them. The canonical stage order lives here, not in the executor.
-    plans: PlanSet,
+    /// The cross-thread control plane: per-node SPSC queues, the swap
+    /// atomics, and sticky user state. The only part of the graph shared
+    /// between the control and audio threads.
+    bus: Arc<controls::ControlBus>,
 
     // ── Routing & Multichannel ──
     pub multichannel_layout: ChannelLayout,

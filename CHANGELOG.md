@@ -2,6 +2,60 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.2.0] — 2026-08-26
+
+Phase 2 of the player → graph-runtime roadmap: live graph swap. The graph is
+now a host that can be reconfigured underneath itself while playing — control
+commands travel through per-node SPSC queues and apply deterministically at
+block boundaries, and full configuration changes swap in a freshly built
+generation with zero allocation and no locks on the audio thread.
+
+### Added
+
+- **Queued control surface** (`dsp::graph::controls`): every `DspGraph`
+  control method now enqueues a plain-data `NodeCmd` (strictly `Copy`, no
+  heap) into a bounded per-node SPSC queue instead of mutating nodes
+  directly; the audio thread drains all queues once per caller block, so
+  commands apply deterministically at the next block boundary and the
+  methods are callable as `&self` from any thread holding a
+  `GraphControlHandle` (via `DspGraph::control_handle()`).
+- **Swappable graph generations** (`dsp::graph::swap`): a `GraphGeneration`
+  (node arena + compiled `PlanSet` + stable `NodeId` identities) is an
+  immutable, ownable configuration. Build with `GraphGeneration::from_config`
+  on the control side and publish via `GraphControlHandle::publish_generation`;
+  the audio thread swaps it in at the next block boundary (publish/swap/retire
+  handshake with deferred reclamation — the audio thread never allocates or
+  frees). Pending generations coalesce ("latest wins") and live memory is
+  bounded to 2 generations + ≤1 in flight.
+- **`UserState` snapshot** (`dsp::graph::swap`): listener-facing volume /
+  balance / speed / fade state is mirrored onto the control bus at each
+  drain, so a fresh generation inherits it (`DspGraph::reconfigure` replays
+  the snapshot) and a reconfig never snaps the listener's settings.
+- **`DspGraph::reconfigure`** (`dsp::graph::construction`): live
+  same-thread reconfiguration — build + publish + swap at the next block
+  boundary; safe to call while audio is playing.
+- **Phase-2 gates**: `graph_*` unit tests for the defer/swap/coalesce/
+  reclamation discipline and a two-thread control-vs-audio stress test;
+  `realtime_graph_swap_does_not_allocate_on_audio_thread` pins the
+  zero-allocation swap contract; `graph_live_reconfig` bench group reports
+  the per-block cost of a reconfig cadence.
+
+### Fixed
+
+- **1 ms dead weight in the public generation builder**: the Phase-2
+  `GraphGeneration` build path no longer constructs a throwaway control bus
+  (the builder takes a `UserState` snapshot instead), making
+  `GraphGeneration::from_config` ~6× cheaper (~0.24 ms in release).
+
+### Changed
+
+- `DspGraph` control methods are now deferred (applied at the next block
+  boundary) rather than immediate; `&mut self` callers keep working
+  unchanged. Control-queue depth is fixed at 64 commands per node; overflow
+  drops and counts (`GraphControlHandle::dropped_commands`).
+- `docs/ARCHITECTURE.md` module map updated for the `swap.rs` / `controls.rs`
+  split and the queued control surface.
+
 ## [3.1.0] — 2026-08-26
 
 Phase 1 of the player → graph-runtime roadmap: `DspGraph` gains a compiled
