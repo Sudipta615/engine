@@ -7,12 +7,12 @@ use super::super::AudioEngine;
 
 impl AudioEngine {
     pub(super) fn handle_set_eq_enabled(&mut self, enabled: bool) {
-        self.pipeline.set_eq_enabled(enabled);
+        self.graph.set_eq_enabled(enabled);
     }
 
     pub(super) fn handle_set_eq_auto_headroom(&mut self, enabled: bool) {
         self.config.eq.auto_headroom = enabled;
-        self.pipeline.set_eq_auto_headroom(enabled);
+        self.graph.set_eq_auto_headroom(enabled);
         info!(
             "EQ auto headroom: {}",
             if enabled { "enabled" } else { "disabled" }
@@ -28,7 +28,7 @@ impl AudioEngine {
         enabled: bool,
     ) {
         use crate::dsp::equalizer::{EqBandParams, EqFilterType};
-        let num_bands = self.pipeline.eq_num_bands();
+        let num_bands = self.graph.eq_num_bands();
         let filter_type = if index == 0 {
             EqFilterType::LowShelf
         } else if num_bands > 1 && index == num_bands - 1 {
@@ -36,7 +36,7 @@ impl AudioEngine {
         } else {
             EqFilterType::Peaking
         };
-        self.pipeline.set_eq_band(
+        self.graph.set_eq_band(
             index,
             EqBandParams {
                 frequency,
@@ -58,7 +58,7 @@ impl AudioEngine {
         enabled: bool,
     ) {
         use crate::dsp::equalizer::EqBandParams;
-        self.pipeline.set_eq_band(
+        self.graph.set_eq_band(
             index,
             EqBandParams {
                 frequency,
@@ -72,7 +72,7 @@ impl AudioEngine {
 
     pub(super) fn handle_set_eq_preset(&mut self, preset: config::EqPreset) {
         use crate::dsp::equalizer::ParametricEq;
-        self.pipeline.eq = ParametricEq::from_preset(self.output_sample_rate as f32, &preset);
+        self.graph.eq_mut().eq = ParametricEq::from_preset(self.output_sample_rate as f32, &preset);
         info!(
             "EQ preset '{}' applied ({} bands, preamp {:.1} dB)",
             preset.name,
@@ -113,22 +113,22 @@ impl AudioEngine {
     }
 
     pub(super) fn handle_set_bass_shelf(&mut self, gain_db: f32) {
-        self.pipeline.set_bass_shelf(gain_db);
+        self.graph.set_bass_shelf(gain_db);
     }
 
     pub(super) fn handle_set_treble_shelf(&mut self, gain_db: f32) {
-        self.pipeline.set_treble_shelf(gain_db);
+        self.graph.set_treble_shelf(gain_db);
     }
 
     pub(super) fn handle_set_preamp(&mut self, db: f32) {
-        self.pipeline.set_preamp_db(db);
+        self.graph.set_preamp_db(db);
     }
 
     pub(super) fn handle_set_midside_eq(&mut self, enabled: bool) {
-        let was_enabled = self.pipeline.is_midside_eq();
+        let was_enabled = self.graph.is_midside_eq();
         if was_enabled != enabled {
-            self.pipeline.set_midside_eq(enabled);
-            self.pipeline.eq.reset();
+            self.graph.set_midside_eq(enabled);
+            self.graph.eq_mut().eq.reset();
         }
     }
 }

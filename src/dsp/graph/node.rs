@@ -70,6 +70,13 @@ pub trait DspNode: Send {
     /// Reset internal filter state (e.g., on seek or track boundary).
     fn reset(&mut self);
 
+    /// Reset filter state only, leaving persistent user state (volume,
+    /// transition envelopes) intact. Defaults to a full reset; nodes whose
+    /// user state must survive a filter-only reset override this.
+    fn reset_filters_only(&mut self) {
+        self.reset();
+    }
+
     /// Prepare the node for a new sample rate and maximum channel count.
     fn prepare(&mut self, sample_rate: f32, max_channels: usize);
 

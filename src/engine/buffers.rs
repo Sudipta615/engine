@@ -35,9 +35,13 @@ pub(crate) struct EngineScratch {
     pub(crate) pending_multichannel: Vec<f32>,
     /// Channel count of the frames buffered in `pending_multichannel` (0 when empty).
     pub(crate) pending_multichannel_channels: usize,
-    /// Accumulated mixed frames during a crossfade transition.
+    /// Accumulated mixed frames during a crossfade transition: the primary
+    /// (outgoing) stream and the secondary (incoming) stream, accumulated in
+    /// lockstep and handed to the graph's `process_block_inputs` (Phase 3 S3).
     pub(crate) mix_l: Vec<f32>,
     pub(crate) mix_r: Vec<f32>,
+    pub(crate) mix_in_l: Vec<f32>,
+    pub(crate) mix_in_r: Vec<f32>,
 }
 
 impl Default for EngineScratch {
@@ -54,6 +58,8 @@ impl Default for EngineScratch {
             pending_multichannel_channels: 0,
             mix_l: Vec::with_capacity(MIX_BLOCK_FRAMES),
             mix_r: Vec::with_capacity(MIX_BLOCK_FRAMES),
+            mix_in_l: Vec::with_capacity(MIX_BLOCK_FRAMES),
+            mix_in_r: Vec::with_capacity(MIX_BLOCK_FRAMES),
         }
     }
 }

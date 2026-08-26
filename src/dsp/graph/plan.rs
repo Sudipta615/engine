@@ -83,9 +83,11 @@ impl PlanSet {
     /// Compile the canonical stage order. Fixed, and must match the pre-plan
     /// `process.rs` sequences:
     ///
-    /// - stereo (`Normal`): `out_preamp → out_loudness → eq → dynamics →
-    ///   convolution → balance → crossfeed → stereo → timestretch → volume →
-    ///   seek_fade`
+    /// - stereo (`Normal`): `mix → eq → dynamics → convolution → balance →
+    ///   crossfeed → stereo → timestretch → volume → seek_fade`. The mix
+    ///   step applies every bus input's pre-mix (preamp + loudness) and
+    ///   sums them — the Phase-3 S1 replacement for the former
+    ///   `out_preamp → out_loudness` steps.
     /// - multichannel (`NormalMc`): the same chain with `routing` (channel
     ///   trim) prepended on every channel, matching the >2-channel path.
     ///
@@ -95,8 +97,7 @@ impl PlanSet {
     pub(super) fn compile() -> Self {
         use node_id::*;
         let stereo_chain = [
-            (OUT_PREAMP, StepScope::AllChannels),
-            (OUT_LOUDNESS, StepScope::AllChannels),
+            (MIX, StepScope::AllChannels),
             (EQ, StepScope::FrontPair),
             (DYNAMICS, StepScope::FrontPair),
             (CONVOLUTION, StepScope::FrontPair),

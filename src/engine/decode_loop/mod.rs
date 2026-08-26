@@ -48,13 +48,13 @@ impl AudioEngine {
                 let incoming_meta = self.loudness_scan.pending_incoming_loudness_metadata.take();
                 self.loudness_scan.pending_loudness_metadata = incoming_meta;
                 if let Some(meta) = incoming_meta {
-                    self.pipeline.apply_loudness_metadata_outgoing(Some(meta));
+                    self.graph.apply_loudness_metadata_outgoing(Some(meta));
                 }
                 self.stream = Some(PlaybackStream::Single {
                     decoder: incoming_decoder,
                     resampler: incoming_resampler,
                 });
-                self.pipeline.mixer_mut().start_playing();
+                self.graph.begin_playing();
                 self.scratch.pending_chunk = None;
                 self.scratch.pending_incoming_chunk = None;
                 self.scratch.rs_out_buf.clear();

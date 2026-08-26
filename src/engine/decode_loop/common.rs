@@ -181,7 +181,17 @@ impl AudioEngine {
             self.scratch.mix_r.len() <= self.scratch.mix_r.capacity()
                 && self.scratch.mix_r.capacity() >= MIX_BLOCK_FRAMES
         );
+        debug_assert!(
+            self.scratch.mix_in_l.len() <= self.scratch.mix_in_l.capacity()
+                && self.scratch.mix_in_l.capacity() >= MIX_BLOCK_FRAMES
+        );
+        debug_assert!(
+            self.scratch.mix_in_r.len() <= self.scratch.mix_in_r.capacity()
+                && self.scratch.mix_in_r.capacity() >= MIX_BLOCK_FRAMES
+        );
         debug_assert_eq!(self.scratch.mix_l.len(), self.scratch.mix_r.len());
+        debug_assert_eq!(self.scratch.mix_in_l.len(), self.scratch.mix_in_r.len());
+        debug_assert_eq!(self.scratch.mix_l.len(), self.scratch.mix_in_l.len());
     }
 
     #[inline]
@@ -226,7 +236,7 @@ impl AudioEngine {
     }
 
     #[inline]
-    pub(crate) fn push_mix_frame(&mut self, left: f32, right: f32) {
+    pub(crate) fn push_mix_frame(&mut self, left: f32, right: f32, in_left: f32, in_right: f32) {
         debug_assert_eq!(
             self.scratch.mix_l.len(),
             self.scratch.mix_r.len(),
@@ -242,6 +252,8 @@ impl AudioEngine {
         {
             self.scratch.mix_l.push(left);
             self.scratch.mix_r.push(right);
+            self.scratch.mix_in_l.push(in_left);
+            self.scratch.mix_in_r.push(in_right);
         } else {
             log::error!("mixed realtime FIFO reached its preallocated capacity");
         }
@@ -251,7 +263,7 @@ impl AudioEngine {
     /// buffer at end-of-stream, so the final `lookahead` output-domain samples
     /// are not stranded in the limiter's delay line.
     pub(super) fn flush_final_limiter_tail(&mut self) {
-        let tail = self.pipeline.flush_final_limiter();
+        let tail = self.graph.flush_final_limiter();
         if tail.is_empty() {
             return;
         }
@@ -294,7 +306,7 @@ impl AudioEngine {
         let mut batch = [0.0f32; CHUNK * 2];
         let mut collected = 0usize;
         while let Some((out_l, out_r)) = r.read_f32() {
-            let (l, rr) = self.pipeline.process_final_limiter(out_l, out_r);
+            let (l, rr) = self.graph.process_final_limiter(out_l, out_r);
             batch[collected * 2] = l;
             batch[collected * 2 + 1] = rr;
             collected += 1;

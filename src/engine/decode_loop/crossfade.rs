@@ -271,19 +271,12 @@ impl AudioEngine {
                     }
                 };
 
-                let (mixed_l, mixed_r) =
-                    if self.config.precision_mode == config::PrecisionMode::Quality {
-                        let (ml, mr) = self.pipeline.mixer_mut().process_f64(
-                            out_l as f64,
-                            out_r as f64,
-                            in_l as f64,
-                            in_r as f64,
-                        );
-                        (ml as f32, mr as f32)
-                    } else {
-                        self.pipeline.mixer_mut().process(out_l, out_r, in_l, in_r)
-                    };
-                self.push_mix_frame(mixed_l, mixed_r);
+                // Phase 3 S3: the graph's mix bus owns the per-stream pre-mix
+                // chains, the transition envelope, and the post-mix chain —
+                // all applied inside `process_block_inputs` when the block is
+                // flushed. Here we only accumulate the raw output-domain
+                // frames (outgoing + incoming) in lockstep.
+                self.push_mix_frame(out_l, out_r, in_l, in_r);
                 *crossfade_frames_remaining = crossfade_frames_remaining.saturating_sub(1);
 
                 if self.scratch.mix_l.len() == MIX_BLOCK
@@ -310,8 +303,12 @@ impl AudioEngine {
         // over.)
         if *crossfade_frames_remaining == 0 && !self.scratch.rs_in_buf.is_empty() {
             let mut leftover_stall: Option<(usize, usize)> = None;
+            // The bus is in PlayingNext now: feed the leftover incoming
+            // frames as the SECONDARY stream (the primary contributes
+            // nothing), so they pass through the full chain — pre-mix +
+            // post-mix — exactly like the promoted single stream.
             while let Some((l, r)) = self.scratch.rs_in_buf.pop_front() {
-                self.push_mix_frame(l, r);
+                self.push_mix_frame(0.0, 0.0, l, r);
                 if self.scratch.mix_l.len() == MIX_BLOCK {
                     self.flush_mixed_block(&mut leftover_stall, out_idx, in_idx);
                 }
@@ -328,6 +325,8 @@ impl AudioEngine {
         // Defensive: the mixed block must start empty on every tick.
         self.scratch.mix_l.clear();
         self.scratch.mix_r.clear();
+        self.scratch.mix_in_l.clear();
+        self.scratch.mix_in_r.clear();
 
         if let Some((stall_out_idx, stall_in_idx)) = stalled_at {
             if stall_out_idx < out_samples.len() {
@@ -420,18 +419,16 @@ impl AudioEngine {
                         break;
                     };
                     *source_idx += channels.max(1);
-                    let (dl, dr) = if self.config.precision_mode == config::PrecisionMode::Quality {
-                        let (l64, r64) = self.pipeline.process_outgoing_f64(l as f64, r as f64);
-                        (l64 as f32, r64 as f32)
-                    } else {
-                        self.pipeline.process_outgoing(l, r)
-                    };
+                    // Phase 3 S3: the source frames feed the resampler RAW —
+                    // the per-stream pre-mix (preamp + loudness) moved into
+                    // the graph's mix bus and is applied on the resampled
+                    // output-domain planes inside `process_block_inputs`.
                     feed_resampled_frame(
                         resampler,
                         &mut self.scratch.rs_out_buf,
                         self.config.precision_mode,
-                        dl,
-                        dr,
+                        l,
+                        r,
                     );
                 }
                 drain_resampler(resampler, &mut self.scratch.rs_out_buf);
@@ -493,18 +490,14 @@ impl AudioEngine {
                         break;
                     };
                     *source_idx += channels.max(1);
-                    let (dl, dr) = if self.config.precision_mode == config::PrecisionMode::Quality {
-                        let (l64, r64) = self.pipeline.process_incoming_f64(l as f64, r as f64);
-                        (l64 as f32, r64 as f32)
-                    } else {
-                        self.pipeline.process_incoming(l, r)
-                    };
+                    // Phase 3 S3: raw source frames — the incoming pre-mix
+                    // chain lives in the graph's mix bus (slot 1).
                     feed_resampled_frame(
                         resampler,
                         &mut self.scratch.rs_in_buf,
                         self.config.precision_mode,
-                        dl,
-                        dr,
+                        l,
+                        r,
                     );
                 }
                 drain_resampler(resampler, &mut self.scratch.rs_in_buf);
@@ -555,13 +548,8 @@ impl AudioEngine {
                     break;
                 };
                 *source_idx += channels.max(1);
-                let (dl, dr) = if self.config.precision_mode == config::PrecisionMode::Quality {
-                    let (l64, r64) = self.pipeline.process_outgoing_f64(l as f64, r as f64);
-                    (l64 as f32, r64 as f32)
-                } else {
-                    self.pipeline.process_outgoing(l, r)
-                };
-                self.push_crossfade_out((dl, dr));
+                // Phase 3 S3: raw source frames (pre-mix moved into the bus).
+                self.push_crossfade_out((l, r));
             }
             return;
         }
@@ -596,13 +584,8 @@ impl AudioEngine {
                     break;
                 };
                 *source_idx += channels.max(1);
-                let (dl, dr) = if self.config.precision_mode == config::PrecisionMode::Quality {
-                    let (l64, r64) = self.pipeline.process_incoming_f64(l as f64, r as f64);
-                    (l64 as f32, r64 as f32)
-                } else {
-                    self.pipeline.process_incoming(l, r)
-                };
-                self.push_crossfade_in((dl, dr));
+                // Phase 3 S3: raw source frames (pre-mix moved into the bus).
+                self.push_crossfade_in((l, r));
             }
             return;
         }
@@ -622,15 +605,29 @@ impl AudioEngine {
         out_idx: usize,
         in_idx: usize,
     ) -> bool {
-        let n = self.scratch.mix_l.len().min(self.scratch.mix_r.len());
+        let n = self
+            .scratch
+            .mix_l
+            .len()
+            .min(self.scratch.mix_r.len())
+            .min(self.scratch.mix_in_l.len())
+            .min(self.scratch.mix_in_r.len());
         if n == 0 {
             return true;
         }
-        self.pipeline
-            .process_post_mix_block(&mut self.scratch.mix_l[..n], &mut self.scratch.mix_r[..n]);
-        // The mixed block is already in the output domain (both sides were
-        // resampled before mixing), so the final safety limiter runs here.
-        self.pipeline.process_final_limiter_block(
+        // Phase 3 S3: the graph runs the full chain in one call — per-stream
+        // pre-mix chains (bus slots 0/1), the transition envelope, and the
+        // post-mix chain — then the output-domain final limiter runs here as
+        // before (the block is already in the output domain: both sides were
+        // resampled before mixing).
+        self.graph.process_block_inputs(
+            (&mut self.scratch.mix_l[..n], &mut self.scratch.mix_r[..n]),
+            (
+                &mut self.scratch.mix_in_l[..n],
+                &mut self.scratch.mix_in_r[..n],
+            ),
+        );
+        self.graph.process_final_limiter_block(
             &mut self.scratch.mix_l[..n],
             &mut self.scratch.mix_r[..n],
         );
@@ -641,6 +638,8 @@ impl AudioEngine {
         }
         self.scratch.mix_l.clear();
         self.scratch.mix_r.clear();
+        self.scratch.mix_in_l.clear();
+        self.scratch.mix_in_r.clear();
         let written = self.output_buffer.push_block_interleaved(&batch[..n * 2]);
         let frames_written = written / 2;
         if frames_written < n {

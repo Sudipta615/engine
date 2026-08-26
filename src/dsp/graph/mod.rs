@@ -97,25 +97,26 @@ struct NodeIdx(usize);
 /// construction order in [`DspGraph::from_config`]. The shell slot is
 /// [`swap::NodeId::SHELL`].
 mod node_id {
-    pub const OUT_PREAMP: usize = 0;
-    pub const OUT_LOUDNESS: usize = 1;
-    pub const IN_PREAMP: usize = 2;
-    pub const IN_LOUDNESS: usize = 3;
-    pub const EQ: usize = 4;
-    pub const DYNAMICS: usize = 5;
-    pub const CONVOLUTION: usize = 6;
-    pub const BALANCE: usize = 7;
-    pub const CROSSFEED: usize = 8;
-    pub const STEREO: usize = 9;
-    pub const TIMESTRETCH: usize = 10;
-    pub const VOLUME: usize = 11;
-    pub const SEEK_FADE: usize = 12;
-    pub const ROUTING: usize = 13;
-    pub const RESAMPLER: usize = 14;
-    pub const LIMITER: usize = 15;
-    pub const DITHER: usize = 16;
+    /// The mix bus: N per-input pre-mix chains (preamp + loudness + gain +
+    /// balance + mute) summed into the master chain. Replaces the former
+    /// `OUT_PREAMP` / `OUT_LOUDNESS` / `IN_PREAMP` / `IN_LOUDNESS` slots
+    /// (Phase 3 S1).
+    pub const MIX: usize = 0;
+    pub const EQ: usize = 1;
+    pub const DYNAMICS: usize = 2;
+    pub const CONVOLUTION: usize = 3;
+    pub const BALANCE: usize = 4;
+    pub const CROSSFEED: usize = 5;
+    pub const STEREO: usize = 6;
+    pub const TIMESTRETCH: usize = 7;
+    pub const VOLUME: usize = 8;
+    pub const SEEK_FADE: usize = 9;
+    pub const ROUTING: usize = 10;
+    pub const RESAMPLER: usize = 11;
+    pub const LIMITER: usize = 12;
+    pub const DITHER: usize = 13;
     /// Number of canonical node slots (also the first non-node `NodeId`).
-    pub const NODE_COUNT: usize = 17;
+    pub const NODE_COUNT: usize = 14;
 }
 
 /// Uniform node storage for the arena. The enum enables monomorphized (match)
@@ -129,10 +130,7 @@ mod node_id {
 /// is allowed — same as `PlaybackStream` in the engine.
 #[allow(clippy::large_enum_variant)]
 pub(super) enum GraphNode {
-    OutPreamp(GainNode),
-    OutLoudness(LoudnessNode),
-    InPreamp(GainNode),
-    InLoudness(LoudnessNode),
+    Mix(MixBusNode),
     Eq(EqNode),
     Dynamics(DynamicsNode),
     Convolution(ConvolutionNode),

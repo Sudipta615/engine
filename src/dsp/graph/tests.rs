@@ -408,3 +408,226 @@ fn graph_two_thread_control_and_audio_stress() {
         "reclamation never exceeds published generations"
     );
 }
+
+// ── Phase 3 S1: mix-bus per-input control + transition envelope ────────────
+
+#[test]
+fn mix_input_gain_balance_mute_apply_via_control_queue() {
+    use crate::dsp::crossfade::MixerState;
+
+    let sr = 48000.0;
+    let mut cfg = EngineConfig::default();
+    cfg.crossfade.enabled = false; // begin_crossfade degrades to a gapless switch
+    let mut graph = DspGraph::from_config(&cfg, sr);
+    let n = 256;
+
+    // Mute the primary input: PlayingCurrent must output silence.
+    graph.set_input_mute(0, true);
+    let mut l0 = vec![0.5f32; n];
+    let mut r0 = vec![-0.5f32; n];
+    let mut l1 = vec![0.0f32; n];
+    let mut r1 = vec![0.0f32; n];
+    graph.process_block_inputs((&mut l0, &mut r0), (&mut l1, &mut r1));
+    assert_eq!(l0[0], 0.0, "muted input 0 must contribute silence");
+    assert_eq!(r0[0], 0.0);
+
+    // Per-input gain + balance on input 1, then a gapless switch to it.
+    graph.set_input_mute(0, false);
+    graph.set_input_gain(1, 0.5);
+    graph.set_input_balance(1, 0.5);
+    graph.begin_crossfade(60);
+    let mut l0 = vec![0.8f32; n];
+    let mut r0 = vec![0.8f32; n];
+    let mut l1 = vec![0.4f32; n];
+    let mut r1 = vec![0.4f32; n];
+    graph.process_block_inputs((&mut l0, &mut r0), (&mut l1, &mut r1));
+    // The user-gain ramp is exponential; snap it so the assertion is exact
+    // (ramp timing itself is covered by the gain unit tests).
+    graph.mix_mut().inputs[1].gain.snap();
+    graph.process_block_inputs((&mut l0, &mut r0), (&mut l1, &mut r1));
+    assert_eq!(graph.mixer_state(), MixerState::PlayingNext);
+    // L = in1 * gain * (1 - balance) = 0.4 * 0.5 * 0.5 = 0.1;
+    // R = in1 * gain * 1.0 = 0.4 * 0.5 = 0.2. Input 0 must not leak.
+    for i in 0..n {
+        assert!(
+            (l0[i] - 0.1).abs() < 1e-6,
+            "L mismatch at {i}: {} (want 0.1)",
+            l0[i]
+        );
+        assert!(
+            (r0[i] - 0.2).abs() < 1e-6,
+            "R mismatch at {i}: {} (want 0.2)",
+            r0[i]
+        );
+    }
+}
+
+#[test]
+fn mix_transitions_drive_envelope_states() {
+    use crate::dsp::crossfade::MixerState;
+
+    let sr = 48000.0;
+    let mut cfg = EngineConfig::default();
+    cfg.crossfade.enabled = true;
+    cfg.crossfade.duration_ms = 50; // 2400 frames at 48 kHz
+    let mut graph = DspGraph::from_config(&cfg, sr);
+    let n = 256;
+
+    let mut l0 = vec![0.5f32; n];
+    let mut r0 = vec![0.5f32; n];
+    let mut l1 = vec![0.0f32; n];
+    let mut r1 = vec![0.0f32; n];
+
+    assert_eq!(graph.mixer_state(), MixerState::PlayingCurrent);
+
+    graph.begin_crossfade(50);
+    graph.process_block_inputs((&mut l0, &mut r0), (&mut l1, &mut r1));
+    assert_eq!(graph.mixer_state(), MixerState::Crossfading);
+
+    // 2400 frames ≈ 10 blocks of 256 — the envelope completes and the bus
+    // latches onto input 1.
+    for _ in 0..10 {
+        graph.process_block_inputs((&mut l0, &mut r0), (&mut l1, &mut r1));
+    }
+    assert_eq!(graph.mixer_state(), MixerState::PlayingNext);
+
+    // Back to single-stream playback.
+    graph.begin_playing();
+    graph.process_block_inputs((&mut l0, &mut r0), (&mut l1, &mut r1));
+    assert_eq!(graph.mixer_state(), MixerState::PlayingCurrent);
+
+    // Sequential fade (fade-out → gap → fade-in) completes the same way.
+    graph.begin_fade(50);
+    graph.process_block_inputs((&mut l0, &mut r0), (&mut l1, &mut r1));
+    assert_eq!(graph.mixer_state(), MixerState::Fading);
+    for _ in 0..10 {
+        graph.process_block_inputs((&mut l0, &mut r0), (&mut l1, &mut r1));
+    }
+    assert_eq!(graph.mixer_state(), MixerState::PlayingNext);
+}
+
+#[test]
+fn mix_loudness_metadata_routes_to_inputs() {
+    use crate::dsp::loudness::LoudnessMetadata;
+
+    let sr = 48000.0;
+    let mut cfg = EngineConfig::default();
+    cfg.loudness.mode = config::LoudnessMode::EbuR128;
+    cfg.loudness.target_lufs = -16.0;
+    let mut graph = DspGraph::from_config(&cfg, sr);
+    let n = 256;
+
+    graph.apply_loudness_metadata_outgoing(Some(LoudnessMetadata {
+        ebu_r128_loudness: Some(-18.0),
+        ..Default::default()
+    }));
+    graph.apply_loudness_metadata_incoming(Some(LoudnessMetadata {
+        ebu_r128_loudness: Some(-22.0),
+        ..Default::default()
+    }));
+    let mut l0 = vec![0.1f32; n];
+    let mut r0 = vec![0.1f32; n];
+    let mut l1 = vec![0.1f32; n];
+    let mut r1 = vec![0.1f32; n];
+    graph.process_block_inputs((&mut l0, &mut r0), (&mut l1, &mut r1));
+
+    // Distinct metadata per input must land on distinct chains (outgoing →
+    // input 0, incoming → input 1) and normalize independently. The gains
+    // are mid-ramp after one block, so only routing (non-identity) is
+    // asserted here.
+    let g0 = graph.mix().inputs[0].loudness.normalizer.current_gain_db();
+    let g1 = graph.mix().inputs[1].loudness.normalizer.current_gain_db();
+    assert!(
+        (g0 - g1).abs() > 1e-3,
+        "inputs must normalize independently: {g0} vs {g1}"
+    );
+}
+
+// ── Phase 3 S2: stream slots (N-input bus + multi-stream entry) ────────────
+
+#[test]
+fn mix_stream_slots_sum_independently_and_detach() {
+    use crate::dsp::crossfade::MixerState;
+
+    let sr = 48000.0;
+    let mut cfg = EngineConfig::default();
+    cfg.crossfade.enabled = false; // begin_crossfade degrades to a gapless switch
+    let mut graph = DspGraph::from_config(&cfg, sr);
+
+    // Grow the bus to 3 inputs (Phase-4 groundwork: extra streams).
+    graph
+        .mix_mut()
+        .inputs
+        .push(MixInput::new("extra_preamp", "extra_loudness", 10.0, sr));
+    graph.mix_mut().inputs[2].gain.set_gain(0.5);
+    graph.mix_mut().inputs[2].gain.snap();
+
+    let n = 256;
+    let mut l0 = vec![0.5f32; n];
+    let mut r0 = vec![0.5f32; n];
+    let mut l1 = vec![0.25f32; n];
+    let mut r1 = vec![0.25f32; n];
+    let mut l2 = vec![0.125f32; n];
+    let mut r2 = vec![0.125f32; n];
+
+    // PlayingCurrent: input 0 at unity + slot 2 at its own gain (slot 1 is
+    // gated by the pair envelope). out = 0.5 + 0.125*0.5 = 0.5625.
+    graph.process_block_streams(
+        (&mut l0, &mut r0),
+        &mut [(&mut l1, &mut r1), (&mut l2, &mut r2)],
+    );
+    assert_eq!(graph.mixer_state(), MixerState::PlayingCurrent);
+    for (i, v) in l0.iter().enumerate() {
+        assert!(
+            (v - 0.5625).abs() < 1e-6,
+            "3-input sum mismatch at {i}: {v} (want 0.5625)"
+        );
+    }
+
+    // Detach slot 2: it must vanish from the sum (and its gain must not
+    // advance further — it stays at 0.5). Refill the source buffers first:
+    // the primary buffer now carries the previous block's mixed output.
+    l0.fill(0.5);
+    r0.fill(0.5);
+    l1.fill(0.25);
+    r1.fill(0.25);
+    l2.fill(0.125);
+    r2.fill(0.125);
+    graph.set_input_active(2, false);
+    graph.process_block_streams(
+        (&mut l0, &mut r0),
+        &mut [(&mut l1, &mut r1), (&mut l2, &mut r2)],
+    );
+    for (i, v) in l0.iter().enumerate() {
+        assert!(
+            (v - 0.5).abs() < 1e-6,
+            "detached slot leaked into the sum at {i}: {v} (want 0.5)"
+        );
+    }
+    assert!(
+        (graph.mix().inputs[2].gain.gain - 0.5).abs() < 1e-6,
+        "detached slot must not advance its gain ramp"
+    );
+
+    // Gapless switch to the incoming stream: slot 1 at unity + slot 2 back
+    // at 0.5 → out = 0.25 + 0.0625 = 0.3125.
+    l0.fill(0.5);
+    r0.fill(0.5);
+    l1.fill(0.25);
+    r1.fill(0.25);
+    l2.fill(0.125);
+    r2.fill(0.125);
+    graph.set_input_active(2, true);
+    graph.begin_crossfade(60);
+    graph.process_block_streams(
+        (&mut l0, &mut r0),
+        &mut [(&mut l1, &mut r1), (&mut l2, &mut r2)],
+    );
+    assert_eq!(graph.mixer_state(), MixerState::PlayingNext);
+    for (i, v) in l0.iter().enumerate() {
+        assert!(
+            (v - 0.3125).abs() < 1e-6,
+            "PlayingNext 3-input sum mismatch at {i}: {v} (want 0.3125)"
+        );
+    }
+}

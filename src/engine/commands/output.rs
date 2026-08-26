@@ -37,7 +37,7 @@ impl AudioEngine {
             let target = caps.best_rate_for(self.clock.source_sample_rate, &policy);
             if let Ok(actual) = output.reconfigure_sample_rate(target) {
                 self.output_sample_rate = actual;
-                self.pipeline.update_sample_rate(actual as f32);
+                self.graph.update_sample_rate(actual as f32);
             }
         }
     }
@@ -51,7 +51,7 @@ impl AudioEngine {
             .is_some_and(|o| o.supports_hardware_volume());
         match mode {
             config::VolumeMode::HardwarePreferred | config::VolumeMode::HardwareOnly if has_hw => {
-                self.pipeline.set_volume(1.0);
+                self.graph.set_volume(1.0);
                 info!("{mode:?} active: software pipeline set to unity gain (1.0).");
                 self.write_playback_info(|pb| {
                     pb.volume_path = Some(VolumePath::Hardware);
@@ -63,7 +63,7 @@ impl AudioEngine {
                     .to_string();
                 warn!("{message}");
                 let vol = self.playback_info.load().volume;
-                self.pipeline.set_volume(vol);
+                self.graph.set_volume(vol);
                 self.write_playback_info(|pb| {
                     pb.volume_error = Some(message.clone());
                     pb.volume_path = Some(VolumePath::Software);
@@ -73,7 +73,7 @@ impl AudioEngine {
                 let message = "HardwareOnly: endpoint volume unavailable for the active output; software volume NOT applied"
                     .to_string();
                 warn!("{message}");
-                self.pipeline.set_volume(1.0);
+                self.graph.set_volume(1.0);
                 self.write_playback_info(|pb| {
                     pb.volume_error = Some(message.clone());
                     pb.volume_path = None;
@@ -81,7 +81,7 @@ impl AudioEngine {
             }
             config::VolumeMode::SoftwareOnly | config::VolumeMode::SoftwareAllowed => {
                 let vol = self.playback_info.load().volume;
-                self.pipeline.set_volume(vol);
+                self.graph.set_volume(vol);
                 self.write_playback_info(|pb| {
                     pb.volume_path = Some(VolumePath::Software);
                     pb.volume_error = None;
@@ -101,7 +101,7 @@ impl AudioEngine {
             return;
         }
         let clamped = vol.clamp(0.0, 1.0);
-        if self.pipeline.is_bit_perfect() && !self.volume_uses_hardware() {
+        if self.graph.is_bit_perfect() && !self.volume_uses_hardware() {
             let message = "Bit-Perfect mode: software volume is disabled; use hardware volume or disable Bit-Perfect mode".to_string();
             warn!("{message}");
             self.write_playback_info(|pb| {
@@ -111,7 +111,7 @@ impl AudioEngine {
             return;
         }
         if !self.volume_uses_hardware() {
-            self.pipeline.set_volume(clamped);
+            self.graph.set_volume(clamped);
             self.write_playback_info(|pb| {
                 pb.volume = clamped;
                 pb.volume_error = None;
@@ -132,7 +132,7 @@ impl AudioEngine {
         } else {
             10.0_f32.powf(db.clamp(-60.0, 0.0) / 20.0)
         };
-        if self.pipeline.is_bit_perfect() && !self.volume_uses_hardware() {
+        if self.graph.is_bit_perfect() && !self.volume_uses_hardware() {
             let message = "Bit-Perfect mode: software volume is disabled; use hardware volume or disable Bit-Perfect mode".to_string();
             warn!("{message}");
             self.write_playback_info(|pb| {
@@ -142,7 +142,7 @@ impl AudioEngine {
             return;
         }
         if !self.volume_uses_hardware() {
-            self.pipeline.set_volume_db(db);
+            self.graph.set_volume_db(db);
             self.write_playback_info(|pb| {
                 pb.volume = linear;
                 pb.volume_error = None;
@@ -172,7 +172,7 @@ impl AudioEngine {
             .map(|o| o.set_hardware_volume_db(db))
         {
             Some(Ok(())) => {
-                self.pipeline.set_volume(1.0);
+                self.graph.set_volume(1.0);
                 self.write_playback_info(|pb| {
                     pb.volume = linear;
                     pb.volume_error = None;
@@ -182,7 +182,7 @@ impl AudioEngine {
             Some(Err(e)) => {
                 error!("Hardware volume set failed: {}", e);
                 if self.config.volume_mode == config::VolumeMode::HardwareOnly {
-                    self.pipeline.set_volume(1.0);
+                    self.graph.set_volume(1.0);
                     self.write_playback_info(|pb| {
                         pb.volume = linear;
                         pb.volume_error = Some(format!(
@@ -192,7 +192,7 @@ impl AudioEngine {
                         pb.volume_path = None;
                     });
                 } else {
-                    self.pipeline.set_volume(linear);
+                    self.graph.set_volume(linear);
                     self.write_playback_info(|pb| {
                         pb.volume = linear;
                         pb.volume_error = Some(format!(
@@ -204,7 +204,7 @@ impl AudioEngine {
                 }
             }
             None => {
-                self.pipeline.set_volume(1.0);
+                self.graph.set_volume(1.0);
                 self.write_playback_info(|pb| {
                     pb.volume = linear;
                     pb.volume_error = None;

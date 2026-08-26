@@ -41,12 +41,14 @@ fn test_engine_not_running_initially() {
 #[test]
 fn test_engine_pipeline_accessors() {
     let mut engine = AudioEngine::new_default().unwrap();
-    let _ = engine.pipeline().volume.current_gain();
+    let _ = engine.pipeline().volume().processor.current_gain();
     engine.pipeline_mut().set_volume(0.5);
     for _ in 0..50000 {
-        engine.pipeline_mut().process(0.0, 0.0);
+        engine
+            .pipeline_mut()
+            .process_block(&mut [0.0, 0.0], &mut [0.0, 0.0]);
     }
-    assert!((engine.pipeline().volume.current_gain() - 0.5).abs() < 0.01);
+    assert!((engine.pipeline().volume().processor.current_gain() - 0.5).abs() < 0.01);
 }
 
 #[test]
@@ -59,7 +61,11 @@ fn test_graph_latency_is_authoritative_sum() {
     assert_eq!(empty.output_device_latency_ms, 0.0);
 
     engine.pipeline_mut().set_limiter_enabled(true);
-    engine.pipeline_mut().convolution.set_enabled(true);
+    engine
+        .pipeline_mut()
+        .convolution_mut()
+        .engine
+        .set_enabled(true);
     let ir: Vec<(f32, f32)> = (0..2048)
         .map(|i| {
             let e = (-i as f32 / 512.0).exp() * 0.5;
@@ -68,14 +74,15 @@ fn test_graph_latency_is_authoritative_sum() {
         .collect();
     engine
         .pipeline_mut()
-        .convolution
+        .convolution_mut()
+        .engine
         .load_ir_from_samples(&ir)
         .unwrap();
 
     let report = engine.graph_latency();
-    let limiter_ms = engine.pipeline().limiter.lookahead_ms();
-    let detector_ms = engine.pipeline().limiter.detector_delay_ms();
-    let conv_ms = engine.pipeline().convolution.latency_ms();
+    let limiter_ms = engine.pipeline().limiter().limiter.lookahead_ms();
+    let detector_ms = engine.pipeline().limiter().limiter.detector_delay_ms();
+    let conv_ms = engine.pipeline().convolution().engine.latency_ms();
 
     assert!(limiter_ms > 0.0, "enabled limiter must have nonzero delay");
     assert!(
@@ -171,12 +178,12 @@ fn test_eq_auto_headroom_command() {
     engine.send_command(EngineCommand::SetEqAutoHeadroom(true));
     engine.tick();
     assert!(engine.config.eq.auto_headroom);
-    assert!(engine.pipeline().eq.is_auto_headroom());
+    assert!(engine.pipeline().eq().eq.is_auto_headroom());
 
     engine.send_command(EngineCommand::SetEqAutoHeadroom(false));
     engine.tick();
     assert!(!engine.config.eq.auto_headroom);
-    assert!(!engine.pipeline().eq.is_auto_headroom());
+    assert!(!engine.pipeline().eq().eq.is_auto_headroom());
 }
 
 #[test]
@@ -393,17 +400,17 @@ fn test_graphic_eq_slider_syncs_into_pipeline() {
     ));
     engine.tick();
     assert!(
-        engine.pipeline().eq.is_enabled(),
+        engine.pipeline().eq().eq.is_enabled(),
         "activating a layout enables the EQ"
     );
-    assert_eq!(engine.pipeline().eq.num_bands(), 31);
+    assert_eq!(engine.pipeline().eq().eq.num_bands(), 31);
 
     engine.send_command(EngineCommand::SetGraphicEqSlider {
         band: 17,
         gain_db: 6.0,
     });
     engine.tick();
-    let band = engine.pipeline().eq.band_params(17).unwrap();
+    let band = engine.pipeline().eq().eq.band_params(17).unwrap();
     assert!((band.frequency - 1000.0).abs() < 1e-3);
     assert!((band.gain_db - 6.0).abs() < 1e-4);
     assert!(band.enabled);
@@ -414,15 +421,21 @@ fn test_graphic_eq_slider_syncs_into_pipeline() {
 #[test]
 fn test_graphic_eq_64band_grows_pipeline_band_count() {
     let mut engine = AudioEngine::new_default().unwrap();
-    assert_eq!(engine.pipeline().eq.num_bands(), 10);
+    assert_eq!(engine.pipeline().eq().eq.num_bands(), 10);
 
     engine.send_command(EngineCommand::SetGraphicEqLayout(
         config::GraphicEqLayout::SixtyFourBand,
     ));
     engine.tick();
-    assert_eq!(engine.pipeline().eq.num_bands(), 64);
+    assert_eq!(engine.pipeline().eq().eq.num_bands(), 64);
     assert_eq!(
-        engine.pipeline().eq.band_params(63).unwrap().filter_type,
+        engine
+            .pipeline()
+            .eq()
+            .eq
+            .band_params(63)
+            .unwrap()
+            .filter_type,
         crate::dsp::equalizer::EqFilterType::HighShelf
     );
 }
@@ -441,7 +454,7 @@ fn test_graphic_eq_disable_keeps_model() {
     engine.tick();
     engine.send_command(EngineCommand::SetGraphicEqEnabled(false));
     engine.tick();
-    assert!(!engine.pipeline().eq.is_enabled());
+    assert!(!engine.pipeline().eq().eq.is_enabled());
     assert!(!engine.config.graphic_eq.enabled);
     assert_eq!(engine.config.graphic_eq.gains_db[3], 3.0);
 }
@@ -472,12 +485,12 @@ fn test_set_eq_preset_replaces_bands_and_preamp() {
     };
     engine.send_command(EngineCommand::SetEqPreset(preset));
     engine.tick();
-    assert!(engine.pipeline().eq.is_enabled());
-    assert!((engine.pipeline().eq.preamp_db() - (-4.0)).abs() < 1e-4);
-    let b0 = engine.pipeline().eq.band_params(0).unwrap();
+    assert!(engine.pipeline().eq().eq.is_enabled());
+    assert!((engine.pipeline().eq().eq.preamp_db() - (-4.0)).abs() < 1e-4);
+    let b0 = engine.pipeline().eq().eq.band_params(0).unwrap();
     assert!((b0.frequency - 105.0).abs() < 1e-3);
     assert!((b0.gain_db - 5.5).abs() < 1e-4);
-    let b1 = engine.pipeline().eq.band_params(1).unwrap();
+    let b1 = engine.pipeline().eq().eq.band_params(1).unwrap();
     assert!((b1.frequency - 4650.0).abs() < 1e-3);
 }
 
@@ -492,11 +505,11 @@ fn test_graphic_eq_from_config_applies_on_set_config() {
     config.graphic_eq.preamp_db = -1.0;
 
     engine.set_config(config);
-    assert!(engine.pipeline().eq.is_enabled());
-    assert_eq!(engine.pipeline().eq.num_bands(), 32);
-    let band = engine.pipeline().eq.band_params(5).unwrap();
+    assert!(engine.pipeline().eq().eq.is_enabled());
+    assert_eq!(engine.pipeline().eq().eq.num_bands(), 32);
+    let band = engine.pipeline().eq().eq.band_params(5).unwrap();
     assert!((band.gain_db - 2.5).abs() < 1e-4);
-    assert!((engine.pipeline().eq.preamp_db() - (-1.0)).abs() < 1e-4);
+    assert!((engine.pipeline().eq().eq.preamp_db() - (-1.0)).abs() < 1e-4);
 }
 
 #[test]
@@ -508,13 +521,13 @@ fn test_set_output_profile_applies_dsp_bundle() {
     )));
     engine.tick();
 
-    assert!(engine.pipeline().eq.is_enabled());
-    assert!((engine.pipeline().eq.preamp_db() - (-2.0)).abs() < 1e-4);
-    let band = engine.pipeline().eq.band_params(0).unwrap();
+    assert!(engine.pipeline().eq().eq.is_enabled());
+    assert!((engine.pipeline().eq().eq.preamp_db() - (-2.0)).abs() < 1e-4);
+    let band = engine.pipeline().eq().eq.band_params(0).unwrap();
     assert!((band.frequency - 1000.0).abs() < 1e-3);
     assert!((band.gain_db - 4.0).abs() < 1e-4);
-    assert!(engine.pipeline().crossfeed.is_enabled());
-    assert!((engine.pipeline().limiter.ceiling_db() - (-1.0)).abs() < 1e-3);
+    assert!(engine.pipeline().crossfeed().crossfeed.is_enabled());
+    assert!((engine.pipeline().limiter().limiter.ceiling_db() - (-1.0)).abs() < 1e-3);
     assert_eq!(
         engine.config.sample_rate_policy,
         config::SampleRatePolicy::Fixed(96000)
@@ -552,9 +565,9 @@ fn test_apply_output_profile_is_deterministic_across_devices() {
     let profile = test_profile("profile-a", -1.0);
     engine.output_profile = Some(profile.clone());
     engine.apply_output_profile(&profile);
-    let first_band = *engine.pipeline().eq.band_params(0).unwrap();
+    let first_band = *engine.pipeline().eq().eq.band_params(0).unwrap();
     engine.apply_output_profile(&profile);
-    let second_band = *engine.pipeline().eq.band_params(0).unwrap();
+    let second_band = *engine.pipeline().eq().eq.band_params(0).unwrap();
     assert_eq!(first_band, second_band);
     assert_eq!(
         engine.playback_info().active_output_profile.as_deref(),
@@ -602,9 +615,9 @@ fn test_volume_software_only_never_touches_endpoint() {
         "SoftwareOnly must never call set_hardware_volume_db"
     );
     assert!(
-        (engine.pipeline().volume().target_gain - 0.5).abs() < 1e-4,
+        (engine.pipeline().volume().processor.target_gain - 0.5).abs() < 1e-4,
         "software gain target must be 0.5, got {}",
-        engine.pipeline().volume().target_gain
+        engine.pipeline().volume().processor.target_gain
     );
     let pb = engine.playback_info();
     assert_eq!(
@@ -628,7 +641,7 @@ fn test_volume_hardware_preferred_routes_to_endpoint() {
     let expected_db = 20.0 * 0.5f32.log10();
     assert_eq!(*hardware_db.lock().unwrap(), Some(expected_db));
     assert!(
-        (engine.pipeline().volume().target_gain - 1.0).abs() < 1e-4,
+        (engine.pipeline().volume().processor.target_gain - 1.0).abs() < 1e-4,
         "DSP must stay at unity when hardware owns the level"
     );
     let pb = engine.playback_info();
@@ -672,7 +685,7 @@ fn test_volume_hardware_preferred_falls_back_without_endpoint() {
         "fallback must never call set_hardware_volume_db"
     );
     assert!(
-        (engine.pipeline().volume().target_gain - 0.5).abs() < 1e-4,
+        (engine.pipeline().volume().processor.target_gain - 0.5).abs() < 1e-4,
         "fallback applies the gain in software"
     );
     assert!(
@@ -694,7 +707,7 @@ fn test_volume_hardware_only_routes_to_endpoint() {
     let expected_db = 20.0 * 0.5f32.log10();
     assert_eq!(*hardware_db.lock().unwrap(), Some(expected_db));
     assert!(
-        (engine.pipeline().volume().target_gain - 1.0).abs() < 1e-4,
+        (engine.pipeline().volume().processor.target_gain - 1.0).abs() < 1e-4,
         "HardwareOnly: DSP must stay at unity"
     );
     assert_eq!(
@@ -728,7 +741,7 @@ fn test_volume_hardware_only_never_falls_back_to_software() {
     engine.tick();
     assert_eq!(*hardware_db.lock().unwrap(), None);
     assert!(
-        (engine.pipeline().volume().target_gain - 1.0).abs() < 1e-4,
+        (engine.pipeline().volume().processor.target_gain - 1.0).abs() < 1e-4,
         "HardwareOnly must keep the software pipeline at unity (untouched signal)"
     );
     assert!(
@@ -750,7 +763,7 @@ fn test_volume_software_allowed_uses_software_path() {
 
     assert_eq!(*hardware_db.lock().unwrap(), None);
     assert!(
-        (engine.pipeline().volume().target_gain - 0.5).abs() < 1e-4,
+        (engine.pipeline().volume().processor.target_gain - 0.5).abs() < 1e-4,
         "SoftwareAllowed applies the gain in software"
     );
     assert_eq!(
@@ -858,9 +871,9 @@ fn test_engine_handle_controls_and_telemetry() {
 
     engine.tick();
 
-    assert!((engine.pipeline().volume().target_gain - 0.8).abs() < 1e-4);
+    assert!((engine.pipeline().volume().processor.target_gain - 0.8).abs() < 1e-4);
     assert!((engine.speed - 1.25).abs() < 1e-4);
-    assert!(engine.pipeline().crossfeed.is_enabled());
+    assert!(engine.pipeline().crossfeed().crossfeed.is_enabled());
 
     // 3. Bit-perfect via handle
     handle.set_bit_perfect(true);

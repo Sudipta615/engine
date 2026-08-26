@@ -66,7 +66,8 @@ src/
 │   └── fingerprint.rs        # Chromaprint/AcoustID (`fingerprint` feature)
 │
 ├── dsp/                      # ── Signal processing ──
-│   ├── pipeline/             # DspPipeline — the production compiled chain
+│   ├── pipeline/             # DspPipeline — reference chain; bit-exact
+│                             #   oracle for the graph equivalence suite
 │   │                         #   (mod.rs + controls/process/format/tests)
 │   ├── equalizer/            # Parametric EQ (RBJ) + shared types
 │   ├── graphic_eq.rs         # Graphic EQ model (10/15/31 ISO bands) → compiled into EQ
@@ -88,13 +89,15 @@ src/
 │   ├── device_profile.rs     # Per-device DSP defaults
 │   ├── analyzer.rs           # Real-time peak/RMS/spectrum analyzer
 │   ├── float.rs              # AudioFloat numeric helpers
-│   └── graph/                # Node-based DSP graph (DspNode trait); not the
-│                             #   active hot path — split by concern into
-│                             #   construction / access / controls / lifecycle /
-│                             #   process / limiter / report / plan / swap
-│                             #   (compiled execution plans over a node arena;
+│   └── graph/                # Node-based DSP graph (DspNode trait); the
+│                             #   production hot path since Phase 3 — split
+│                             #   by concern into construction / access /
+│                             #   controls / lifecycle / process / limiter /
+│                             #   report / plan / swap / nodes/ (incl. the
+│                             #   MixBusNode arena slot + per-input chains;
 │                             #   Phase 2: per-node SPSC control queues +
-│                             #   publish/swap/retire live generation swap)
+│                             #   publish/swap/retire live generation swap;
+│                             #   Phase 3: engine drives the graph end-to-end)
 │
 ├── output/                   # ── Output backends ──
 │   ├── mod.rs                # Module wiring + re-exports

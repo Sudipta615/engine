@@ -9,11 +9,10 @@ impl DspGraph {
         if self.sample_rate == sample_rate {
             return;
         }
+        let old_rate = self.sample_rate;
         self.sample_rate = sample_rate;
-        self.out_preamp_mut().prepare(sample_rate, MAX_CHANNELS);
-        self.in_preamp_mut().prepare(sample_rate, MAX_CHANNELS);
-        self.out_loudness_mut().prepare(sample_rate, MAX_CHANNELS);
-        self.in_loudness_mut().prepare(sample_rate, MAX_CHANNELS);
+        // The mix bus owns every input's pre-mix chain.
+        self.mix_mut().prepare(sample_rate, MAX_CHANNELS);
         self.eq_mut().prepare(sample_rate, 2);
         self.dynamics_mut().prepare(sample_rate, 2);
         self.convolution_mut().prepare(sample_rate, 2);
@@ -25,6 +24,10 @@ impl DspGraph {
         self.routing_mut().prepare(sample_rate, MAX_CHANNELS);
         self.limiter_mut().prepare(sample_rate, MAX_CHANNELS);
         self.dither_mut().prepare(sample_rate, MAX_CHANNELS);
+        // Rescale an in-progress bus transition without resetting it (the
+        // envelope's normalized progress is preserved, mirroring
+        // `TrackMixer::rescale_sample_rate`).
+        self.mix_mut().rescale_sample_rate(old_rate, sample_rate);
     }
 
     /// Reset internal state across all nodes.
@@ -35,10 +38,7 @@ impl DspGraph {
     /// processor previously reset with the filters; the equivalence harness
     /// (`tests/fidelity/graph_pipeline_equivalence.rs`) pins this alignment.
     pub fn reset(&mut self) {
-        self.out_preamp_mut().reset();
-        self.in_preamp_mut().reset();
-        self.out_loudness_mut().reset();
-        self.in_loudness_mut().reset();
+        self.mix_mut().reset();
         self.eq_mut().reset();
         self.dynamics_mut().reset();
         self.convolution_mut().reset();
@@ -54,10 +54,7 @@ impl DspGraph {
 
     /// Reset filter state only without touching volume ramps.
     pub fn reset_filters_only(&mut self) {
-        self.out_preamp_mut().reset();
-        self.in_preamp_mut().reset();
-        self.out_loudness_mut().reset();
-        self.in_loudness_mut().reset();
+        self.mix_mut().reset_filters_only();
         self.eq_mut().reset();
         self.dynamics_mut().reset();
         self.convolution_mut().reset();
@@ -121,6 +118,17 @@ impl DspGraph {
 
     pub fn speed(&self) -> f32 {
         self.speed
+    }
+
+    /// Capacity reserved for the f64 promotion scratch used by realtime
+    /// block processing. Exposed for diagnostics and allocation regression
+    /// tests; it must not change during playback (mirrors the pipeline's
+    /// accessor).
+    pub fn realtime_scratch_capacity(&self) -> usize {
+        self.scratch
+            .scratch_f64_l
+            .capacity()
+            .min(self.scratch.scratch_f64_r.capacity())
     }
 
     pub fn volume_fade_ms(&self) -> f32 {

@@ -64,6 +64,83 @@ impl DspGraph {
         self.process_block_inner(left, right);
     }
 
+    /// Process a stereo block with a second mix-bus input (Phase 3 S1).
+    /// `input0` is the primary (outgoing) stream, processed in place through
+    /// the full chain; `input1` is the secondary (incoming) stream, summed
+    /// by the mix bus under its transition envelope. Bit-exact against the
+    /// pipeline's crossfade path (see `tests/fidelity/
+    /// graph_pipeline_equivalence.rs`).
+    ///
+    /// The secondary stream may be shorter than the primary; the missing
+    /// tail is treated as silence. Transport bypass (bit-perfect / DoP)
+    /// returns before any stage, exactly like [`Self::process_block`].
+    pub fn process_block_inputs(
+        &mut self,
+        input0: (&mut [f32], &mut [f32]),
+        input1: (&mut [f32], &mut [f32]),
+    ) {
+        let mut secondaries = [input1];
+        self.process_block_streams(input0, &mut secondaries);
+    }
+
+    /// Process a stereo block with one primary stream and any number of
+    /// secondary mix-bus streams (Phase 3 S2 stream slots). `primary` is
+    /// processed in place through the full chain; secondary `k` feeds mix-bus
+    /// slot `k + 1` (slots ≥ 2 are independent streams summed after the
+    /// transition envelope). The secondary streams may be shorter than the
+    /// primary; the missing tail is treated as silence. Transport bypass
+    /// returns before any stage, exactly like [`Self::process_block`].
+    pub fn process_block_streams(
+        &mut self,
+        primary: (&mut [f32], &mut [f32]),
+        secondaries: &mut [(&mut [f32], &mut [f32])],
+    ) {
+        self.control_tick();
+        let n = primary.0.len().min(primary.1.len());
+        if n > MAX_AUDIO_BLOCK_FRAMES {
+            let mut start = 0;
+            while start < n {
+                let end = (start + MAX_AUDIO_BLOCK_FRAMES).min(n);
+                for (k, sec) in secondaries.iter_mut().enumerate() {
+                    self.feed_secondary_slot(k + 1, (sec.0, sec.1), start, end);
+                }
+                self.process_block_inner(&mut primary.0[start..end], &mut primary.1[start..end]);
+                start = end;
+            }
+            return;
+        }
+        for (k, sec) in secondaries.iter_mut().enumerate() {
+            self.feed_secondary_slot(k + 1, (sec.0, sec.1), 0, n);
+        }
+        self.process_block_inner(primary.0, primary.1);
+    }
+
+    /// Copy a chunk of a secondary stream into the mix bus's `slot` planes
+    /// (audio-side, no allocation — the planes are preallocated).
+    fn feed_secondary_slot(
+        &mut self,
+        slot: usize,
+        input: (&[f32], &[f32]),
+        start: usize,
+        end: usize,
+    ) {
+        let k = end - start;
+        let mix = self.mix_mut();
+        if mix.inputs.len() <= slot {
+            return;
+        }
+        mix.inputs[slot]
+            .planes_l
+            .get_mut(..k)
+            .expect("input plane capacity >= MAX_AUDIO_BLOCK_FRAMES")
+            .copy_from_slice(&input.0[start..end]);
+        mix.inputs[slot]
+            .planes_r
+            .get_mut(..k)
+            .expect("input plane capacity >= MAX_AUDIO_BLOCK_FRAMES")
+            .copy_from_slice(&input.1[start..end]);
+    }
+
     /// Unticked inner path — shared by the public entry and the ≤2-channel
     /// multichannel delegation so the control tick runs exactly once per
     /// caller block.

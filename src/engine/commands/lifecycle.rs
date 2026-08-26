@@ -173,7 +173,7 @@ impl AudioEngine {
                     *meta
                 });
             if let Some(meta) = merged {
-                self.pipeline.apply_loudness_metadata_outgoing(Some(meta));
+                self.graph.apply_loudness_metadata_outgoing(Some(meta));
                 info!(
                     "Loudness scan complete for {}: {:?} LUFS, {:?} dBTP",
                     path.display(),
@@ -191,7 +191,7 @@ impl AudioEngine {
                     *meta
                 });
             if let Some(meta) = merged {
-                self.pipeline.apply_loudness_metadata_incoming(Some(meta));
+                self.graph.apply_loudness_metadata_incoming(Some(meta));
                 info!(
                     "Loudness scan complete for incoming {}: {:?} LUFS, {:?} dBTP",
                     path.display(),

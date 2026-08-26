@@ -134,19 +134,19 @@ impl AudioEngine {
                 .collect(),
         };
         if dsp.eq_enabled {
-            self.pipeline.eq = crate::dsp::equalizer::ParametricEq::from_preset(
+            self.graph.eq_mut().eq = crate::dsp::equalizer::ParametricEq::from_preset(
                 self.output_sample_rate as f32,
                 &preset,
             );
         } else {
-            self.pipeline.set_eq_enabled(false);
+            self.graph.set_eq_enabled(false);
         }
-        self.pipeline.set_crossfeed_enabled(dsp.crossfeed_enabled);
-        self.pipeline.set_stereo_width(dsp.stereo_width);
-        self.pipeline
+        self.graph.set_crossfeed_enabled(dsp.crossfeed_enabled);
+        self.graph.set_stereo_width(dsp.stereo_width);
+        self.graph
             .set_limiter_params(5.0, 0.5, 100.0, dsp.limiter_ceiling_db, false);
-        self.pipeline.set_limiter_true_peak(dsp.true_peak_limiter);
-        self.pipeline.set_limiter_enabled(true);
+        self.graph.set_limiter_true_peak(dsp.true_peak_limiter);
+        self.graph.set_limiter_enabled(true);
 
         if let Some(mode) = profile.volume_mode {
             if mode != self.config.volume_mode {
@@ -157,7 +157,7 @@ impl AudioEngine {
                     .is_some_and(|o| o.supports_hardware_volume());
                 match mode {
                     config::VolumeMode::HardwarePreferred if has_hw => {
-                        self.pipeline.set_volume(1.0);
+                        self.graph.set_volume(1.0);
                     }
                     config::VolumeMode::HardwarePreferred => {
                         let message = "HardwarePreferred: endpoint volume unavailable for the active output; using software gain"
@@ -166,13 +166,13 @@ impl AudioEngine {
                         self.write_playback_info(|pb| pb.volume_error = Some(message.clone()));
                     }
                     config::VolumeMode::HardwareOnly if has_hw => {
-                        self.pipeline.set_volume(1.0);
+                        self.graph.set_volume(1.0);
                     }
                     config::VolumeMode::HardwareOnly => {
                         let message = "HardwareOnly: endpoint volume unavailable for the active output; software volume NOT applied"
                             .to_string();
                         warn!("{message}");
-                        self.pipeline.set_volume(1.0);
+                        self.graph.set_volume(1.0);
                         self.write_playback_info(|pb| {
                             pb.volume_error = Some(message.clone());
                             pb.volume_path = None;
@@ -180,7 +180,7 @@ impl AudioEngine {
                     }
                     config::VolumeMode::SoftwareOnly | config::VolumeMode::SoftwareAllowed => {
                         let vol = self.playback_info.load().volume;
-                        self.pipeline.set_volume(vol);
+                        self.graph.set_volume(vol);
                     }
                 }
             }
@@ -197,7 +197,7 @@ impl AudioEngine {
                     );
                     if let Ok(actual) = output.reconfigure_sample_rate(target) {
                         self.output_sample_rate = actual;
-                        self.pipeline.update_sample_rate(actual as f32);
+                        self.graph.update_sample_rate(actual as f32);
                     }
                 }
             }
@@ -230,12 +230,12 @@ impl AudioEngine {
         }
 
         if let Some(ceiling) = profile.safety_ceiling_dbtp {
-            self.pipeline
+            self.graph
                 .set_limiter_params(5.0, 0.5, 100.0, ceiling, false);
         }
 
         if let Some(ref routing) = profile.channel_routing {
-            self.pipeline.channel_trim.set_routing(routing);
+            self.graph.routing_mut().trimmer.set_routing(routing);
         }
 
         let device = self
@@ -260,11 +260,11 @@ impl AudioEngine {
         self.config.graphic_eq.preamp_db = self.graphic_eq.preamp_db();
         self.config.graphic_eq.enabled = self.graphic_eq.enabled();
         let n = self.graphic_eq.num_bands();
-        if self.pipeline.eq_num_bands() < n {
-            self.pipeline.eq =
+        if self.graph.eq_num_bands() < n {
+            self.graph.eq_mut().eq =
                 crate::dsp::equalizer::ParametricEq::new(n, self.output_sample_rate as f32);
         }
-        self.graphic_eq.sync_into(&mut self.pipeline.eq);
+        self.graphic_eq.sync_into(&mut self.graph.eq_mut().eq);
     }
 
     #[cfg(feature = "resample")]

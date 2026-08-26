@@ -6,6 +6,7 @@ pub mod eq_node;
 pub mod gain_node;
 pub mod limiter_node;
 pub mod loudness_node;
+pub mod mix_node;
 pub mod resampler_node;
 pub mod routing_node;
 pub mod stereo_node;
@@ -19,6 +20,7 @@ pub use eq_node::EqNode;
 pub use gain_node::{BalanceNode, GainNode, SeekFadeNode};
 pub use limiter_node::LimiterNode;
 pub use loudness_node::LoudnessNode;
+pub use mix_node::{MixBusNode, MixInput, MixInputCmd, MixTransitionCmd};
 pub use resampler_node::ResamplerNode;
 pub use routing_node::RoutingNode;
 pub use stereo_node::StereoNode;
@@ -30,10 +32,7 @@ use crate::dsp::{graph::node::DspNode, pipeline::DspStageCapability};
 impl DspNode for GraphNode {
     fn capability(&self) -> DspStageCapability {
         match self {
-            GraphNode::OutPreamp(n) => n.capability(),
-            GraphNode::OutLoudness(n) => n.capability(),
-            GraphNode::InPreamp(n) => n.capability(),
-            GraphNode::InLoudness(n) => n.capability(),
+            GraphNode::Mix(n) => n.capability(),
             GraphNode::Eq(n) => n.capability(),
             GraphNode::Dynamics(n) => n.capability(),
             GraphNode::Convolution(n) => n.capability(),
@@ -52,10 +51,7 @@ impl DspNode for GraphNode {
 
     fn is_active(&self) -> bool {
         match self {
-            GraphNode::OutPreamp(n) => n.is_active(),
-            GraphNode::OutLoudness(n) => n.is_active(),
-            GraphNode::InPreamp(n) => n.is_active(),
-            GraphNode::InLoudness(n) => n.is_active(),
+            GraphNode::Mix(n) => n.is_active(),
             GraphNode::Eq(n) => n.is_active(),
             GraphNode::Dynamics(n) => n.is_active(),
             GraphNode::Convolution(n) => n.is_active(),
@@ -74,10 +70,7 @@ impl DspNode for GraphNode {
 
     fn latency_samples(&self) -> usize {
         match self {
-            GraphNode::OutPreamp(n) => n.latency_samples(),
-            GraphNode::OutLoudness(n) => n.latency_samples(),
-            GraphNode::InPreamp(n) => n.latency_samples(),
-            GraphNode::InLoudness(n) => n.latency_samples(),
+            GraphNode::Mix(n) => n.latency_samples(),
             GraphNode::Eq(n) => n.latency_samples(),
             GraphNode::Dynamics(n) => n.latency_samples(),
             GraphNode::Convolution(n) => n.latency_samples(),
@@ -96,10 +89,7 @@ impl DspNode for GraphNode {
 
     fn tail_samples(&self) -> usize {
         match self {
-            GraphNode::OutPreamp(n) => n.tail_samples(),
-            GraphNode::OutLoudness(n) => n.tail_samples(),
-            GraphNode::InPreamp(n) => n.tail_samples(),
-            GraphNode::InLoudness(n) => n.tail_samples(),
+            GraphNode::Mix(n) => n.tail_samples(),
             GraphNode::Eq(n) => n.tail_samples(),
             GraphNode::Dynamics(n) => n.tail_samples(),
             GraphNode::Convolution(n) => n.tail_samples(),
@@ -118,10 +108,7 @@ impl DspNode for GraphNode {
 
     fn reset(&mut self) {
         match self {
-            GraphNode::OutPreamp(n) => n.reset(),
-            GraphNode::OutLoudness(n) => n.reset(),
-            GraphNode::InPreamp(n) => n.reset(),
-            GraphNode::InLoudness(n) => n.reset(),
+            GraphNode::Mix(n) => n.reset(),
             GraphNode::Eq(n) => n.reset(),
             GraphNode::Dynamics(n) => n.reset(),
             GraphNode::Convolution(n) => n.reset(),
@@ -140,10 +127,7 @@ impl DspNode for GraphNode {
 
     fn prepare(&mut self, sample_rate: f32, max_channels: usize) {
         match self {
-            GraphNode::OutPreamp(n) => n.prepare(sample_rate, max_channels),
-            GraphNode::OutLoudness(n) => n.prepare(sample_rate, max_channels),
-            GraphNode::InPreamp(n) => n.prepare(sample_rate, max_channels),
-            GraphNode::InLoudness(n) => n.prepare(sample_rate, max_channels),
+            GraphNode::Mix(n) => n.prepare(sample_rate, max_channels),
             GraphNode::Eq(n) => n.prepare(sample_rate, max_channels),
             GraphNode::Dynamics(n) => n.prepare(sample_rate, max_channels),
             GraphNode::Convolution(n) => n.prepare(sample_rate, max_channels),
@@ -162,10 +146,7 @@ impl DspNode for GraphNode {
 
     fn process_block_f32(&mut self, planes: &mut [&mut [f32]]) {
         match self {
-            GraphNode::OutPreamp(n) => n.process_block_f32(planes),
-            GraphNode::OutLoudness(n) => n.process_block_f32(planes),
-            GraphNode::InPreamp(n) => n.process_block_f32(planes),
-            GraphNode::InLoudness(n) => n.process_block_f32(planes),
+            GraphNode::Mix(n) => n.process_block_f32(planes),
             GraphNode::Eq(n) => n.process_block_f32(planes),
             GraphNode::Dynamics(n) => n.process_block_f32(planes),
             GraphNode::Convolution(n) => n.process_block_f32(planes),
@@ -184,10 +165,7 @@ impl DspNode for GraphNode {
 
     fn process_block_f64(&mut self, planes: &mut [&mut [f64]]) {
         match self {
-            GraphNode::OutPreamp(n) => n.process_block_f64(planes),
-            GraphNode::OutLoudness(n) => n.process_block_f64(planes),
-            GraphNode::InPreamp(n) => n.process_block_f64(planes),
-            GraphNode::InLoudness(n) => n.process_block_f64(planes),
+            GraphNode::Mix(n) => n.process_block_f64(planes),
             GraphNode::Eq(n) => n.process_block_f64(planes),
             GraphNode::Dynamics(n) => n.process_block_f64(planes),
             GraphNode::Convolution(n) => n.process_block_f64(planes),

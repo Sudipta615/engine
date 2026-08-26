@@ -19,6 +19,7 @@ use super::swap::NodeId;
 use super::*;
 use crate::buffer::PcmRingBuffer;
 use crate::dsp::{
+    crossfade::MixerState,
     equalizer::EqBandParams,
     limiter::LimiterMode,
     loudness::{LoudnessMetadata, LoudnessMode},
@@ -50,10 +51,18 @@ pub(crate) enum NodeCmd {
     BeginSeekFadeout,
     BeginSeekFadein,
 
-    // ── Loudness normalization ────────────────────────────────────────────
-    SetLoudnessMode(LoudnessMode),
-    ApplyLoudnessOutgoing(LoudnessMetadata),
-    ApplyLoudnessIncoming(LoudnessMetadata),
+    // ── Mix bus (per-input chains + transitions) ──────────────────────────
+    MixInput {
+        input: u8,
+        cmd: MixInputCmd,
+    },
+    MixTransition(MixTransitionCmd),
+    /// Runtime crossfade config (Phase 3 S3): curve / enabled / duration
+    /// mirror the pipeline's `TrackMixer` setters the engine calls on
+    /// `handle_set_crossfade_config`.
+    SetMixCurve(config::CrossfadeCurve),
+    SetMixEnabled(bool),
+    SetMixDurationFrames(usize),
 
     // ── Limiter ───────────────────────────────────────────────────────────
     SetLimiterEnabled(bool),
@@ -311,15 +320,21 @@ impl GraphControlHandle {
 
     pub fn apply_loudness_metadata_outgoing(&self, metadata: Option<LoudnessMetadata>) {
         self.enqueue(
-            node_id::OUT_LOUDNESS,
-            NodeCmd::ApplyLoudnessOutgoing(metadata.unwrap_or_default()),
+            node_id::MIX,
+            NodeCmd::MixInput {
+                input: 0,
+                cmd: MixInputCmd::ApplyLoudnessMetadata(metadata.unwrap_or_default()),
+            },
         );
     }
 
     pub fn apply_loudness_metadata_incoming(&self, metadata: Option<LoudnessMetadata>) {
         self.enqueue(
-            node_id::IN_LOUDNESS,
-            NodeCmd::ApplyLoudnessIncoming(metadata.unwrap_or_default()),
+            node_id::MIX,
+            NodeCmd::MixInput {
+                input: 1,
+                cmd: MixInputCmd::ApplyLoudnessMetadata(metadata.unwrap_or_default()),
+            },
         );
     }
 
@@ -455,8 +470,108 @@ impl GraphControlHandle {
     }
 
     pub fn set_loudness_mode(&self, mode: LoudnessMode) {
-        self.enqueue(node_id::OUT_LOUDNESS, NodeCmd::SetLoudnessMode(mode));
-        self.enqueue(node_id::IN_LOUDNESS, NodeCmd::SetLoudnessMode(mode));
+        let cmd = MixInputCmd::SetLoudnessMode(mode);
+        self.enqueue(node_id::MIX, NodeCmd::MixInput { input: 0, cmd });
+        self.enqueue(node_id::MIX, NodeCmd::MixInput { input: 1, cmd });
+    }
+
+    // ── Mix bus: per-input control (Phase 3 S1) ───────────────────────────
+
+    pub fn set_input_gain(&self, input: u8, gain: f32) {
+        self.enqueue(
+            node_id::MIX,
+            NodeCmd::MixInput {
+                input,
+                cmd: MixInputCmd::SetGain(gain),
+            },
+        );
+    }
+
+    pub fn set_input_gain_db(&self, input: u8, db: f32) {
+        self.enqueue(
+            node_id::MIX,
+            NodeCmd::MixInput {
+                input,
+                cmd: MixInputCmd::SetGainDb(db),
+            },
+        );
+    }
+
+    pub fn set_input_balance(&self, input: u8, balance: f32) {
+        self.enqueue(
+            node_id::MIX,
+            NodeCmd::MixInput {
+                input,
+                cmd: MixInputCmd::SetBalance(balance),
+            },
+        );
+    }
+
+    pub fn set_input_mute(&self, input: u8, mute: bool) {
+        self.enqueue(
+            node_id::MIX,
+            NodeCmd::MixInput {
+                input,
+                cmd: MixInputCmd::SetMute(mute),
+            },
+        );
+    }
+
+    /// Detach / re-attach a mix-bus slot (Phase 3 S2 stream slots). A
+    /// detached slot contributes nothing and its chains do not advance.
+    /// Slot 0 (the primary stream) cannot be detached.
+    pub fn set_input_active(&self, input: u8, active: bool) {
+        self.enqueue(
+            node_id::MIX,
+            NodeCmd::MixInput {
+                input,
+                cmd: MixInputCmd::SetActive(active),
+            },
+        );
+    }
+
+    /// Begin a crossfade from input 0 to input 1 over `duration_frames`.
+    /// Gated by the graph's crossfade config (mirrors `TrackMixer`).
+    pub fn begin_crossfade_frames(&self, duration_frames: usize) {
+        self.enqueue(
+            node_id::MIX,
+            NodeCmd::MixTransition(MixTransitionCmd::StartCrossfade { duration_frames }),
+        );
+    }
+
+    /// Begin a sequential fade (fade-out → gap → fade-in) over
+    /// `duration_frames`.
+    pub fn begin_fade_frames(&self, duration_frames: usize) {
+        self.enqueue(
+            node_id::MIX,
+            NodeCmd::MixTransition(MixTransitionCmd::StartFade { duration_frames }),
+        );
+    }
+
+    /// Return the bus to ordinary single-stream playback (input 0 at unity).
+    pub fn begin_playing(&self) {
+        self.enqueue(
+            node_id::MIX,
+            NodeCmd::MixTransition(MixTransitionCmd::StartPlaying),
+        );
+    }
+
+    /// Set the transition curve at runtime (mirrors
+    /// `TrackMixer::set_curve`).
+    pub fn set_crossfade_curve(&self, curve: config::CrossfadeCurve) {
+        self.enqueue(node_id::MIX, NodeCmd::SetMixCurve(curve));
+    }
+
+    /// Enable / disable crossfade transitions (mirrors
+    /// `TrackMixer::set_enabled`).
+    pub fn set_crossfade_enabled(&self, enabled: bool) {
+        self.enqueue(node_id::MIX, NodeCmd::SetMixEnabled(enabled));
+    }
+
+    /// Set the transition duration in output frames (mirrors
+    /// `TrackMixer::set_duration_ms` converted at the graph's sample rate).
+    pub fn set_crossfade_duration_frames(&self, frames: usize) {
+        self.enqueue(node_id::MIX, NodeCmd::SetMixDurationFrames(frames));
     }
 }
 
@@ -490,6 +605,17 @@ impl DspGraph {
     /// pending generation swap. Called once per caller block, before any
     /// signal processing and before the transport-bypass early returns, so
     /// control application is never skipped by bypass contracts.
+    /// Drain queued control commands and any pending generation swap NOW.
+    ///
+    /// The engine is single-threaded (its tick drives both command dispatch
+    /// and the decode loop), so it applies commands immediately after
+    /// dispatch instead of waiting for the next audio block. Safe only when
+    /// no other thread is processing audio; multi-threaded hosts must rely
+    /// on the block-boundary [`Self::control_tick`] instead.
+    pub fn drain_queued_control(&mut self) {
+        self.control_tick();
+    }
+
     pub(crate) fn control_tick(&mut self) {
         if self.bus.has_pending.swap(false, Ordering::AcqRel) {
             self.drain_control();
@@ -566,13 +692,14 @@ fn apply_node_cmd(node: &mut GraphNode, cmd: &NodeCmd) {
         (GraphNode::Balance(n), NodeCmd::SetBalance(b)) => n.set_balance(*b),
         (GraphNode::SeekFade(n), NodeCmd::BeginSeekFadeout) => n.fade.fade_out(),
         (GraphNode::SeekFade(n), NodeCmd::BeginSeekFadein) => n.fade.fade_in(),
-        (GraphNode::OutLoudness(n), NodeCmd::SetLoudnessMode(m)) => n.normalizer.set_mode(*m),
-        (GraphNode::InLoudness(n), NodeCmd::SetLoudnessMode(m)) => n.normalizer.set_mode(*m),
-        (GraphNode::OutLoudness(n), NodeCmd::ApplyLoudnessOutgoing(meta)) => {
-            n.normalizer.set_track_metadata(meta)
+        (GraphNode::Mix(n), NodeCmd::MixInput { input, cmd }) => {
+            n.apply_input(*input as usize, *cmd)
         }
-        (GraphNode::InLoudness(n), NodeCmd::ApplyLoudnessIncoming(meta)) => {
-            n.normalizer.set_track_metadata(meta)
+        (GraphNode::Mix(n), NodeCmd::MixTransition(cmd)) => n.apply_transition(*cmd),
+        (GraphNode::Mix(n), NodeCmd::SetMixCurve(c)) => n.curve = (*c).into(),
+        (GraphNode::Mix(n), NodeCmd::SetMixEnabled(e)) => n.crossfade_enabled = *e,
+        (GraphNode::Mix(n), NodeCmd::SetMixDurationFrames(f)) => {
+            n.crossfade_duration_frames = (*f).max(1)
         }
         (GraphNode::Limiter(n), NodeCmd::SetLimiterEnabled(e)) => n.limiter.set_enabled(*e),
         (GraphNode::Limiter(n), NodeCmd::SetLimiterMode(m)) => n.limiter.set_mode(*m),
@@ -858,5 +985,63 @@ impl DspGraph {
 
     pub fn set_loudness_mode(&self, mode: LoudnessMode) {
         self.control_handle().set_loudness_mode(mode);
+    }
+
+    // ── Mix bus: per-input control + transitions (Phase 3 S1) ─────────────
+
+    pub fn set_input_gain(&self, input: u8, gain: f32) {
+        self.control_handle().set_input_gain(input, gain);
+    }
+
+    pub fn set_input_gain_db(&self, input: u8, db: f32) {
+        self.control_handle().set_input_gain_db(input, db);
+    }
+
+    pub fn set_input_balance(&self, input: u8, balance: f32) {
+        self.control_handle().set_input_balance(input, balance);
+    }
+
+    pub fn set_input_mute(&self, input: u8, mute: bool) {
+        self.control_handle().set_input_mute(input, mute);
+    }
+
+    pub fn set_input_active(&self, input: u8, active: bool) {
+        self.control_handle().set_input_active(input, active);
+    }
+
+    /// Begin a crossfade from the outgoing to the incoming bus input over
+    /// `duration_ms`, converting to frames at the graph's sample rate.
+    pub fn begin_crossfade(&self, duration_ms: u64) {
+        let frames = (duration_ms as f32 * 0.001 * self.sample_rate) as usize;
+        self.control_handle().begin_crossfade_frames(frames);
+    }
+
+    /// Begin a sequential fade over `duration_ms` (same frame conversion).
+    pub fn begin_fade(&self, duration_ms: u64) {
+        let frames = (duration_ms as f32 * 0.001 * self.sample_rate) as usize;
+        self.control_handle().begin_fade_frames(frames);
+    }
+
+    /// Return the bus to single-stream playback (input 0 at unity).
+    pub fn begin_playing(&self) {
+        self.control_handle().begin_playing();
+    }
+
+    pub fn set_crossfade_curve(&self, curve: config::CrossfadeCurve) {
+        self.control_handle().set_crossfade_curve(curve);
+    }
+
+    pub fn set_crossfade_enabled(&self, enabled: bool) {
+        self.control_handle().set_crossfade_enabled(enabled);
+    }
+
+    pub fn set_crossfade_duration_ms(&self, duration_ms: u64) {
+        let frames = (duration_ms as f32 * 0.001 * self.sample_rate) as usize;
+        self.control_handle().set_crossfade_duration_frames(frames);
+    }
+
+    /// Current transition state of the bus (introspection).
+    pub fn mixer_state(&self) -> MixerState {
+        self.mix().state
     }
 }

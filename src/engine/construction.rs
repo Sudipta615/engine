@@ -17,7 +17,7 @@ use crate::{
     buffer::{
         EngineCommand, FixedFrameBuffer, PlaybackInfo, DEFAULT_SAMPLE_RATE, OUTPUT_BUFFER_FRAMES,
     },
-    dsp::{pipeline::DspPipeline, GraphicEq},
+    dsp::{DspGraph, GraphicEq},
     playlist::Playlist,
     sink::SampleSink,
 };
@@ -67,7 +67,7 @@ impl AudioEngine {
         #[cfg(feature = "audio-output")]
         let (output_event_tx, output_event_rx) = channel::bounded(64);
         let output_sample_rate = DEFAULT_SAMPLE_RATE;
-        let pipeline = DspPipeline::from_config(&config, output_sample_rate as f32);
+        let graph = DspGraph::from_config(&config, output_sample_rate as f32);
         let graphic_eq = GraphicEq::from_config(&config.graphic_eq);
         let info = PlaybackInfo {
             sample_rate: output_sample_rate,
@@ -85,7 +85,7 @@ impl AudioEngine {
             playback_info: Arc::new(ArcSwap::new(Arc::new(info))),
             running: Arc::new(AtomicBool::new(false)),
             audio_output: None,
-            pipeline,
+            graph,
             graphic_eq,
             output_profile: None,
             stream: None,

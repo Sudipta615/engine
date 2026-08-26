@@ -76,12 +76,12 @@ impl AudioEngine {
                 output.sample_rate()
             };
             self.output_sample_rate = output_rate;
-            self.pipeline
+            self.graph
                 .update_sample_rate(self.output_sample_rate as f32);
             self.dsd.native_dsd_active = false;
             self.dsd.dsd_wire_format = None;
             self.dsd.dsd_byte_buffer = None;
-            self.pipeline.set_dop_bypass(false);
+            self.graph.set_dop_bypass(false);
         }
 
         // ── DSD output mode selection (§7) ─────────────────────────────────
@@ -146,7 +146,7 @@ impl AudioEngine {
                         {
                             dop_active = true;
                             self.output_sample_rate = dr;
-                            self.pipeline.update_sample_rate(dr as f32);
+                            self.graph.update_sample_rate(dr as f32);
                         }
                         Ok(actual) => {
                             warn!(
@@ -203,7 +203,7 @@ impl AudioEngine {
         self.dsd.native_dsd_active = native_dsd_active;
         self.dsd.dsd_transport_report = dsd_report;
         if dop_active || native_dsd_active {
-            self.pipeline.set_dop_bypass(true);
+            self.graph.set_dop_bypass(true);
             if let Some(ref output) = self.audio_output {
                 output.set_dither_enabled(false);
             }
@@ -215,7 +215,7 @@ impl AudioEngine {
                 );
             }
         } else {
-            self.pipeline.set_dop_bypass(false);
+            self.graph.set_dop_bypass(false);
             if let Some(ref output) = self.audio_output {
                 output.set_dither_enabled(self.config.dither_enabled);
             }
@@ -234,7 +234,7 @@ impl AudioEngine {
                     caps.best_rate_for(info.sample_rate, &self.config.sample_rate_policy);
                 if let Ok(actual_rate) = output.reconfigure_sample_rate(target_rate) {
                     self.output_sample_rate = actual_rate;
-                    self.pipeline.update_sample_rate(actual_rate as f32);
+                    self.graph.update_sample_rate(actual_rate as f32);
                 }
             }
         }
@@ -300,11 +300,11 @@ impl AudioEngine {
         self.scratch.pending_incoming_chunk = None;
         self.scratch.rs_out_buf.clear();
         self.scratch.rs_in_buf.clear();
-        self.pipeline.reset();
+        self.graph.reset();
 
         let current_volume = self.playback_info.load().volume;
-        self.pipeline.set_volume(current_volume);
-        self.pipeline.volume.snap();
+        self.graph.set_volume(current_volume);
+        self.graph.volume_mut().processor.snap();
 
         let loudness_meta = if let Some(path) = loudness_path {
             let mut meta = crate::decode::extract_loudness_metadata(path);
@@ -322,13 +322,13 @@ impl AudioEngine {
 
         self.loudness_scan.current_track_path = loudness_path.map(|p| p.to_path_buf());
         self.loudness_scan.pending_loudness_metadata = Some(loudness_meta);
-        self.pipeline
+        self.graph
             .apply_loudness_metadata_outgoing(Some(loudness_meta));
         if loudness_path.is_some() {
             self.start_loudness_scan();
         }
 
-        self.pipeline.mixer_mut().start_playing();
+        self.graph.begin_playing();
 
         self.stream_ended = false;
         self.current_source = Some(source.clone());
@@ -653,7 +653,7 @@ impl AudioEngine {
 
         self.dsd.dop_active = false;
         self.dsd.dop_rate = 0;
-        self.pipeline.set_dop_bypass(false);
+        self.graph.set_dop_bypass(false);
 
         self.clock.reset_track(info.sample_rate);
         self.analyzer.set_sample_rate(info.sample_rate);
@@ -685,7 +685,7 @@ impl AudioEngine {
         }
         self.loudness_scan.current_track_path = Some(path.to_path_buf());
         self.loudness_scan.pending_loudness_metadata = Some(loudness_meta);
-        self.pipeline
+        self.graph
             .apply_loudness_metadata_outgoing(Some(loudness_meta));
         self.start_loudness_scan();
 

@@ -226,7 +226,7 @@ fn test_seek_during_transition_cancels_outgoing_at_every_boundary() {
             matches!(engine.stream, Some(PlaybackStream::Single { .. })),
             "{label}: seek must promote the incoming decoder to Single"
         );
-        assert!(!engine.pipeline().mixer().is_crossfading());
+        assert!(engine.pipeline().mixer_state() != crate::dsp::crossfade::MixerState::Crossfading);
         assert_eq!(
             engine.loudness_scan.current_track_path.as_deref(),
             Some(second.as_path())

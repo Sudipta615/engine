@@ -76,7 +76,7 @@ impl AudioEngine {
         self.refresh_output_profile();
 
         self.running.store(true, Ordering::Release);
-        self.pipeline
+        self.graph
             .update_sample_rate(self.output_sample_rate as f32);
         self.update_playback_state(PlaybackState::Stopped);
         self.recovery.stream_recovery_attempts = 0;
@@ -224,7 +224,7 @@ impl AudioEngine {
         self.dsd.dsd_wire_format = None;
         self.dsd.dsd_byte_buffer = None;
         self.dsd.dsd_transport_report = crate::decode::DsdTransportReport::default();
-        self.pipeline.set_dop_bypass(false);
+        self.graph.set_dop_bypass(false);
         if let Some(ref output) = self.audio_output {
             output.set_dither_enabled(self.config.dither_enabled);
         }
