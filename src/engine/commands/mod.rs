@@ -17,6 +17,7 @@
 mod capture;
 mod dsp;
 mod eq;
+mod lanes;
 mod lifecycle;
 mod multichannel;
 mod output;
@@ -302,6 +303,27 @@ impl AudioEngine {
             EngineCommand::SetSpeed(speed) => self.handle_set_speed(speed),
             EngineCommand::SetPitch(semitones) => self.handle_set_pitch(semitones),
             EngineCommand::Shutdown => self.handle_shutdown(),
+
+            // ── Multi-track lanes (Phase 4 S6) ──
+            EngineCommand::AddTrack(source) => self.handle_add_track(source),
+            EngineCommand::RemoveTrack(slot) => self.handle_remove_track(slot),
+            EngineCommand::SetTrackGain { slot, gain } => self.handle_set_track_gain(slot, gain),
+            EngineCommand::SetTrackPan { slot, pan } => self.handle_set_track_pan(slot, pan),
+            EngineCommand::DuckTracks {
+                source_slot,
+                targets,
+                threshold_db,
+                depth_db,
+                attack_ms,
+                release_ms,
+            } => self.handle_duck_tracks(
+                source_slot,
+                targets,
+                threshold_db,
+                depth_db,
+                attack_ms,
+                release_ms,
+            ),
 
             // ── Volume ──
             EngineCommand::SetVolume(vol) => self.handle_set_volume(vol),

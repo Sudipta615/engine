@@ -35,11 +35,15 @@ src/
 │   ├── output_setup.rs       # Output backend creation & device selection
 │   ├── helpers.rs            # Shared helpers (event emission, playback info writes)
 │   ├── decode_loop/          # Decode-and-process hot loop (single / transition)
+│   ├── lanes.rs              # Multi-track lane registry (Phase 4 S6): an
+│   │                         #   independent decoder+resampler per bus slot
+│   │                         #   ≥ 2, fed as secondaries each block
 │   └── commands/             # Command handlers, organized by concern
 │       ├── mod.rs            # Dispatch table
 │       ├── playback.rs       # play / pause / stop / seek / speed / pitch
 │       ├── lifecycle.rs      # open / prepare-next / recover / tag write-back
 │       ├── playlist.rs       # enqueue / next / previous / shuffle / repeat
+│       ├── lanes.rs          # add/remove track, track gain/pan, duck tracks
 │       ├── eq.rs             # parametric + graphic EQ, shelves, preamp
 │       ├── dsp.rs            # dither, crossfeed, compressor, limiter, bit-perfect
 │       ├── output.rs         # backend / device / profiles / volume modes
@@ -100,7 +104,11 @@ src/
 │                             #   live generation swap; Phase 3: engine
 │                             #   drives the graph end-to-end; Phase 4 S1+S2:
 │                             #   mix_slots generation parameter + N-channel
-│                             #   secondary planes with channel-wise MC sum)
+│                             #   secondary planes with channel-wise MC sum;
+│                             #   S3: pan laws + slot level meters; S4:
+│                             #   program-gated ducking; S5: automation
+│                             #   tracks; S6: engine lane registry feeding
+│                             #   slots ≥ 2 via process_block_lanes)
 │
 ├── output/                   # ── Output backends ──
 │   ├── mod.rs                # Module wiring + re-exports

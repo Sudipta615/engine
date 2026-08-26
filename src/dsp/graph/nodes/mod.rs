@@ -20,7 +20,10 @@ pub use eq_node::EqNode;
 pub use gain_node::{BalanceNode, GainNode, SeekFadeNode};
 pub use limiter_node::LimiterNode;
 pub use loudness_node::LoudnessNode;
-pub use mix::{MixBusNode, MixInput, MixInputCmd, MixTransitionCmd, MAX_MIX_SLOTS};
+pub use mix::{
+    AutomationPoint, AutomationTarget, DuckState, MixBusNode, MixInput, MixInputCmd,
+    MixTransitionCmd, PanLaw, MAX_AUTOMATION_POINTS, MAX_DUCK_TARGETS, MAX_MIX_SLOTS,
+};
 pub use resampler_node::ResamplerNode;
 pub use routing_node::RoutingNode;
 pub use stereo_node::StereoNode;

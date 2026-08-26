@@ -131,6 +131,7 @@ impl GraphGeneration {
                 let input = &mut gen_node!(gen, node_id::MIX, Mix).inputs[i];
                 input.gain.set_gain(slot.gain.clamp(0.0, 1.0));
                 input.balance = slot.balance.clamp(-1.0, 1.0);
+                input.pan = slot.pan.clamp(-1.0, 1.0);
                 input.mute = slot.mute;
                 if i != 0 {
                     input.active = slot.active;

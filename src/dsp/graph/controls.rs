@@ -37,6 +37,7 @@ const CONTROL_QUEUE_CAPACITY: usize = 64;
 /// operations belong to the generation-swap path, never to a queue.
 /// Variants mirror the Phase-1 symmetric control surface one-to-one.
 #[derive(Clone, Copy, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum NodeCmd {
     // ── Shell (transport / top-level) ─────────────────────────────────────
     SetBitPerfect(bool),
@@ -57,6 +58,8 @@ pub(crate) enum NodeCmd {
         cmd: MixInputCmd,
     },
     MixTransition(MixTransitionCmd),
+    /// Program-gated ducking config (Phase 4 S4); `None` disables.
+    SetDuck(Option<DuckState>),
     /// Runtime crossfade config (Phase 3 S3): curve / enabled / duration
     /// mirror the pipeline's `TrackMixer` setters the engine calls on
     /// `handle_set_crossfade_config`.
@@ -160,8 +163,13 @@ pub(crate) struct ControlBus {
     /// fresh generation from them so a reconfig never snaps lane settings.
     user_slot_gain: Vec<AtomicU32>,
     user_slot_balance: Vec<AtomicU32>,
+    user_slot_pan: Vec<AtomicU32>,
     user_slot_mute: Vec<AtomicU8>,
     user_slot_active: Vec<AtomicU8>,
+    /// Per-slot metering (Phase 4 S3): peak / RMS dBFS, audio-written once
+    /// per block, control-read for telemetry.
+    user_slot_peak_db: Vec<AtomicU32>,
+    user_slot_rms_db: Vec<AtomicU32>,
 }
 
 impl ControlBus {
@@ -186,8 +194,17 @@ impl ControlBus {
             user_slot_balance: (0..MAX_MIX_SLOTS)
                 .map(|_| AtomicU32::new(0.0f32.to_bits()))
                 .collect(),
+            user_slot_pan: (0..MAX_MIX_SLOTS)
+                .map(|_| AtomicU32::new(0.0f32.to_bits()))
+                .collect(),
             user_slot_mute: (0..MAX_MIX_SLOTS).map(|_| AtomicU8::new(0)).collect(),
             user_slot_active: (0..MAX_MIX_SLOTS).map(|_| AtomicU8::new(1)).collect(),
+            user_slot_peak_db: (0..MAX_MIX_SLOTS)
+                .map(|_| AtomicU32::new((-96.0f32).to_bits()))
+                .collect(),
+            user_slot_rms_db: (0..MAX_MIX_SLOTS)
+                .map(|_| AtomicU32::new((-96.0f32).to_bits()))
+                .collect(),
         }
     }
 
@@ -225,6 +242,32 @@ impl ControlBus {
         self.user_fade_ms.store(ms.to_bits(), Ordering::Relaxed);
     }
 
+    /// Publish one slot's metering to the sticky per-slot atomics (audio
+    /// side, once per block). Out-of-range slots are ignored.
+    pub(super) fn publish_slot_meters(&self, slot: usize, peak_db: f32, rms_db: f32) {
+        if let Some(p) = self.user_slot_peak_db.get(slot) {
+            p.store(peak_db.to_bits(), Ordering::Relaxed);
+        }
+        if let Some(r) = self.user_slot_rms_db.get(slot) {
+            r.store(rms_db.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// Control-side read of one slot's metering (peak / RMS dBFS).
+    pub(super) fn slot_meters(&self, slot: usize) -> (f32, f32) {
+        let peak = self
+            .user_slot_peak_db
+            .get(slot)
+            .map(|a| f32::from_bits(a.load(Ordering::Relaxed)))
+            .unwrap_or(-96.0);
+        let rms = self
+            .user_slot_rms_db
+            .get(slot)
+            .map(|a| f32::from_bits(a.load(Ordering::Relaxed)))
+            .unwrap_or(-96.0);
+        (peak, rms)
+    }
+
     /// Mirror one slot's user state onto the sticky per-slot atomics
     /// (audio side, at drain). Out-of-range slots are ignored.
     pub(super) fn set_slot_user_state(
@@ -232,6 +275,7 @@ impl ControlBus {
         slot: usize,
         gain: f32,
         balance: f32,
+        pan: f32,
         mute: bool,
         active: bool,
     ) {
@@ -240,6 +284,9 @@ impl ControlBus {
         }
         if let Some(b) = self.user_slot_balance.get(slot) {
             b.store(balance.to_bits(), Ordering::Relaxed);
+        }
+        if let Some(p) = self.user_slot_pan.get(slot) {
+            p.store(pan.to_bits(), Ordering::Relaxed);
         }
         if let Some(m) = self.user_slot_mute.get(slot) {
             m.store(mute as u8, Ordering::Relaxed);
@@ -262,6 +309,7 @@ impl ControlBus {
                 .map(|i| SlotState {
                     gain: f32::from_bits(self.user_slot_gain[i].load(Ordering::Relaxed)),
                     balance: f32::from_bits(self.user_slot_balance[i].load(Ordering::Relaxed)),
+                    pan: f32::from_bits(self.user_slot_pan[i].load(Ordering::Relaxed)),
                     mute: self.user_slot_mute[i].load(Ordering::Relaxed) != 0,
                     active: self.user_slot_active[i].load(Ordering::Relaxed) != 0,
                 })
@@ -281,6 +329,12 @@ pub struct GraphControlHandle {
 impl GraphControlHandle {
     pub(super) fn enqueue(&self, slot: usize, cmd: NodeCmd) {
         self.bus.enqueue(slot, cmd);
+    }
+
+    /// Read a slot's latest metering as `(peak_db, rms_db)` (Phase 4 S3).
+    /// Audio-written once per block; safe from any thread.
+    pub fn slot_meters(&self, slot: usize) -> (f32, f32) {
+        self.bus.slot_meters(slot)
     }
 
     /// Publish a fully-built generation for the audio thread to swap in at
@@ -556,6 +610,29 @@ impl GraphControlHandle {
         );
     }
 
+    /// Set the per-input pan in [-1, 1] (Phase 4 S3). Shapes the front L/R
+    /// pair through the slot's pan law; channels >= 2 pass at unity.
+    pub fn set_input_pan(&self, input: u8, pan: f32) {
+        self.enqueue(
+            node_id::MIX,
+            NodeCmd::MixInput {
+                input,
+                cmd: MixInputCmd::SetPan(pan),
+            },
+        );
+    }
+
+    /// Set the per-input pan law (Phase 4 S3).
+    pub fn set_input_pan_law(&self, input: u8, law: PanLaw) {
+        self.enqueue(
+            node_id::MIX,
+            NodeCmd::MixInput {
+                input,
+                cmd: MixInputCmd::SetPanLaw(law),
+            },
+        );
+    }
+
     pub fn set_input_mute(&self, input: u8, mute: bool) {
         self.enqueue(
             node_id::MIX,
@@ -575,6 +652,53 @@ impl GraphControlHandle {
             NodeCmd::MixInput {
                 input,
                 cmd: MixInputCmd::SetActive(active),
+            },
+        );
+    }
+
+    /// Configure program-gated ducking (Phase 4 S4). `None` disables and the
+    /// sum returns to bit-exact. `Some` config rides the queue as `Copy` data
+    /// and is applied atomically on the audio side.
+    pub fn set_duck(&self, cfg: Option<DuckState>) {
+        self.enqueue(node_id::MIX, NodeCmd::SetDuck(cfg));
+    }
+
+    /// Replace a slot's automation track (Phase 4 S5). `points` are clamped
+    /// to [`MAX_AUTOMATION_POINTS`]; an empty slice clears the track. The
+    /// points must be monotonically non-decreasing in `frame`; values are
+    /// linearly interpolated on the audio side.
+    pub fn set_slot_automation(
+        &self,
+        input: u8,
+        target: AutomationTarget,
+        points: &[AutomationPoint],
+    ) {
+        let mut buf = [AutomationPoint {
+            frame: 0,
+            value: 0.0,
+        }; MAX_AUTOMATION_POINTS];
+        let count = points.len().min(MAX_AUTOMATION_POINTS);
+        buf[..count].copy_from_slice(&points[..count]);
+        self.enqueue(
+            node_id::MIX,
+            NodeCmd::MixInput {
+                input,
+                cmd: MixInputCmd::SetAutomation {
+                    target,
+                    points: buf,
+                    count,
+                },
+            },
+        );
+    }
+
+    /// Remove a slot's automation track (Phase 4 S5).
+    pub fn clear_slot_automation(&self, input: u8) {
+        self.enqueue(
+            node_id::MIX,
+            NodeCmd::MixInput {
+                input,
+                cmd: MixInputCmd::ClearAutomation,
             },
         );
     }
@@ -728,6 +852,7 @@ impl DspGraph {
                                 input,
                                 slot.gain.target_gain,
                                 slot.balance,
+                                slot.pan,
                                 slot.mute,
                                 slot.active,
                             );
@@ -765,6 +890,7 @@ fn apply_node_cmd(node: &mut GraphNode, cmd: &NodeCmd) {
             n.apply_input(*input as usize, *cmd)
         }
         (GraphNode::Mix(n), NodeCmd::MixTransition(cmd)) => n.apply_transition(*cmd),
+        (GraphNode::Mix(n), NodeCmd::SetDuck(cfg)) => n.apply_duck(*cfg),
         (GraphNode::Mix(n), NodeCmd::SetMixCurve(c)) => n.curve = (*c).into(),
         (GraphNode::Mix(n), NodeCmd::SetMixEnabled(e)) => n.crossfade_enabled = *e,
         (GraphNode::Mix(n), NodeCmd::SetMixDurationFrames(f)) => {
@@ -1070,12 +1196,41 @@ impl DspGraph {
         self.control_handle().set_input_balance(input, balance);
     }
 
+    pub fn set_input_pan(&self, input: u8, pan: f32) {
+        self.control_handle().set_input_pan(input, pan);
+    }
+
+    pub fn set_input_pan_law(&self, input: u8, law: PanLaw) {
+        self.control_handle().set_input_pan_law(input, law);
+    }
+
     pub fn set_input_mute(&self, input: u8, mute: bool) {
         self.control_handle().set_input_mute(input, mute);
     }
 
     pub fn set_input_active(&self, input: u8, active: bool) {
         self.control_handle().set_input_active(input, active);
+    }
+
+    /// Configure program-gated ducking (Phase 4 S4).
+    pub fn set_duck(&self, cfg: Option<DuckState>) {
+        self.control_handle().set_duck(cfg);
+    }
+
+    /// Replace a slot's automation track (Phase 4 S5).
+    pub fn set_slot_automation(
+        &self,
+        input: u8,
+        target: AutomationTarget,
+        points: &[AutomationPoint],
+    ) {
+        self.control_handle()
+            .set_slot_automation(input, target, points);
+    }
+
+    /// Remove a slot's automation track (Phase 4 S5).
+    pub fn clear_slot_automation(&self, input: u8) {
+        self.control_handle().clear_slot_automation(input);
     }
 
     /// Begin a crossfade from the outgoing to the incoming bus input over

@@ -489,8 +489,26 @@ impl AudioEngine {
             //    passes through unchanged — same as calling process() per
             //    frame. The safety limiter is intentionally NOT part of this
             //    chain: it runs in the output domain, after resampling.
-            self.graph
-                .process_block(&mut plane_l[..n], &mut plane_r[..n]);
+            //    Active lanes (Phase 4 S6) are decoded and mixed as
+            //    secondaries on bus slots ≥ 2.
+            if self.lanes.is_empty() {
+                self.graph
+                    .process_block(&mut plane_l[..n], &mut plane_r[..n]);
+            } else {
+                let active = self.fill_lane_scratch(n);
+                let mut iter_l = self.scratch.lane_l.iter_mut();
+                let mut iter_r = self.scratch.lane_r.iter_mut();
+                let mut secondaries: [(&mut [f32], &mut [f32]); crate::engine::lanes::MAX_LANES] =
+                    std::array::from_fn(|_| {
+                        let l: &mut Vec<f32> = iter_l.next().expect("lane planes preallocated");
+                        let r: &mut Vec<f32> = iter_r.next().expect("lane planes preallocated");
+                        (&mut l[..n], &mut r[..n])
+                    });
+                self.graph.process_block_lanes(
+                    (&mut plane_l[..n], &mut plane_r[..n]),
+                    &mut secondaries[..active],
+                );
+            }
 
             if bypass {
                 // 3a. No resampling: this block is already in the output

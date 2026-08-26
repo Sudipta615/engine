@@ -28,7 +28,7 @@ pub(super) const DECODE_ERROR_THRESHOLD: u32 = 50;
 /// Extract one stereo frame from an interleaved source chunk, applying the
 /// same mono/multichannel semantics as the single-stream path.
 #[inline]
-pub(super) fn extract_stereo_frame(
+pub(crate) fn extract_stereo_frame(
     samples: &[f32],
     channels: usize,
     layout: Option<&crate::decode::ChannelLayout>,

@@ -10,6 +10,7 @@ mod decode_loop;
 mod dsd_state;
 pub mod handle;
 pub mod helpers;
+mod lanes;
 mod loudness_state;
 mod output_setup;
 mod recovery;
@@ -126,6 +127,10 @@ pub struct AudioEngine {
     pub(crate) loudness_scan: LoudnessScanState,
     pub(crate) recovery: RecoveryState,
     pub(crate) scratch: EngineScratch,
+    /// Multi-track lane registry (Phase 4 S6): independent streams mixed
+    /// onto bus slots ≥ 2. Control side adds/removes; the decode loop feeds
+    /// active lanes at every block boundary.
+    pub(crate) lanes: Vec<lanes::LaneTrack>,
 }
 
 /// An active system-audio capture: the loopback endpoint plus the WAV file

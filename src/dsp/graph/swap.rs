@@ -32,6 +32,8 @@ pub struct SlotState {
     pub gain: f32,
     /// Balance in [-1, 1] (0 = center).
     pub balance: f32,
+    /// Pan in [-1, 1] (0 = center).
+    pub pan: f32,
     /// Muted: the slot contributes silence.
     pub mute: bool,
     /// Detached: the slot contributes nothing and its chains do not advance.
@@ -44,6 +46,7 @@ impl Default for SlotState {
         Self {
             gain: 1.0,
             balance: 0.0,
+            pan: 0.0,
             mute: false,
             active: true,
         }

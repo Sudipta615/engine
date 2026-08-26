@@ -4,6 +4,10 @@ mod common;
 mod crossfade;
 mod single;
 
+// Shared by the engine-level modules (e.g. the lane registry), which sit
+// outside the decode_loop module tree.
+pub(crate) use common::extract_stereo_frame;
+
 use log::info;
 
 use super::{AudioEngine, PlaybackStream};

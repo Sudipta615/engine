@@ -2,6 +2,63 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.5.0] — 2026-08-26
+
+Phase 4 S3–S6 of the player → graph-runtime roadmap: the mix bus gains
+musical behavior and the engine gains a multi-track lane registry. Per-slot
+pan laws and level meters (S3), program-gated ducking (S4), and
+sample-accurate automation tracks (S5) live entirely in the bus; the engine
+now plays N independent lanes on bus slots ≥ 2 alongside the primary stream,
+with `AddTrack` / `RemoveTrack` / `SetTrackGain` / `SetTrackPan` /
+`DuckTracks` commands and per-lane telemetry in `PlaybackInfo` (S6).
+
+### Added
+
+- **Per-slot pan law** (S3): each `MixInput` gains `pan` (`[-1, 1]`) and a
+  `PanLaw` (`Linear` / `EqualPower` / `Center`, default `Linear`); the pan
+  pair is folded into the front-L/R gain product so `pan = 0` stays
+  bit-exact. `SetPan` / `SetPanLaw` commands; the existing `SetBalance`
+  behavior is untouched.
+- **Per-slot level meters** (S3): every slot accumulates per-block
+  peak/RMS metering (dBFS) and publishes it to the control bus;
+  `GraphControlHandle::slot_meters(slot)` reads `(peak_db, rms_db)`.
+- **Program-gated ducking** (S4): `DuckState` (source slot, threshold,
+  depth, attack/release frames, up to 4 target slots) rides the control
+  queue; the audio side evaluates the trigger once per block from the
+  source slot's peak meter and ramps the duck gain over attack/release.
+  Disabled (`None`) is bit-exact. Exposed as `set_duck` and the engine's
+  `DuckTracks` command.
+- **Automation tracks** (S5): a slot may carry one immutable track
+  (`AutomationTarget::Gain | Pan`) of up to 64 breakpoints; values are
+  linearly interpolated sample-accurately on the audio path, with the edge
+  values holding. Tracks are replaced wholesale via
+  `set_slot_automation` / `clear_slot_automation` and reset per generation.
+  A slot with no track is bit-exact.
+- **Engine lane registry** (S6): `LaneTrack` (decoder + resampler + bounded
+  FIFO) per independent stream on the first free bus slot ≥ 2; the decode
+  loop fills each active lane's planes every block and feeds them as
+  secondaries (`process_block_lanes` for the single path, lanes riding
+  after the incoming stream during crossfades). Commands:
+  `AddTrack(Source)`, `RemoveTrack(slot)`, `SetTrackGain { slot, gain }`,
+  `SetTrackPan { slot, pan }`, `DuckTracks { … }`. Adding a lane grows the
+  bus on demand via the glitch-free generation swap.
+- **Lane telemetry** (S6): `PlaybackInfo.lanes: Vec<LaneInfo>` (slot,
+  source, gain, pan, active, peak level, position, duration), refreshed on
+  the engine's telemetry window from the lane registry and the graph's
+  per-slot meters.
+
+### Changed
+
+- `MixBusNode` control commands are large-variant by design (`SetAutomation`
+  carries a fixed 64-point breakpoint array); the same `PlaybackStream`
+  precedent applies.
+
+### Fixed
+
+- The `AutomationPoint` frame cursor advances monotonically across blocks;
+  caller-fed master planes are scaled in place, so tests re-feed fresh
+  buffers per block.
+
 ## [3.4.0] — 2026-08-27
 
 Phase 4 S1+S2 of the player → graph-runtime roadmap: the mix bus slot count

@@ -7,8 +7,8 @@
 //! frame loops (a mid-block phase transition must be handled per frame);
 //! its curve math lives in [`super::envelope`].
 
-use super::{balance_gains, MixBusNode};
-use crate::buffer::MAX_CHANNELS;
+use super::{balance_gains, pan_gains, MixBusNode, MAX_MIX_SLOTS};
+use crate::buffer::{MAX_AUDIO_BLOCK_FRAMES, MAX_CHANNELS};
 use crate::dsp::crossfade::MixerState;
 use crate::dsp::graph::node::DspNode;
 
@@ -19,6 +19,12 @@ impl MixBusNode {
     /// it while the per-input borrows stay alive.
     pub(super) fn mix_stereo(&mut self, planes: &mut [&mut [f32]]) {
         let frames = planes[0].len();
+        // Duck state first (borrows `self.duck`), before the inputs are split
+        // out for the frame loop. Gains are 1.0 when ducking is disabled.
+        let d0 = self.duck_gain_for(0);
+        let d1 = self.duck_gain_for(1);
+        self.duck_tick(frames);
+
         let (l, r) = planes.split_at_mut(1);
         let out_l = &mut l[0][..frames];
         let out_r = &mut r[0][..frames];
@@ -35,12 +41,19 @@ impl MixBusNode {
         let (in1_l, in1_r) = (&in1.planes[0][..frames], &in1.planes[1][..frames]);
         let (g0, bal0, mute0) = (&mut in0.gain, in0.balance, in0.mute);
         let (g1, bal1, mute1) = (&mut in1.gain, in1.balance, in1.mute);
+        // Front-pair gains: balance, then pan. At pan = 0 the pan pair is
+        // exactly (1, 1), so these products are bit-identical to the
+        // pre-pan `balance_gains` values.
         let (b0l, b0r) = balance_gains(bal0);
         let (b1l, b1r) = balance_gains(bal1);
+        let (p0l, p0r) = pan_gains(in0.pan, in0.pan_law);
+        let (p1l, p1r) = pan_gains(in1.pan, in1.pan_law);
+        let (b0l, b0r) = (b0l * p0l, b0r * p0r);
+        let (b1l, b1r) = (b1l * p1l, b1r * p1r);
 
         for i in 0..frames {
-            let u0 = g0.process_sample(1.0);
-            let u1 = g1.process_sample(1.0);
+            let u0 = g0.process_sample(1.0) * d0;
+            let u1 = g1.process_sample(1.0) * d1;
             match state {
                 MixerState::PlayingCurrent => {
                     if !mute0 && u0 == 1.0 && b0l == 1.0 && b0r == 1.0 {
@@ -106,14 +119,43 @@ impl MixBusNode {
 
     /// Sum the independent slots (k >= 2) into the master planes at their
     /// per-input gain / balance. Detached slots contribute nothing and their
-    /// chains do not advance.
+    /// chains do not advance. The `k` loop indexes both `self.inputs` and the
+    /// fixed `duck_gains`/automation tables — index-based is the clear
+    /// spelling, so needless_range_loop is allowed (mirrored on the f64 twin).
+    #[allow(clippy::needless_range_loop)]
     pub(super) fn sum_extra_slots(&mut self, out_l: &mut [f32], out_r: &mut [f32], frames: usize) {
+        // Duck gains per slot (Phase 4 S4), computed before the inputs are
+        // borrowed. 1.0 when disabled / not a target.
+        let duck_gains: [f32; MAX_MIX_SLOTS] = std::array::from_fn(|k| self.duck_gain_for(k));
+        self.duck_tick(frames);
+        // Per-frame automation gains, reused across the slot loop (only the
+        // slots carrying a track populate them; others stay at unity).
+        let mut auto_l = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
+        let mut auto_r = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
         for k in 2..self.inputs.len() {
             let input = &mut self.inputs[k];
             if !input.active {
                 continue;
             }
+            let dk = duck_gains[k];
             let (b0l, b0r) = balance_gains(input.balance);
+            let (p0l, p0r) = pan_gains(input.pan, input.pan_law);
+            let (b0l, b0r) = (b0l * p0l, b0r * p0r);
+            let has_auto = input.automation.is_some();
+            if has_auto {
+                // Sample the track into the per-frame arrays and advance the
+                // cursor (the track's absolute position moves one block).
+                for i in 0..frames {
+                    let abs = input.automation.map(|a| a.pos).unwrap_or(0) + i;
+                    if let Some((gl, gr)) = input.full_front_gains(abs) {
+                        auto_l[i] = gl;
+                        auto_r[i] = gr;
+                    }
+                }
+                if let Some(a) = &mut input.automation {
+                    a.pos += frames;
+                }
+            }
             let g = &mut input.gain;
             if input.mute {
                 for _ in 0..frames {
@@ -121,9 +163,15 @@ impl MixBusNode {
                 }
                 continue;
             }
-            if input.balance != 0.0 {
+            if has_auto {
                 for i in 0..frames {
-                    let u = g.process_sample(1.0);
+                    let u = g.process_sample(1.0) * dk;
+                    out_l[i] += input.planes[0][i] * (u * auto_l[i]);
+                    out_r[i] += input.planes[1][i] * (u * auto_r[i]);
+                }
+            } else if b0l != 1.0 || b0r != 1.0 || dk != 1.0 {
+                for i in 0..frames {
+                    let u = g.process_sample(1.0) * dk;
                     out_l[i] += input.planes[0][i] * (u * b0l);
                     out_r[i] += input.planes[1][i] * (u * b0r);
                 }
@@ -142,6 +190,10 @@ impl MixBusNode {
     /// f32 and widened, and the sum is `out_l * out_gain + next_l * in_gain`.
     pub(super) fn mix_stereo_f64(&mut self, planes: &mut [&mut [f64]]) {
         let frames = planes[0].len();
+        let d0 = self.duck_gain_for(0);
+        let d1 = self.duck_gain_for(1);
+        self.duck_tick(frames);
+
         let (l, r) = planes.split_at_mut(1);
         let out_l = &mut l[0][..frames];
         let out_r = &mut r[0][..frames];
@@ -160,10 +212,14 @@ impl MixBusNode {
         let (g1, bal1, mute1) = (&mut in1.gain, in1.balance, in1.mute);
         let (b0l, b0r) = balance_gains(bal0);
         let (b1l, b1r) = balance_gains(bal1);
+        let (p0l, p0r) = pan_gains(in0.pan, in0.pan_law);
+        let (p1l, p1r) = pan_gains(in1.pan, in1.pan_law);
+        let (b0l, b0r) = (b0l * p0l, b0r * p0r);
+        let (b1l, b1r) = (b1l * p1l, b1r * p1r);
 
         for i in 0..frames {
-            let u0 = g0.process_sample(1.0) as f64;
-            let u1 = g1.process_sample(1.0) as f64;
+            let u0 = g0.process_sample(1.0) as f64 * d0 as f64;
+            let u1 = g1.process_sample(1.0) as f64 * d1 as f64;
             match state {
                 MixerState::PlayingCurrent => {
                     if !mute0 && u0 == 1.0 && b0l == 1.0 && b0r == 1.0 {
@@ -221,18 +277,39 @@ impl MixBusNode {
     }
 
     /// f64 variant of [`Self::sum_extra_slots`].
+    #[allow(clippy::needless_range_loop)]
     pub(super) fn sum_extra_slots_f64(
         &mut self,
         out_l: &mut [f64],
         out_r: &mut [f64],
         frames: usize,
     ) {
+        let duck_gains: [f32; MAX_MIX_SLOTS] = std::array::from_fn(|k| self.duck_gain_for(k));
+        self.duck_tick(frames);
+        let mut auto_l = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
+        let mut auto_r = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
         for k in 2..self.inputs.len() {
             let input = &mut self.inputs[k];
             if !input.active {
                 continue;
             }
+            let dk = duck_gains[k];
             let (b0l, b0r) = balance_gains(input.balance);
+            let (p0l, p0r) = pan_gains(input.pan, input.pan_law);
+            let (b0l, b0r) = (b0l * p0l, b0r * p0r);
+            let has_auto = input.automation.is_some();
+            if has_auto {
+                for i in 0..frames {
+                    let abs = input.automation.map(|a| a.pos).unwrap_or(0) + i;
+                    if let Some((gl, gr)) = input.full_front_gains(abs) {
+                        auto_l[i] = gl;
+                        auto_r[i] = gr;
+                    }
+                }
+                if let Some(a) = &mut input.automation {
+                    a.pos += frames;
+                }
+            }
             let g = &mut input.gain;
             if input.mute {
                 for _ in 0..frames {
@@ -240,9 +317,15 @@ impl MixBusNode {
                 }
                 continue;
             }
-            if input.balance != 0.0 {
+            if has_auto {
                 for i in 0..frames {
-                    let u = g.process_sample(1.0) as f64;
+                    let u = g.process_sample(1.0) as f64 * dk as f64;
+                    out_l[i] += input.planes[0][i] as f64 * (u * auto_l[i] as f64);
+                    out_r[i] += input.planes[1][i] as f64 * (u * auto_r[i] as f64);
+                }
+            } else if b0l != 1.0 || b0r != 1.0 || dk != 1.0 {
+                for i in 0..frames {
+                    let u = g.process_sample(1.0) as f64 * dk as f64;
                     out_l[i] += input.planes[0][i] as f64 * (u * b0l as f64);
                     out_r[i] += input.planes[1][i] as f64 * (u * b0r as f64);
                 }
@@ -316,6 +399,10 @@ impl MixBusNode {
         // Slots 1..channels of *the node* feed master channel `ch`; the
         // front L/R pair gets the slot's balance, extra channels pass through
         // at per-input gain.
+        let duck_gains: [f32; MAX_MIX_SLOTS] = std::array::from_fn(|k| self.duck_gain_for(k));
+        self.duck_tick(frames);
+        let mut auto_l = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
+        let mut auto_r = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
         for k in 1..self.inputs.len() {
             let input = &mut self.inputs[k];
             if !input.active || input.mute {
@@ -325,16 +412,41 @@ impl MixBusNode {
             if src_channels == 0 {
                 continue;
             }
-            let g = &mut input.gain;
+            let dk = duck_gains[k];
             let (b0l, b0r) = balance_gains(input.balance);
+            let (p0l, p0r) = pan_gains(input.pan, input.pan_law);
+            let (b0l, b0r) = (b0l * p0l, b0r * p0r);
             let balance = input.balance;
+            let has_auto = input.automation.is_some();
+            if has_auto {
+                for i in 0..frames {
+                    let abs = input.automation.map(|a| a.pos).unwrap_or(0) + i;
+                    if let Some((gl, gr)) = input.full_front_gains(abs) {
+                        auto_l[i] = gl;
+                        auto_r[i] = gr;
+                    }
+                }
+                if let Some(a) = &mut input.automation {
+                    a.pos += frames;
+                }
+            }
+            let g = &mut input.gain;
             for i in 0..frames {
                 // The gain ramp advances once per frame and the same target
                 // scales every channel (mirrors the pipeline's per-frame
-                // gain law); balance shapes only the front L/R pair.
-                let u = g.process_sample(1.0);
+                // gain law); balance/pan/automation shape only the front
+                // L/R pair.
+                let u = g.process_sample(1.0) * dk;
                 for ch in 0..src_channels {
-                    let bal = if balance != 0.0 {
+                    let bal = if has_auto {
+                        if ch == 0 {
+                            auto_l[i]
+                        } else if ch == 1 {
+                            auto_r[i]
+                        } else {
+                            1.0
+                        }
+                    } else if balance != 0.0 {
                         if ch == 0 {
                             b0l
                         } else if ch == 1 {
@@ -395,22 +507,50 @@ impl MixBusNode {
                 }
             }
         }
+        let duck_gains: [f32; MAX_MIX_SLOTS] = std::array::from_fn(|k| self.duck_gain_for(k));
+        self.duck_tick(frames);
+        let mut auto_l = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
+        let mut auto_r = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
         for k in 1..self.inputs.len() {
             let input = &mut self.inputs[k];
             if !input.active || input.mute {
                 continue;
             }
+            let dk = duck_gains[k];
             let src_channels = input.channels.min(channels);
             if src_channels == 0 {
                 continue;
             }
-            let g = &mut input.gain;
             let (b0l, b0r) = balance_gains(input.balance);
+            let (p0l, p0r) = pan_gains(input.pan, input.pan_law);
+            let (b0l, b0r) = (b0l * p0l, b0r * p0r);
             let balance = input.balance;
+            let has_auto = input.automation.is_some();
+            if has_auto {
+                for i in 0..frames {
+                    let abs = input.automation.map(|a| a.pos).unwrap_or(0) + i;
+                    if let Some((gl, gr)) = input.full_front_gains(abs) {
+                        auto_l[i] = gl;
+                        auto_r[i] = gr;
+                    }
+                }
+                if let Some(a) = &mut input.automation {
+                    a.pos += frames;
+                }
+            }
+            let g = &mut input.gain;
             for i in 0..frames {
-                let u = g.process_sample(1.0) as f64;
+                let u = g.process_sample(1.0) as f64 * dk as f64;
                 for ch in 0..src_channels {
-                    let bal = if balance != 0.0 {
+                    let bal = if has_auto {
+                        if ch == 0 {
+                            auto_l[i]
+                        } else if ch == 1 {
+                            auto_r[i]
+                        } else {
+                            1.0
+                        }
+                    } else if balance != 0.0 {
                         if ch == 0 {
                             b0l
                         } else if ch == 1 {
