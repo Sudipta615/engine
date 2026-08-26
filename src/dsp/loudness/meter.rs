@@ -805,9 +805,7 @@ impl LoudnessMeter {
         self.momentary_idx = 0;
         self.momentary_filled = 0;
         self.block_history.clear();
-        for v in &mut self.short_term_ring {
-            *v = f32::NEG_INFINITY;
-        }
+        self.short_term_ring.fill(f32::NEG_INFINITY);
         self.short_term_idx = 0;
         self.short_term_filled = 0;
         self.short_term_history.clear();

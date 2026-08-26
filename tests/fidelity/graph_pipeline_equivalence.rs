@@ -356,7 +356,7 @@ fn run_case(case: &Case) -> (Vec<f32>, Vec<f32>) {
             fill_interleaved(&mut input, 2, b * case.block_len, SR);
             let mut in_l = Vec::with_capacity(frames);
             let mut in_r = Vec::with_capacity(frames);
-            for pair in input.chunks_exact(2) {
+            for pair in input.as_chunks::<2>().0 {
                 in_l.push(pair[0]);
                 in_r.push(pair[1]);
             }

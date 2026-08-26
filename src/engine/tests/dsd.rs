@@ -33,7 +33,7 @@ fn test_dop_decode_matches_reference_packer() {
             Ok(chunk) => {
                 assert_eq!(chunk.samples.len() % 2, 0);
                 assert_eq!(chunk.sample_rate, 176_400);
-                for pair in chunk.samples.chunks_exact(2) {
+                for pair in chunk.samples.as_chunks::<2>().0 {
                     let (l, r) = (pair[0], pair[1]);
                     // Recover the left-aligned 24-bit word from the
                     // normalized f32 (the exact round trip the output

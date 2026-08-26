@@ -82,7 +82,7 @@ fn test_bit_perfect_end_to_end_sample_equality() {
             Ok(chunk) => {
                 assert_eq!(chunk.sample_rate, 44_100);
                 assert_eq!(chunk.channels, 2);
-                for pair in chunk.samples.chunks_exact(2) {
+                for pair in chunk.samples.as_chunks::<2>().0 {
                     let (l, r) = pipeline.process(pair[0], pair[1]);
                     let (li, ri) = converter.convert_stereo_to_i16(l, r);
                     got_l.push(li);
@@ -110,7 +110,7 @@ fn test_bit_perfect_end_to_end_sample_equality() {
     loop {
         match dec2.decode_next(4096) {
             Ok(chunk) => {
-                for pair in chunk.samples.chunks_exact(2) {
+                for pair in chunk.samples.as_chunks::<2>().0 {
                     let (l, r) = pip2.process(pair[0], pair[1]);
                     let (li, _) = conv2.convert_stereo_to_i16(l, r);
                     if li != left[frame_idx] {
