@@ -48,7 +48,7 @@ pub struct PlaybackInfo {
     pub sample_rate: u32,
     pub cpu_usage_pct: f32,
     /// Number of audio dropouts / CPU overloads detected
-    pub cpu_overloads: u32,
+    pub cpu_overloads: u64,
     /// Whether the resampler has been disabled due to creation or rebuild failures.
     pub resampler_disabled: bool,
     /// Whether the resampler encountered an unrecoverable failure and playback
@@ -64,11 +64,11 @@ pub struct PlaybackInfo {
     /// produced overshoots that the limiter failed to catch (e.g.
     /// limiter disabled, ceiling too high, or true-peak overshoot).
     /// Reset on read by the engine.
-    pub clip_count: u32,
+    pub clip_count: u64,
     /// Number of non-finite (NaN/Inf) samples encountered in the output
     /// callback. Any non-zero value is a serious numerical bug in the
     /// DSP. Reset on read by the engine.
-    pub nan_count: u32,
+    pub nan_count: u64,
 
     // ── New diagnostics fields ───────────────────────────────────────────
     /// Rich DSP diagnostic snapshot. Updated every engine tick.
@@ -102,6 +102,10 @@ pub struct PlaybackInfo {
     /// ID of the output profile currently applied to the active device
     /// (§10). `None` when no profile is active.
     pub active_output_profile: Option<String>,
+    /// Current playlist entry index (`None` when the queue is empty).
+    pub playlist_index: Option<usize>,
+    /// Number of entries in the playback queue.
+    pub playlist_length: usize,
 }
 
 impl Default for PlaybackInfo {
@@ -135,6 +139,8 @@ impl Default for PlaybackInfo {
             dsd_transport: crate::decode::DsdTransport::PcmConversion,
             dsd_transport_report: crate::decode::DsdTransportReport::default(),
             active_output_profile: None,
+            playlist_index: None,
+            playlist_length: 0,
         }
     }
 }

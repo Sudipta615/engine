@@ -146,7 +146,7 @@ impl ConvolutionEngine {
             .max(64);
         let fft_size = block_size * 2;
         let spectrum_len = fft_size / 2 + 1;
-        let max_partitions = (max_ir_length + block_size - 1) / block_size;
+        let max_partitions = max_ir_length.div_ceil(block_size);
         let max_partitions = max_partitions.max(1);
 
         let mut planner_f32 = RealFftPlanner::<f32>::new();
@@ -257,7 +257,7 @@ impl ConvolutionEngine {
         }
         let len = ir_samples.len().min(self.max_ir_length);
         let bs = self.block_size;
-        let num_parts = (len + bs - 1) / bs;
+        let num_parts = len.div_ceil(bs);
         self.num_partitions = num_parts.max(1);
 
         // Check if IR is stereo
@@ -354,7 +354,7 @@ impl ConvolutionEngine {
         }
         let len = ir_samples.len().min(self.max_ir_length);
         let bs = self.block_size;
-        let num_parts = (len + bs - 1) / bs;
+        let num_parts = len.div_ceil(bs);
         self.num_partitions = num_parts.max(1);
 
         let stride = (len / 512).max(1);

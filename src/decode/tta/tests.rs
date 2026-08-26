@@ -147,7 +147,7 @@ pub(crate) struct BitWriterLsb {
 
 impl BitWriterLsb {
     pub(crate) fn write_bit(&mut self, bit: u32) {
-        if self.bit_pos % 8 == 0 {
+        if self.bit_pos.is_multiple_of(8) {
             self.bytes.push(0);
         }
         if bit != 0 {
@@ -164,7 +164,7 @@ impl BitWriterLsb {
     }
 
     pub(crate) fn finish(mut self) -> Vec<u8> {
-        while self.bit_pos % 8 != 0 {
+        while !self.bit_pos.is_multiple_of(8) {
             self.write_bit(0);
         }
         self.bytes
@@ -195,7 +195,7 @@ pub(crate) fn encode_rice_symbol(w: &mut BitWriterLsb, rice: &mut TtaRice, u: u3
         }
         w.write_bit(0);
         w.write_bits(low, rice.k1);
-        let pre = ((unary << rice.k1) as u32).wrapping_add(low) as i32;
+        let pre = (unary << rice.k1).wrapping_add(low) as i32;
         rice.adapt(pre, 1);
     }
 }
@@ -248,7 +248,11 @@ pub(crate) fn encode_frame(
     }
 
     let n = channels;
-    let k_pred = if (bits_per_sample + 7) / 8 == 1 { 4 } else { 5 };
+    let k_pred = if bits_per_sample.div_ceil(8) == 1 {
+        4
+    } else {
+        5
+    };
     let mut w = BitWriterLsb::default();
 
     for slot in 0..interleaved.len() / n {
@@ -258,8 +262,7 @@ pub(crate) fn encode_frame(
             coder_inputs[j] = interleaved[base + j + 1].wrapping_sub(interleaved[base + j]);
         }
         if n > 1 {
-            coder_inputs[n - 1] =
-                interleaved[base + n - 1].wrapping_sub(coder_inputs[n - 2] / 2);
+            coder_inputs[n - 1] = interleaved[base + n - 1].wrapping_sub(coder_inputs[n - 2] / 2);
         } else {
             coder_inputs[0] = interleaved[base];
         }
@@ -338,7 +341,7 @@ fn write_fixture(path: &std::path::Path, bytes: &[u8]) {
 }
 
 fn round_trip(channels: u16, bits: u16, rate: u32, frames_of_audio: usize, seed: u64) {
-    let amplitude = match (bits + 7) / 8 {
+    let amplitude = match bits.div_ceil(8) {
         1 => 120,
         2 => 30_000,
         _ => 8_000_000,
@@ -348,8 +351,7 @@ fn round_trip(channels: u16, bits: u16, rate: u32, frames_of_audio: usize, seed:
 
     let mut frames_bytes = Vec::new();
     let mut expected_all: Vec<f32> = Vec::new();
-    let mut enc_states: Vec<EncChannel> =
-        (0..channels).map(|_| EncChannel::new(bits)).collect();
+    let mut enc_states: Vec<EncChannel> = (0..channels).map(|_| EncChannel::new(bits)).collect();
     let mut data_length = 0u32;
 
     for f in 0..frames_of_audio {
@@ -366,7 +368,7 @@ fn round_trip(channels: u16, bits: u16, rate: u32, frames_of_audio: usize, seed:
             }
         }
         for &v in &interleaved {
-            expected_all.push(match (bits + 7) / 8 {
+            expected_all.push(match bits.div_ceil(8) {
                 1 => v as f32 / 128.0,
                 2 => (v as i16) as f32 / 32768.0,
                 _ => v as f32 / 8_388_608.0,
@@ -433,8 +435,7 @@ fn chunked_decoding_matches_single_call() {
     let frame_len = 256u32 * rate / 245;
     let mut rng = Lcg(777);
     let mut frames_bytes = Vec::new();
-    let mut enc_states: Vec<EncChannel> =
-        (0..channels).map(|_| EncChannel::new(bits)).collect();
+    let mut enc_states: Vec<EncChannel> = (0..channels).map(|_| EncChannel::new(bits)).collect();
     let mut data_length = 0u32;
     for f in 0..3 {
         let n = if f == 2 { frame_len / 2 } else { frame_len };
@@ -482,8 +483,7 @@ fn seek_is_sample_accurate() {
     let frame_len = 256u32 * rate / 245;
     let mut rng = Lcg(4242);
     let mut frames_bytes = Vec::new();
-    let mut enc_states: Vec<EncChannel> =
-        (0..channels).map(|_| EncChannel::new(bits)).collect();
+    let mut enc_states: Vec<EncChannel> = (0..channels).map(|_| EncChannel::new(bits)).collect();
     let mut data_length = 0u32;
     for f in 0..3 {
         let n = if f == 2 { frame_len / 2 } else { frame_len };
@@ -649,8 +649,7 @@ fn corrupted_frame_crc_errors_on_decode_not_open() {
     let rate = 44_100u32;
     let frame_len = 256u32 * rate / 245;
     let mut rng = Lcg(99);
-    let mut enc_states: Vec<EncChannel> =
-        (0..channels).map(|_| EncChannel::new(bits)).collect();
+    let mut enc_states: Vec<EncChannel> = (0..channels).map(|_| EncChannel::new(bits)).collect();
     let mut inter = Vec::new();
     for _ in 0..frame_len {
         for _ in 0..channels {
@@ -681,8 +680,7 @@ fn truncated_frame_payload_errors_cleanly() {
     let rate = 44_100u32;
     let frame_len = 256u32 * rate / 245;
     let mut rng = Lcg(31);
-    let mut enc_states: Vec<EncChannel> =
-        (0..channels).map(|_| EncChannel::new(bits)).collect();
+    let mut enc_states: Vec<EncChannel> = (0..channels).map(|_| EncChannel::new(bits)).collect();
     let mut inter = Vec::new();
     for _ in 0..frame_len {
         for _ in 0..channels {
@@ -761,8 +759,7 @@ fn id3v2_prefix_is_skipped() {
     let rate = 44_100u32;
     let frame_len = 256u32 * rate / 245;
     let mut rng = Lcg(555);
-    let mut enc_states: Vec<EncChannel> =
-        (0..channels).map(|_| EncChannel::new(bits)).collect();
+    let mut enc_states: Vec<EncChannel> = (0..channels).map(|_| EncChannel::new(bits)).collect();
     let mut inter = Vec::new();
     for _ in 0..frame_len {
         for _ in 0..channels {
@@ -779,7 +776,7 @@ fn id3v2_prefix_is_skipped() {
     file.extend_from_slice(b"ID3");
     file.extend_from_slice(&[3, 0, 0]);
     file.extend_from_slice(&[0, 0, 0, 100]);
-    file.extend_from_slice(&vec![0u8; 100]);
+    file.extend_from_slice(&[0u8; 100]);
     file.extend_from_slice(&body);
 
     let path = temp_path("id3");

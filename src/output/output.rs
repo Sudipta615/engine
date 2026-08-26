@@ -313,6 +313,13 @@ pub trait Output: OutputVolume + Send {
             "native DSD transport is not supported by this backend".to_string(),
         ))
     }
+
+    /// Open the backend's manufacturer settings dialog (ASIO control panel,
+    /// WASAPI device properties, ...). The default implementation returns
+    /// `Ok` silently — not every backend exposes a control panel.
+    fn open_control_panel(&self) -> Result<(), OutputError> {
+        Ok(())
+    }
 }
 
 /// Construct a concrete output for the requested backend.
@@ -344,6 +351,7 @@ pub fn create_output(
             }
         }
     }
+    #[cfg(feature = "asio-native")]
     if backend == config::AudioBackend::ExclusiveAsio {
         match super::asio_output::AsioOutput::new(target_device, 44100, buffer.clone()) {
             Ok(out) => {
@@ -384,7 +392,7 @@ pub fn create_output(
     backend: config::AudioBackend,
     target_device: Option<&str>,
     fallback_policy: config::FallbackPolicy,
-    ) -> Result<Box<dyn Output>, OutputError> {
+) -> Result<Box<dyn Output>, OutputError> {
     #[cfg(target_os = "linux")]
     if backend == config::AudioBackend::ExclusiveAlsa {
         match super::alsa_output::AlsaOutput::new(
@@ -421,6 +429,7 @@ pub fn create_output(
             }
         }
     }
+    #[cfg(feature = "asio-native")]
     if backend == config::AudioBackend::ExclusiveAsio {
         match super::asio_output::AsioOutput::new(target_device, 44100, buffer.clone()) {
             Ok(out) => {
@@ -487,4 +496,3 @@ mod tests {
         assert!(format_only.supports(45_158_400, 8));
     }
 }
-

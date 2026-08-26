@@ -131,17 +131,17 @@ impl TtaFilter {
     pub(crate) fn peek_contribution(&self) -> i32 {
         let mut qm = self.qm;
         if self.error < 0 {
-            for i in 0..8 {
-                qm[i] = qm[i].wrapping_sub(self.dx[i]);
+            for (q, d) in qm.iter_mut().zip(self.dx.iter()) {
+                *q = q.wrapping_sub(*d);
             }
         } else if self.error > 0 {
-            for i in 0..8 {
-                qm[i] = qm[i].wrapping_add(self.dx[i]);
+            for (q, d) in qm.iter_mut().zip(self.dx.iter()) {
+                *q = q.wrapping_add(*d);
             }
         }
         let mut sum = self.round as u32;
-        for i in 0..8 {
-            sum = sum.wrapping_add((self.dl[i] as u32).wrapping_mul(qm[i] as u32));
+        for (q, d) in qm.iter().zip(self.dl.iter()) {
+            sum = sum.wrapping_add((*d as u32).wrapping_mul(*q as u32));
         }
         (sum as i32) >> self.shift
     }

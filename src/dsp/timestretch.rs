@@ -83,12 +83,9 @@ fn blackman_harris4(x: f32, m: f32) -> f32 {
 /// Precompute a Hann window of the given length (used for the WSOLA
 /// synthesis frame; must match the active window length).
 fn hann_window(len: usize) -> Vec<f32> {
-    let mut window = vec![0.0f32; len];
-    for i in 0..len {
-        let w = 0.5 * (1.0 - (2.0 * PI * i as f32 / (len as f32)).cos());
-        window[i] = w;
-    }
-    window
+    (0..len)
+        .map(|i| 0.5 * (1.0 - (2.0 * PI * i as f32 / (len as f32)).cos()))
+        .collect()
 }
 
 /// Operating configuration for time-stretching and pitch-shifting.
@@ -1089,9 +1086,7 @@ mod tests {
         // constant exactly (rows are normalized to unity DC gain). A cold
         // history (silence before the stream) legitimately under-weights, so
         // this check uses the warm state.
-        for slot in &mut fifo {
-            *slot = 0.75;
-        }
+        fifo.fill(0.75);
         let warm_history = vec![0.75f32; PITCH_HISTORY_LEN];
         for phase in 0..PITCH_PHASES {
             let got =
@@ -1107,8 +1102,8 @@ mod tests {
         let sr = 48_000.0f32;
         for (label, freq) in [("2 kHz", 2_000.0f32), ("8 kHz", 8_000.0f32)] {
             let omega = 2.0 * std::f32::consts::PI * freq / sr;
-            for i in 0..fifo_cap {
-                fifo[i] = (omega * i as f32).sin();
+            for (i, slot) in fifo.iter_mut().take(fifo_cap).enumerate() {
+                *slot = (omega * i as f32).sin();
             }
             let mut sinc_err = 0.0f32;
             let mut hermite_err = 0.0f32;

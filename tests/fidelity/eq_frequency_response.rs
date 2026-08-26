@@ -228,7 +228,7 @@ fn eq_f64_peaking_more_accurate_than_f32() {
     let freq = 4000.0_f32;
 
     let coeffs_f32 = BiquadCoeffs::<f32>::peaking(SR, freq, gain_target, q_high);
-    let coeffs_f64 = BiquadCoeffs::<f64>::peaking(SR, freq, gain_target as f32, q_high as f32);
+    let coeffs_f64 = BiquadCoeffs::<f64>::peaking(SR, freq, gain_target, q_high);
 
     let n = ((SR / freq) * 100.0) as usize;
     let signal: Vec<f32> = (0..n)

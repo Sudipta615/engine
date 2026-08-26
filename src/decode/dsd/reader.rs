@@ -1,11 +1,11 @@
 //! DSF / DFF container parsing and audio payload reading.
 
 use std::{
-    fs::File,
     io::{BufReader, Read, Seek, SeekFrom},
     path::Path,
 };
 
+use crate::audio_io::AudioByteSource;
 use crate::decode::{AudioFormatInfo, ChannelLayout};
 
 use super::{DsdBlock, DsdError, DsdPcmBlock, DsdRate, DsdToPcmDecimator};
@@ -21,7 +21,7 @@ pub struct DsdReader {
     /// Bit order inside each payload byte: true = LSB-first (default).
     lsbf: bool,
     container: &'static str,
-    reader: BufReader<File>,
+    reader: BufReader<Box<dyn AudioByteSource>>,
     /// Per-channel block size in bytes (DSF: `fmt ` field; DFF: 4096).
     block_size: u32,
     /// Absolute file offset of the first audio byte.
@@ -34,10 +34,10 @@ pub struct DsdReader {
 }
 
 impl DsdReader {
-    /// Open a DSF or DFF file.
-    pub fn open(path: &Path) -> Result<Self, DsdError> {
-        let file = File::open(path)?;
-        let mut reader = BufReader::new(file);
+    /// Open a DSF or DFF source via a byte source.
+    pub fn open_source(mut source: Box<dyn AudioByteSource>) -> Result<Self, DsdError> {
+        let _ = source.seek(SeekFrom::Start(0));
+        let mut reader = BufReader::new(source);
 
         let mut magic = [0u8; 4];
         reader.read_exact(&mut magic)?;
@@ -54,7 +54,13 @@ impl DsdReader {
         }
     }
 
-    fn parse_dsf(mut reader: BufReader<File>) -> Result<Self, DsdError> {
+    /// Open a DSF or DFF file (convenience wrapper).
+    pub fn open(path: &Path) -> Result<Self, DsdError> {
+        let source = crate::audio_io::FileByteSource::open(path).map_err(DsdError::Io)?;
+        Self::open_source(Box::new(source))
+    }
+
+    fn parse_dsf(mut reader: BufReader<Box<dyn AudioByteSource>>) -> Result<Self, DsdError> {
         // Read DSF chunk size (8 bytes, little-endian)
         let mut buf8 = [0u8; 8];
         reader.read_exact(&mut buf8)?;
@@ -160,7 +166,7 @@ impl DsdReader {
         })
     }
 
-    fn parse_dff(mut reader: BufReader<File>) -> Result<Self, DsdError> {
+    fn parse_dff(mut reader: BufReader<Box<dyn AudioByteSource>>) -> Result<Self, DsdError> {
         let mut buf8 = [0u8; 8];
         reader.read_exact(&mut buf8)?;
         let _total_size = u64::from_be_bytes(buf8);
@@ -278,7 +284,7 @@ impl DsdReader {
         let block_idx = self.frames_consumed / block;
         let last_block_idx = (self.audio_frames - 1) / block;
         let nch = self.channels as u64;
-        let final_partial = block_idx == last_block_idx && self.audio_frames % block != 0;
+        let final_partial = block_idx == last_block_idx && !self.audio_frames.is_multiple_of(block);
         let ch_stride = if final_partial {
             self.audio_frames % block
         } else {
@@ -391,7 +397,10 @@ impl DsdReader {
 }
 
 /// Read and discard `n` bytes (used to skip chunks we do not care about).
-fn skip_bytes(reader: &mut BufReader<File>, mut n: u64) -> Result<(), DsdError> {
+fn skip_bytes(
+    reader: &mut BufReader<Box<dyn AudioByteSource>>,
+    mut n: u64,
+) -> Result<(), DsdError> {
     let mut buf = [0u8; 4096];
     while n > 0 {
         let take = n.min(buf.len() as u64) as usize;
@@ -405,7 +414,7 @@ fn skip_bytes(reader: &mut BufReader<File>, mut n: u64) -> Result<(), DsdError> 
 /// (real Hz, big-endian) and `CHNL` channel count, and validating the `CMPR`
 /// compression type. Consumes exactly `size` bytes of the PROP chunk.
 fn parse_dff_prop(
-    reader: &mut BufReader<File>,
+    reader: &mut BufReader<Box<dyn AudioByteSource>>,
     size: u64,
 ) -> Result<Option<(u32, usize)>, DsdError> {
     let mut remaining = size;
@@ -484,11 +493,9 @@ fn parse_dff_prop(
             skip_bytes(reader, sub_size - consumed)?;
         }
         remaining -= sub_size;
-        if sub_size % 2 == 1 {
-            if remaining > 0 {
-                skip_bytes(reader, 1)?;
-                remaining -= 1;
-            }
+        if sub_size % 2 == 1 && remaining > 0 {
+            skip_bytes(reader, 1)?;
+            remaining -= 1;
         }
     }
 

@@ -1,10 +1,10 @@
 use config::EngineConfig;
 
+use super::helpers::*;
 use crate::{
     buffer::{EngineCommand, PlaybackState},
     engine::AudioEngine,
 };
-use super::helpers::*;
 
 #[test]
 fn test_engine_new_default() {
@@ -834,7 +834,7 @@ fn test_multichannel_commands_dispatch_correctly() {
         enabled: true,
         mains_highpass_enabled: true,
         crossover_hz: 80.0,
-        q: 0.7071,
+        q: std::f32::consts::FRAC_1_SQRT_2,
     };
     engine.send_command(EngineCommand::SetBassManagement(bass_cfg.clone()));
     engine.tick();
@@ -883,5 +883,3 @@ fn test_engine_handle_controls_and_telemetry() {
     // 5. Verify events receiver is accessible
     assert!(handle.events().is_empty());
 }
-
-

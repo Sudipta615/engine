@@ -19,6 +19,13 @@ impl AudioEngine {
         let _ = self.event_tx.try_send(event);
     }
 
+    /// Emit an output device event on the dedicated output event channel.
+    /// Only compiled when the `audio-output` feature is enabled.
+    #[cfg(feature = "audio-output")]
+    pub(crate) fn emit_output_event(&self, event: crate::events::OutputEvent) {
+        let _ = self.output_event_tx.try_send(event);
+    }
+
     /// Update playback state and publish an event if the state changed.
     pub fn update_playback_state(&self, state: PlaybackState) {
         let prev_state = self.current_state();
@@ -46,24 +53,4 @@ impl AudioEngine {
             Arc::new(next)
         });
     }
-}
-
-/// Percent-decode a URI-encoded string (e.g. `%20` → space).
-/// Returns `None` if the encoding is malformed.
-pub fn percent_decode(s: &str) -> Option<String> {
-    let mut bytes = Vec::new();
-    let mut chars = s.as_bytes().iter().copied();
-    while let Some(b) = chars.next() {
-        if b == b'%' {
-            let h1 = chars.next()?;
-            let h2 = chars.next()?;
-            let pair = [h1, h2];
-            let hex = std::str::from_utf8(&pair).ok()?;
-            let val = u8::from_str_radix(hex, 16).ok()?;
-            bytes.push(val);
-        } else {
-            bytes.push(b);
-        }
-    }
-    String::from_utf8(bytes).ok()
 }

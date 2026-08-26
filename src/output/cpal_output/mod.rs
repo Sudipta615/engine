@@ -484,8 +484,8 @@ impl CpalOutput {
                         .iter()
                         .find(|c| c.sample_format() == fmt)
                         .map(|c| {
-                            let rate = target_sample_rate
-                                .clamp(c.min_sample_rate(), c.max_sample_rate());
+                            let rate =
+                                target_sample_rate.clamp(c.min_sample_rate(), c.max_sample_rate());
                             c.with_sample_rate(rate)
                         })
                 })

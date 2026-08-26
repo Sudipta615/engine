@@ -2,11 +2,11 @@
 
 use config::EngineConfig;
 
+use super::helpers::*;
 use crate::{
     buffer::EngineCommand,
     engine::{AudioEngine, PlaybackStream},
 };
-use super::helpers::*;
 
 /// 16-bit-PCM-quantized stereo samples, exactly as `write_custom_wav_at`
 /// stores them (so a reference chain feeds the resampler what the decoder
@@ -30,12 +30,12 @@ fn reference_gapless_output(
     segments: &[(u32, Vec<f32>)],
     output_rate: u32,
     config: &EngineConfig,
-    metadata: &[crate::dsp::loudness::LoudnessMetadata],
+    metadata: &[crate::dsp::LoudnessMetadata],
 ) -> Vec<f32> {
     use crate::dsp::equalizer::{EqBandParams, EqFilterType, ParametricEq, MAX_EQ_BANDS};
     use crate::dsp::limiter::LookaheadLimiter;
-    use crate::dsp::loudness::{LoudnessMode, LoudnessNormalizer};
     use crate::dsp::resampler::GenericResampler;
+    use crate::dsp::{LoudnessMode, LoudnessNormalizer};
 
     let quality = config.precision_mode == config::PrecisionMode::Quality;
 
@@ -66,7 +66,7 @@ fn reference_gapless_output(
     );
 
     // EQ — mirror `from_config` band-for-band, built at the output rate.
-    let num_bands = config.eq.bands.len().max(10).min(MAX_EQ_BANDS);
+    let num_bands = config.eq.bands.len().clamp(10, MAX_EQ_BANDS);
     let mut eq = ParametricEq::new(num_bands, output_rate as f32);
     eq.set_enabled(config.eq.enabled);
     eq.set_preamp_db(config.eq.preamp_db);
@@ -221,7 +221,6 @@ fn test_end_of_stream_emits_resampler_and_limiter_tails() {
             std::time::Instant::now() < deadline,
             "48 kHz track did not reach EOS"
         );
-        std::thread::sleep(std::time::Duration::from_millis(2));
     }
     loop {
         let n = engine.output_buffer.pop_block_interleaved(&mut drained);
@@ -291,10 +290,13 @@ fn test_crossfade_at_192k_does_not_drop_resampled_frames() {
         scratch_cap_in >= crate::dsp::resampler::MAX_OUTPUT_BUFFER_FRAMES,
         "incoming crossfade scratch is under-sized"
     );
-    assert!(
-        crate::engine::CROSSFADE_SCRATCH_FRAMES >= crate::dsp::resampler::MAX_OUTPUT_BUFFER_FRAMES,
-        "CROSSFADE_SCRATCH_FRAMES is smaller than the resampler output bound"
-    );
+    const {
+        assert!(
+            crate::engine::CROSSFADE_SCRATCH_FRAMES
+                >= crate::dsp::resampler::MAX_OUTPUT_BUFFER_FRAMES,
+            "CROSSFADE_SCRATCH_FRAMES is smaller than the resampler output bound"
+        );
+    }
 
     engine.send_command(EngineCommand::Play);
     engine.tick();
@@ -313,14 +315,19 @@ fn test_crossfade_at_192k_does_not_drop_resampled_frames() {
             std::time::Instant::now() < deadline,
             "crossfade did not complete"
         );
-        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
     assert!(!engine.pipeline.mixer().is_crossfading());
     assert_eq!(engine.scratch.rs_out_buf.capacity(), scratch_cap_out);
     assert_eq!(engine.scratch.rs_in_buf.capacity(), scratch_cap_in);
-    assert!(engine.scratch.rs_out_buf.is_empty(), "outgoing scratch not drained");
-    assert!(engine.scratch.rs_in_buf.is_empty(), "incoming scratch not drained");
+    assert!(
+        engine.scratch.rs_out_buf.is_empty(),
+        "outgoing scratch not drained"
+    );
+    assert!(
+        engine.scratch.rs_in_buf.is_empty(),
+        "incoming scratch not drained"
+    );
 
     let _ = std::fs::remove_file(outgoing);
     let _ = std::fs::remove_file(incoming);
@@ -703,7 +710,7 @@ fn loudness_eq_gapless_handoff_impl(precision: config::PrecisionMode) {
     let a = write_custom_wav_at(sr, n_frames, "gap-loud-a");
     let b = write_custom_wav_at(sr, n_frames, "gap-loud-b");
 
-    use crate::dsp::loudness::LoudnessMetadata;
+    use crate::dsp::LoudnessMetadata;
 
     let mut config = EngineConfig::default();
     config.transition_mode = config::TransitionMode::Gapless;

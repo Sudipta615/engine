@@ -1,15 +1,49 @@
 //! Playback stream state machine and engine error types.
-//!
-//! The `PlaybackStream` enum is defined in `mod.rs` so that its private
-//! fields are accessible from all engine submodules (Rust privacy: child
-//! modules can access items defined in their parent). This file contains
-//! the `EngineError` enum and the `impl PlaybackStream` method block.
 
-use super::PlaybackStream;
+#[cfg(feature = "resample")]
+use crate::dsp::resampler::GenericResampler;
 use crate::{
+    decode::Decoder,
     decode::{DecodeError, DecodeInfo},
     output::cpal_output::OutputError,
 };
+
+/// Dual-decoder state machine for true gapless playback and crossfading.
+///
+/// `Single` represents normal single-track playback. `Transitioning` holds
+/// both the outgoing (fading) and incoming (rising) decoders simultaneously,
+/// allowing the `TrackMixer` to receive genuinely distinct sample streams
+/// and perform real overlapping gain scaling.
+#[allow(clippy::large_enum_variant)]
+pub enum PlaybackStream {
+    /// Playing a single track with no crossfade in progress.
+    Single {
+        decoder: Decoder,
+        #[cfg(feature = "resample")]
+        resampler: Option<GenericResampler>,
+        #[cfg(not(feature = "resample"))]
+        resampler: Option<()>,
+    },
+    /// Crossfading between two tracks. The outgoing decoder provides the
+    /// tail of the current track while the incoming decoder provides the
+    /// head of the next.
+    Transitioning {
+        outgoing_decoder: Decoder,
+        #[cfg(feature = "resample")]
+        outgoing_resampler: Option<GenericResampler>,
+        #[cfg(not(feature = "resample"))]
+        outgoing_resampler: Option<()>,
+        incoming_decoder: Decoder,
+        #[cfg(feature = "resample")]
+        incoming_resampler: Option<GenericResampler>,
+        #[cfg(not(feature = "resample"))]
+        incoming_resampler: Option<()>,
+        /// Frames remaining in the crossfade transition.
+        crossfade_frames_remaining: usize,
+        /// Total crossfade duration in frames.
+        crossfade_total_frames: usize,
+    },
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {

@@ -66,6 +66,8 @@ unsafe impl GlobalAlloc for CountingAllocator {
 static GLOBAL: CountingAllocator = CountingAllocator;
 
 /// A config that turns on every DSP stage with real (non-trivial) parameters.
+// Deliberately sets many config fields one at a time for readability.
+#[allow(clippy::field_reassign_with_default)]
 fn full_chain_config() -> config::EngineConfig {
     let mut c = config::EngineConfig::default();
     c.precision_mode = config::PrecisionMode::Performance;

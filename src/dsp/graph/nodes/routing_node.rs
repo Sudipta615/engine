@@ -56,15 +56,15 @@ impl DspNode for RoutingNode {
         }
         let frames = planes[0].len().min(MAX_AUDIO_BLOCK_FRAMES);
 
-        for ch in 0..channels {
-            self.scratch[ch][..frames].copy_from_slice(&planes[ch][..frames]);
+        for (dst, src) in self.scratch[..channels].iter_mut().zip(planes.iter()) {
+            dst[..frames].copy_from_slice(&src[..frames]);
         }
 
         self.trimmer
             .process_planes(&mut self.scratch[..channels], channels, frames);
 
-        for ch in 0..channels {
-            planes[ch][..frames].copy_from_slice(&self.scratch[ch][..frames]);
+        for (dst, src) in planes.iter_mut().zip(self.scratch[..channels].iter()) {
+            dst[..frames].copy_from_slice(&src[..frames]);
         }
     }
 
@@ -75,18 +75,18 @@ impl DspNode for RoutingNode {
         }
         let frames = planes[0].len().min(MAX_AUDIO_BLOCK_FRAMES);
 
-        for ch in 0..channels {
-            for i in 0..frames {
-                self.scratch[ch][i] = planes[ch][i] as f32;
+        for (dst, src) in self.scratch[..channels].iter_mut().zip(planes.iter()) {
+            for (d, s) in dst.iter_mut().zip(src.iter()).take(frames) {
+                *d = *s as f32;
             }
         }
 
         self.trimmer
             .process_planes(&mut self.scratch[..channels], channels, frames);
 
-        for ch in 0..channels {
-            for i in 0..frames {
-                planes[ch][i] = self.scratch[ch][i] as f64;
+        for (dst, src) in planes.iter_mut().zip(self.scratch[..channels].iter()) {
+            for (d, s) in dst.iter_mut().zip(src.iter()).take(frames) {
+                *d = *s as f64;
             }
         }
     }

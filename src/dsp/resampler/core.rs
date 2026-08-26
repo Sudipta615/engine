@@ -1,80 +1,13 @@
-//! High-quality audio resampler using rubato
-//!
-//! Supports three quality profiles using rubato's FFT-based synchronous resamplers.
-//! Handles sample rate conversion between the decoder's source rate and the output
-//! device rate, as well as variable-speed playback by adjusting the resampling ratio.
-//! Supports both f32 and f64 sample types. All buffers are pre-allocated for
-//! zero-allocation operation during playback.
-//!
-//! # Phase behavior (spec §14, §33)
-//!
-//! Every tier is a **linear-phase** resampler by construction: rubato's
-//! `Fft` resampler convolves each chunk with a *symmetric* (zero
-//! group-delay-vs-frequency) windowed-sinc low-pass in the frequency domain,
-//! so the filter has a constant group delay of exactly
-//! [`AudioResampler::latency_samples`] samples (rubato's `output_delay()`)
-//! at **all** frequencies. This is the classic linear-phase trade-off,
-//! stated honestly rather than as a marketing claim:
-//!
-//! - **Linear phase means a constant, reportable group delay** — the engine
-//!   adds it to the pipeline latency model (spec §19) and compensates
-//!   logical playback position with it. No frequency-dependent smearing of
-//!   transients, at the cost of `latency_samples` of pre-ring before a
-//!   transient appears.
-//! - **Minimum-phase is NOT exposed.** A minimum-phase variant would remove
-//!   pre-ring at the price of frequency-dependent group delay and a
-//!   non-symmetric impulse response; the current engine deliberately keeps a
-//!   single well-measured phase behavior rather than an unvalidated option
-//!   (spec §14: "Do not expose a setting unless it corresponds to a real,
-//!   measurable algorithmic change").
-//!
-//! The linear-phase claim is enforced by `tests/fidelity/resampler_measurement.rs`
-//! (which measures the realized filters) and by the golden vectors in
-//! `tests/fidelity/transition_tails.rs` (delay = `latency_samples`, output
-//! conserves signal energy exactly).
+//! Rubato-backed resampler algorithm and generic dispatch.
 
+use super::types::{
+    ResamplerError, CHANNELS, CHUNK_SIZE, MAX_OUTPUT_BUFFER_FRAMES, MAX_REBUILD_FAILURES,
+};
 use config::ResamplerQuality;
 use num_traits::Float;
 use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
 use rubato::{Fft, FixedSync, Resampler, WindowFunction};
 
-/// Error type for resampler construction failures.
-#[derive(Debug, thiserror::Error)]
-pub enum ResamplerError {
-    #[error("Failed to create {quality:?} resampler: {reason}")]
-    CreationFailed {
-        quality: ResamplerQuality,
-        reason: String,
-    },
-    #[error("Invalid sample rate: source={source_rate}, output={output_rate}")]
-    InvalidRates {
-        source_rate: usize,
-        output_rate: usize,
-    },
-}
-
-/// Number of channels (stereo)
-const CHANNELS: usize = 2;
-
-/// Processing chunk size in frames
-const CHUNK_SIZE: usize = 1024;
-
-/// Maximum upsample ratio supported. 44100 → 768000 ≈ 17.4×; round up to 20×.
-const MAX_RATIO: usize = 20;
-
-/// Maximum output buffer frames: enough for the worst supported ratio.
-/// Sized at CHUNK_SIZE × MAX_RATIO plus a filter margin.
-///
-/// Public so the engine can size its crossfade scratch buffers to the same
-/// worst-case expansion: a realtime block of source frames can produce up to
-/// this many resampled output frames before the resampler's own output buffer
-/// would overflow.
-pub const MAX_OUTPUT_BUFFER_FRAMES: usize = CHUNK_SIZE * MAX_RATIO + 512;
-
-/// Maximum consecutive rebuild failures before disabling the resampler
-const MAX_REBUILD_FAILURES: u32 = 5;
-
-/// Enum-based dispatch to avoid dynamic trait objects
 enum ResamplerInner<T: rubato::Sample + Send + Sync + 'static = f32> {
     /// High quality: Fft with a longer filter for better anti-aliasing
     HighQuality(Fft<T>),
@@ -293,57 +226,51 @@ impl<T: rubato::Sample + Float + Default + Send + Sync + 'static> AudioResampler
             // ≈2058 (Ultra) taps). Each tier is therefore a genuinely longer
             // filter with a deeper stopband — verified by
             // `tests/fidelity/resampler_measurement.rs`.
-            ResamplerQuality::HighQuality => {
-                Fft::new_custom(
-                    source_rate,
-                    output_rate,
-                    CHUNK_SIZE * 2,
-                    2,
-                    CHANNELS,
-                    WindowFunction::BlackmanHarris2,
-                    FixedSync::Input,
-                )
-                .map(ResamplerInner::HighQuality)
-                .map_err(|e| ResamplerError::CreationFailed {
-                    quality,
-                    reason: e.to_string(),
-                })
-            }
+            ResamplerQuality::HighQuality => Fft::new_custom(
+                source_rate,
+                output_rate,
+                CHUNK_SIZE * 2,
+                2,
+                CHANNELS,
+                WindowFunction::BlackmanHarris2,
+                FixedSync::Input,
+            )
+            .map(ResamplerInner::HighQuality)
+            .map_err(|e| ResamplerError::CreationFailed {
+                quality,
+                reason: e.to_string(),
+            }),
             // Single sub-chunk: the filter derives from the whole 2048-frame
             // chunk (~2× longer than HighQuality), giving the deepest
             // stopband in this engine.
-            ResamplerQuality::Ultra => {
-                Fft::new_custom(
-                    source_rate,
-                    output_rate,
-                    CHUNK_SIZE * 2,
-                    1,
-                    CHANNELS,
-                    WindowFunction::BlackmanHarris2,
-                    FixedSync::Input,
-                )
-                .map(ResamplerInner::Ultra)
-                .map_err(|e| ResamplerError::CreationFailed {
-                    quality,
-                    reason: e.to_string(),
-                })
-            }
-            ResamplerQuality::Balanced => {
-                Fft::new_custom(
-                    source_rate,
-                    output_rate,
-                    CHUNK_SIZE,
-                    2,
-                    CHANNELS,
-                    WindowFunction::BlackmanHarris2,
-                    FixedSync::Input,
-                )
-                .map(ResamplerInner::Balanced)
-                .map_err(|e| ResamplerError::CreationFailed {
-                    quality,
-                    reason: e.to_string(),
-                })
-            }
+            ResamplerQuality::Ultra => Fft::new_custom(
+                source_rate,
+                output_rate,
+                CHUNK_SIZE * 2,
+                1,
+                CHANNELS,
+                WindowFunction::BlackmanHarris2,
+                FixedSync::Input,
+            )
+            .map(ResamplerInner::Ultra)
+            .map_err(|e| ResamplerError::CreationFailed {
+                quality,
+                reason: e.to_string(),
+            }),
+            ResamplerQuality::Balanced => Fft::new_custom(
+                source_rate,
+                output_rate,
+                CHUNK_SIZE,
+                2,
+                CHANNELS,
+                WindowFunction::BlackmanHarris2,
+                FixedSync::Input,
+            )
+            .map(ResamplerInner::Balanced)
+            .map_err(|e| ResamplerError::CreationFailed {
+                quality,
+                reason: e.to_string(),
+            }),
             ResamplerQuality::Fast => {
                 // FixedSync::Both has no sub-chunks: its filter derives from
                 // the whole chunk. A small chunk (256 frames) keeps the
@@ -579,7 +506,9 @@ impl<T: rubato::Sample + Float + Default + Send + Sync + 'static> AudioResampler
             SequentialSliceOfVecs::new_mut(&mut self.scratch[..], CHANNELS, out_frames)
                 .expect("scratch buffers are sized in allocate_buffers");
 
-        let result = self.inner.process_into_buffer(&in_adapter, &mut out_adapter);
+        let result = self
+            .inner
+            .process_into_buffer(&in_adapter, &mut out_adapter);
 
         match result {
             Ok((_in_consumed, produced)) => {
@@ -655,6 +584,11 @@ impl<T: rubato::Sample + Float + Default + Send + Sync + 'static> AudioResampler
     /// Get current playback speed
     pub fn speed(&self) -> f32 {
         self.speed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rebuild_pending(&self) -> bool {
+        self.needs_rebuild || self.rebuild_rx.is_some()
     }
 
     /// Set the quality profile (triggers rebuild)
@@ -842,6 +776,9 @@ impl<T: rubato::Sample + Float + Default + Send + Sync + 'static> AudioResampler
 }
 
 /// Unified resampler container supporting both f32 (Performance) and f64 (Quality) modes.
+// The f64 variant carries the full double-precision state; the size gap is
+// intrinsic to supporting both precisions in one handle.
+#[allow(clippy::large_enum_variant)]
 pub enum GenericResampler {
     F32(AudioResamplerF32),
     F64(AudioResamplerF64),
@@ -1010,190 +947,5 @@ impl GenericResampler {
             Self::F32(r) => r.read().map(|(l, r)| (l as f64, r as f64)),
             Self::F64(r) => r.read(),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_resampler_creation() {
-        let resampler =
-            AudioResampler::<f32>::new(ResamplerQuality::Balanced, 44100.0, 48000.0).unwrap();
-        assert!(!resampler.is_passthrough());
-    }
-
-    #[test]
-    fn test_resampler_f64_creation() {
-        let mut resampler =
-            AudioResampler::<f64>::new(ResamplerQuality::Balanced, 44100.0, 48000.0).unwrap();
-        assert!(!resampler.is_passthrough());
-        for i in 0..5000 {
-            let sample = (i as f64 / 44100.0 * 440.0 * 2.0 * std::f64::consts::PI).sin() * 0.5;
-            resampler.feed(sample, sample);
-        }
-        resampler.flush();
-        assert!(resampler.available_output() > 0);
-        let (l, r) = resampler.read().unwrap();
-        assert!(l.abs() <= 1.0 && r.abs() <= 1.0);
-    }
-
-    #[test]
-    fn test_passthrough_detection() {
-        let resampler =
-            AudioResampler::<f32>::new(ResamplerQuality::Balanced, 44100.0, 44100.0).unwrap();
-        assert!(resampler.is_passthrough());
-    }
-
-    #[test]
-    fn test_latency_reports_authoritative_group_delay() {
-        // A real conversion must report rubato's nonzero filter group delay.
-        let resampler =
-            AudioResampler::<f32>::new(ResamplerQuality::Balanced, 44100.0, 48000.0).unwrap();
-        assert!(
-            resampler.latency_samples() > 0,
-            "44.1->48 kHz must introduce filter delay"
-        );
-
-        // The ms value must be the frame count scaled at the OUTPUT rate.
-        let expected_ms = resampler.latency_samples() as f32 / 48000.0 * 1000.0;
-        assert!((resampler.latency_ms() - expected_ms).abs() < 1e-3);
-
-        // f64 and f32 report the same group delay for the same conversion.
-        let f64_resampler =
-            AudioResampler::<f64>::new(ResamplerQuality::Balanced, 44100.0, 48000.0).unwrap();
-        assert_eq!(resampler.latency_samples(), f64_resampler.latency_samples());
-    }
-
-    #[test]
-    fn test_passthrough_latency_is_zero() {
-        let resampler =
-            AudioResampler::<f32>::new(ResamplerQuality::Fast, 44100.0, 44100.0).unwrap();
-        assert!(resampler.is_passthrough());
-        assert_eq!(resampler.latency_samples(), 0);
-        assert_eq!(resampler.latency_ms(), 0.0);
-    }
-
-    #[test]
-    fn test_resampler_speed_change() {
-        let mut resampler =
-            AudioResampler::<f32>::new(ResamplerQuality::Fast, 44100.0, 44100.0).unwrap();
-        resampler.set_speed(1.5);
-        assert!((resampler.speed() - 1.5).abs() < 0.001);
-        assert!(resampler.needs_rebuild);
-    }
-
-    #[test]
-    fn test_resampler_produces_output() {
-        let mut resampler =
-            AudioResampler::<f32>::new(ResamplerQuality::Fast, 44100.0, 48000.0).unwrap();
-        for i in 0..5000 {
-            let sample = (i as f32 / 44100.0 * 440.0 * 2.0 * std::f32::consts::PI).sin() * 0.5;
-            resampler.feed(sample, sample);
-        }
-        resampler.flush();
-        assert!(
-            resampler.available_output() > 0,
-            "Resampler should produce output after feeding samples"
-        );
-    }
-
-    #[test]
-    fn test_resampler_quality_change() {
-        let mut resampler =
-            AudioResampler::<f32>::new(ResamplerQuality::Fast, 44100.0, 48000.0).unwrap();
-        resampler.set_quality(ResamplerQuality::HighQuality);
-        assert!(resampler.needs_rebuild);
-    }
-
-    #[test]
-    fn test_resampler_reset() {
-        let mut resampler =
-            AudioResampler::<f32>::new(ResamplerQuality::Fast, 44100.0, 48000.0).unwrap();
-        for _ in 0..1000 {
-            resampler.feed(0.5f32, 0.5f32);
-        }
-        resampler.reset();
-        assert_eq!(resampler.available_output(), 0);
-        assert_eq!(resampler.input_pos, 0);
-    }
-
-    #[test]
-    fn test_resampler_invalid_rates() {
-        let result = AudioResampler::<f32>::new(ResamplerQuality::Fast, 0.0, 48000.0);
-        assert!(result.is_err());
-        let result = AudioResampler::<f32>::new(ResamplerQuality::Fast, 44100.0, 0.0);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_resampler_speed_2x_not_inverted() {
-        let mut resampler =
-            AudioResampler::<f32>::new(ResamplerQuality::Fast, 44100.0, 44100.0).unwrap();
-        resampler.set_speed(2.0);
-        while resampler.needs_rebuild || resampler.rebuild_rx.is_some() {
-            resampler.feed(0.0f32, 0.0f32);
-            if resampler.rebuild_rx.is_some() {
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-        }
-        while resampler.read().is_some() {}
-
-        let n_input: usize = 8192;
-        for i in 0..n_input {
-            let s = (i as f32 / 44100.0 * 440.0 * 2.0 * std::f32::consts::PI).sin() * 0.5;
-            resampler.feed(s, s);
-        }
-        resampler.flush();
-
-        let mut n_output: usize = 0;
-        while resampler.read().is_some() {
-            n_output += 1;
-        }
-        let ratio = n_output as f32 / n_input as f32;
-        assert!(
-            ratio <= 1.25,
-            "F#02 regression: speed=2.0 with {} input frames produced {} output (ratio {:.3}). \
-             Correct ratio is ~0.5; inverted ratio is ~2.0. Got ratio > 1.25 → formula is inverted again.",
-            n_input,
-            n_output,
-            ratio,
-        );
-    }
-
-    #[test]
-    fn test_resampler_speed_half_not_inverted() {
-        let mut resampler =
-            AudioResampler::<f32>::new(ResamplerQuality::Fast, 44100.0, 44100.0).unwrap();
-        resampler.set_speed(0.5);
-        while resampler.needs_rebuild || resampler.rebuild_rx.is_some() {
-            resampler.feed(0.0f32, 0.0f32);
-            if resampler.rebuild_rx.is_some() {
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-        }
-        while resampler.read().is_some() {}
-
-        let n_input: usize = 4096;
-        for i in 0..n_input {
-            let s = (i as f32 / 44100.0 * 440.0 * 2.0 * std::f32::consts::PI).sin() * 0.5;
-            resampler.feed(s, s);
-        }
-        resampler.flush();
-
-        let mut n_output: usize = 0;
-        while resampler.read().is_some() {
-            n_output += 1;
-        }
-        let ratio = n_output as f32 / n_input as f32;
-        assert!(
-            ratio >= 1.25,
-            "F#02 regression: speed=0.5 with {} input frames produced {} output (ratio {:.3}). \
-             Correct ratio is ~2.0; inverted ratio is ~0.5. Got ratio < 1.25 → formula is inverted again.",
-            n_input,
-            n_output,
-            ratio,
-        );
     }
 }

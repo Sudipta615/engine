@@ -1,7 +1,7 @@
 //! Pre-allocated scratch buffers for zero-allocation decode, crossfade, and output paths.
 
-use std::collections::VecDeque;
 use crate::decode::{DecodedChunk, Decoder};
+use std::collections::VecDeque;
 
 pub const MAX_PENDING_OUTPUT_FRAMES: usize = 16384;
 /// Maximum samples retained when a multichannel batch hits a full output ring.

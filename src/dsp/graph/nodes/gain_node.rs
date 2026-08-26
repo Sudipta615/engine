@@ -67,8 +67,8 @@ impl DspNode for GainNode {
         } else {
             for i in 0..frames {
                 let g = self.processor.process_sample(1.0);
-                for ch in 0..channels {
-                    planes[ch][i] *= g;
+                for plane in planes.iter_mut() {
+                    plane[i] *= g;
                 }
             }
         }
@@ -86,8 +86,8 @@ impl DspNode for GainNode {
         } else {
             for i in 0..frames {
                 let g = self.processor.process_sample(1.0) as f64;
-                for ch in 0..channels {
-                    planes[ch][i] *= g;
+                for plane in planes.iter_mut() {
+                    plane[i] *= g;
                 }
             }
         }
@@ -145,8 +145,8 @@ impl DspNode for SeekFadeNode {
         } else {
             for i in 0..frames {
                 let (g, _) = self.fade.process(1.0, 1.0);
-                for ch in 0..channels {
-                    planes[ch][i] *= g;
+                for plane in planes.iter_mut() {
+                    plane[i] *= g;
                 }
             }
         }
@@ -164,8 +164,8 @@ impl DspNode for SeekFadeNode {
         } else {
             for i in 0..frames {
                 let (g, _) = self.fade.process_f64(1.0, 1.0);
-                for ch in 0..channels {
-                    planes[ch][i] *= g;
+                for plane in planes.iter_mut() {
+                    plane[i] *= g;
                 }
             }
         }
@@ -234,10 +234,10 @@ impl DspNode for BalanceNode {
         }
         let bl = self.balance_gain_l;
         let br = self.balance_gain_r;
-        let n = planes[0].len().min(planes[1].len());
-        for i in 0..n {
-            planes[0][i] *= bl;
-            planes[1][i] *= br;
+        let (l, r) = planes.split_at_mut(1);
+        for (a, b) in l[0].iter_mut().zip(r[0].iter_mut()) {
+            *a *= bl;
+            *b *= br;
         }
     }
 
@@ -247,10 +247,10 @@ impl DspNode for BalanceNode {
         }
         let bl = self.balance_gain_l as f64;
         let br = self.balance_gain_r as f64;
-        let n = planes[0].len().min(planes[1].len());
-        for i in 0..n {
-            planes[0][i] *= bl;
-            planes[1][i] *= br;
+        let (l, r) = planes.split_at_mut(1);
+        for (a, b) in l[0].iter_mut().zip(r[0].iter_mut()) {
+            *a *= bl;
+            *b *= br;
         }
     }
 }

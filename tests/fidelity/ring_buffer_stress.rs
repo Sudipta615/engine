@@ -50,8 +50,8 @@ fn test_pcm_ring_buffer_concurrent_spsc_stress() {
         let mut chunk = vec![0.0f32; CHUNK_SIZE];
         while sent < TOTAL_SAMPLES {
             let to_send = (TOTAL_SAMPLES - sent).min(CHUNK_SIZE);
-            for i in 0..to_send {
-                chunk[i] = (sent + i) as f32;
+            for (i, slot) in chunk.iter_mut().take(to_send).enumerate() {
+                *slot = (sent + i) as f32;
             }
             let written = ring_producer.push_block(&chunk[..to_send]);
             sent += written;
@@ -67,14 +67,14 @@ fn test_pcm_ring_buffer_concurrent_spsc_stress() {
         let mut read_buf = vec![0.0f32; CHUNK_SIZE];
         while received < TOTAL_SAMPLES {
             let got = ring_consumer.pop_block(&mut read_buf);
-            for i in 0..got {
+            for (i, &got_v) in read_buf.iter().take(got).enumerate() {
                 let expected = (received + i) as f32;
                 assert_eq!(
-                    read_buf[i],
+                    got_v,
                     expected,
                     "Sample mismatch at index {}: got {}, expected {}",
                     received + i,
-                    read_buf[i],
+                    got_v,
                     expected
                 );
             }
@@ -103,8 +103,8 @@ fn test_pcm_ring_buffer_consumer_lag_bursts() {
         let mut buf = vec![0.0f32; 128];
         while sent < TOTAL_SAMPLES {
             let n = (TOTAL_SAMPLES - sent).min(128);
-            for i in 0..n {
-                buf[i] = (sent + i) as f32;
+            for (i, slot) in buf.iter_mut().take(n).enumerate() {
+                *slot = (sent + i) as f32;
             }
             let written = ring_p.push_block(&buf[..n]);
             sent += written;
@@ -126,9 +126,9 @@ fn test_pcm_ring_buffer_consumer_lag_bursts() {
                 thread::sleep(std::time::Duration::from_micros(100));
             }
             let got = ring_c.pop_block(&mut buf);
-            for i in 0..got {
+            for (i, &got_v) in buf.iter().take(got).enumerate() {
                 let expected = (received + i) as f32;
-                assert_eq!(buf[i], expected);
+                assert_eq!(got_v, expected);
             }
             received += got;
             if got == 0 {
@@ -161,8 +161,8 @@ fn test_pcm_ring_buffer_producer_lag_starvation() {
                 thread::sleep(std::time::Duration::from_micros(100));
             }
             let n = (TOTAL_SAMPLES - sent).min(64);
-            for i in 0..n {
-                buf[i] = (sent + i) as f32;
+            for (i, slot) in buf.iter_mut().take(n).enumerate() {
+                *slot = (sent + i) as f32;
             }
             let written = ring_p.push_block(&buf[..n]);
             sent += written;
@@ -178,9 +178,9 @@ fn test_pcm_ring_buffer_producer_lag_starvation() {
         let mut buf = vec![0.0f32; 64];
         while received < TOTAL_SAMPLES {
             let got = ring_c.pop_block(&mut buf);
-            for i in 0..got {
+            for (i, &got_v) in buf.iter().take(got).enumerate() {
                 let expected = (received + i) as f32;
-                assert_eq!(buf[i], expected);
+                assert_eq!(got_v, expected);
             }
             received += got;
             if got == 0 {

@@ -26,10 +26,10 @@ fn test_eq_biquad_peaking_golden_impulse_response() {
     let mut state = BiquadStateF64::default();
 
     // Unit impulse: x[0] = 1.0, x[n > 0] = 0.0
-    let mut impulse = vec![0.0f64; 16];
+    let mut impulse = [0.0f64; 16];
     impulse[0] = 1.0;
 
-    let mut actual_response = vec![0.0f64; 16];
+    let mut actual_response = [0.0f64; 16];
     for (i, &x) in impulse.iter().enumerate() {
         actual_response[i] = state.process(x, &coeffs);
     }
@@ -64,10 +64,10 @@ fn test_eq_biquad_unity_passthrough_impulse_response() {
     let coeffs = BiquadCoeffsF64::peaking(sample_rate, 1000.0, 0.0, 0.707);
     let mut state = BiquadStateF64::default();
 
-    let mut impulse = vec![0.0f64; 8];
+    let mut impulse = [0.0f64; 8];
     impulse[0] = 1.0;
 
-    let mut actual_response = vec![0.0f64; 8];
+    let mut actual_response = [0.0f64; 8];
     for (i, &x) in impulse.iter().enumerate() {
         actual_response[i] = state.process(x, &coeffs);
     }
@@ -78,12 +78,8 @@ fn test_eq_biquad_unity_passthrough_impulse_response() {
         "h[0] at 0 dB was not 1.0: {}",
         actual_response[0]
     );
-    for n in 1..8 {
-        assert!(
-            actual_response[n].abs() < 1e-9,
-            "h[{n}] at 0 dB was non-zero: {}",
-            actual_response[n]
-        );
+    for (n, &v) in actual_response.iter().enumerate().skip(1) {
+        assert!(v.abs() < 1e-9, "h[{n}] at 0 dB was non-zero: {v}");
     }
 }
 

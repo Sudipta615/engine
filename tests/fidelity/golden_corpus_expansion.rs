@@ -37,7 +37,7 @@ fn dop_marker_substitution_prevents_payload_collision() {
     // Payload high byte 0x05 would collide with the even marker → 0x06.
     assert_eq!(p.pack_sample(0x05AB), 0x0605_AB00);
     // Payload high byte 0xFA would collide with the odd marker → 0xFB.
-    assert_eq!(p.pack_sample(0xFACD), 0xFBFACD_00u32 as i32);
+    assert_eq!(p.pack_sample(0xFACD), 0xFBFA_CD00_u32 as i32);
     // Non-colliding payload keeps the base marker.
     assert_eq!(p.pack_sample(0x1234), 0x0512_3400);
 }
@@ -243,8 +243,7 @@ fn pink_noise_reference_has_approx_1f_spectrum() {
     let mut sum_xy = 0f64;
     let mut sum_xx = 0f64;
     let mut count = 0f64;
-    for k in k0..k1 {
-        let v = spectrum[k];
+    for (k, &v) in spectrum.iter().enumerate().take(k1).skip(k0) {
         let power = v.re * v.re + v.im * v.im;
         if power <= 0.0 {
             continue;
@@ -282,7 +281,7 @@ fn stepped_amplitude_passes_through_gain_stages_exactly() {
     // Unity gain: bit-exact passthrough.
     let mut unity = GainProcessor::with_ramp(1.0, 0.0, 44_100.0);
     unity.snap();
-    let mut l: Vec<f32> = signal
+    let l: Vec<f32> = signal
         .iter()
         .map(|&s| unity.process_stereo(s, 0.0).0)
         .collect();
@@ -293,7 +292,7 @@ fn stepped_amplitude_passes_through_gain_stages_exactly() {
     let mut half = GainProcessor::with_ramp(1.0, 0.0, 44_100.0);
     half.snap();
     half.set_gain(0.5);
-    let mut l: Vec<f32> = signal
+    let l: Vec<f32> = signal
         .iter()
         .map(|&s| half.process_stereo(s, 0.0).0)
         .collect();

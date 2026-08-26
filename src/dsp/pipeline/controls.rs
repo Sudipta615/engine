@@ -385,6 +385,9 @@ impl DspPipeline {
 
     /// Output-format-aware bit-perfect report. Unlike the legacy depth-only
     /// API, this distinguishes integer containers from float output.
+    // Report-shaped API: every argument is an independent field of the
+    // verdict; grouping them would hide the caller-side meaning.
+    #[allow(clippy::too_many_arguments)]
     pub fn bit_perfect_report_with_format(
         &self,
         source_sample_rate: u32,
@@ -580,6 +583,9 @@ impl DspPipeline {
     /// access fields are filled from the backend's own report, never inferred
     /// from device-name heuristics. This is the authoritative report the
     /// engine tick publishes.
+    // Report-shaped API: one positional argument per report field; a struct
+    // would add noise for a pure read-only aggregation.
+    #[allow(clippy::too_many_arguments)]
     pub fn bit_perfect_report_with_access(
         &self,
         source_sample_rate: u32,

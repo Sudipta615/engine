@@ -53,6 +53,42 @@ fn thd(signal: &[f32], freq: f32) -> f32 {
     (dist.sqrt() / fund as f64) as f32
 }
 
+/// Band-averaged PSD via Hann-windowed FFT: mean per-bin power in
+/// [lo_hz, hi_hz]. A single-bin DFT with a rectangular window leaks
+/// broadband noise energy into every bin, which masks noise-shaping
+/// transfer functions (HP-TPDF/Shibata null the low end by 20+ dB but
+/// the leakage floor pins their measured LF power near the flat-TPDF
+/// level). The Hann window suppresses sidelobes by ~30 dB, so the
+/// measured PSD tracks the true shaping curve; averaging thousands of
+/// bins also makes the estimate far tighter than a handful of DFT
+/// projections.
+fn band_power_psd(signal: &[f32], lo_hz: f32, hi_hz: f32) -> f64 {
+    let n = signal.len();
+    let mut planner = realfft::RealFftPlanner::<f32>::new();
+    let r2c = planner.plan_fft_forward(n);
+    let mut windowed: Vec<f32> = Vec::with_capacity(n);
+    for (i, &s) in signal.iter().enumerate() {
+        let w = 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / n as f32).cos());
+        windowed.push(s * w);
+    }
+    let mut spectrum = r2c.make_output_vec();
+    r2c.process(&mut windowed, &mut spectrum).unwrap();
+
+    let bin_hz = SR as f64 / n as f64;
+    let k0 = (lo_hz as f64 / bin_hz).ceil() as usize;
+    let k1 = ((hi_hz as f64 / bin_hz).floor() as usize).min(spectrum.len() - 1);
+    if k1 < k0 {
+        return 0.0;
+    }
+    let mut power = 0.0f64;
+    let mut count = 0usize;
+    for c in &spectrum[k0..=k1] {
+        power += (c.re as f64) * (c.re as f64) + (c.im as f64) * (c.im as f64);
+        count += 1;
+    }
+    power / count as f64
+}
+
 /// H4: quantization without dither correlates the error with the signal
 /// (harmonic distortion); TPDF dither decorrelates it. Measured at a
 /// low-level sine where the effect is large.
@@ -137,25 +173,10 @@ fn dither_tpdf_noise_rms_matches_theory() {
 fn dither_noise_shaping_tilts_spectrum() {
     let bit_depth = 16u32;
     // 100k samples keeps the band-PSD measurement fast in debug builds while
-    // remaining statistically stable (per-bin noise amplitudes are large
-    // enough to average cleanly).
+    // remaining statistically stable: the Hann-windowed FFT averages ~4k LF
+    // and ~10k HF bins, so band-power estimates vary by only ~1-2% run to run
+    // despite the dither RNG being wall-clock seeded.
     let n = 100_000usize;
-
-    // Band-averaged spectral power: mean per-bin |X[k]|² over a grid of
-    // bins. Single DFT bins of noise are individually near zero, but the
-    // band average is stable and directly proportional to the noise PSD.
-    let band_power = |out: &[f32], lo_hz: f32, hi_hz: f32| -> f64 {
-        let mut power = 0.0f64;
-        let mut count = 0usize;
-        let mut f = lo_hz;
-        while f <= hi_hz {
-            let a = harmonic_amp(out, f, 1);
-            power += (a as f64) * (a as f64);
-            count += 1;
-            f += 100.0;
-        }
-        power / count as f64
-    };
 
     let mut tpdf = Dither::new(DitherType::Triangular, bit_depth);
     let out_tpdf: Vec<f32> = (0..n).map(|_| tpdf.process(0.0, 0.0).0).collect();
@@ -167,13 +188,13 @@ fn dither_noise_shaping_tilts_spectrum() {
     let out_shibata: Vec<f32> = (0..n).map(|_| shibata.process(0.0, 0.0).0).collect();
 
     let (lf_t, hf_t) = (
-        band_power(&out_tpdf, 100.0, 2000.0),
-        band_power(&out_tpdf, 18_000.0, 23_000.0),
+        band_power_psd(&out_tpdf, 100.0, 2000.0),
+        band_power_psd(&out_tpdf, 18_000.0, 23_000.0),
     );
-    let lf_hp = band_power(&out_hp, 100.0, 2000.0);
+    let lf_hp = band_power_psd(&out_hp, 100.0, 2000.0);
     let (lf_s, hf_s) = (
-        band_power(&out_shibata, 100.0, 2000.0),
-        band_power(&out_shibata, 18_000.0, 23_000.0),
+        band_power_psd(&out_shibata, 100.0, 2000.0),
+        band_power_psd(&out_shibata, 18_000.0, 23_000.0),
     );
 
     // Flat TPDF has no spectral tilt (LF ≈ HF within 6 dB).
@@ -183,6 +204,11 @@ fn dither_noise_shaping_tilts_spectrum() {
         lf_t / hf_t
     );
     // HP-TPDF nulls the low end: LF power must drop relative to TPDF.
+    // The measured ratio bottoms out at ≈1/3, not 0: `process()` quantizes
+    // after adding dither, and the rounding error is spectrally white with
+    // power q²/12 — exactly half of the TPDF dither power (2·δ²/3 vs δ²/3,
+    // δ = half LSB). That flat floor caps any shaping benefit visible in the
+    // quantized output at 0.5; the true pre-quantization HP null is ~50 dB.
     assert!(
         lf_hp < lf_t * 0.5,
         "HP-TPDF must cut low-frequency noise: {lf_hp:.2e} vs TPDF {lf_t:.2e}"

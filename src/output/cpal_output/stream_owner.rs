@@ -36,7 +36,7 @@ impl CpalOutput {
         };
 
         let device = self.device.clone();
-        let stream_config = self.stream_config.clone();
+        let stream_config = self.stream_config;
         let format_plan = self.format_plan;
         let (commands, command_rx) = crossbeam::channel::bounded(8);
         let (ready_tx, ready_rx) = crossbeam::channel::bounded(1);

@@ -20,7 +20,9 @@
 use std::path::PathBuf;
 
 /// A category of output device, used to auto-select profiles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default,
+)]
 pub enum DeviceCategory {
     /// Over-ear or on-ear headphones
     Headphones,
@@ -35,13 +37,8 @@ pub enum DeviceCategory {
     /// HDMI/Optical output (pass-through or AVR)
     Hdmi,
     /// Generic / unknown
+    #[default]
     Generic,
-}
-
-impl Default for DeviceCategory {
-    fn default() -> Self {
-        Self::Generic
-    }
 }
 
 /// Per-band EQ setting within a device profile.

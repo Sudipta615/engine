@@ -11,8 +11,8 @@
 
 use std::path::Path;
 
-use crate::decode::{DecodeError, SymphoniaDecoder};
-use crate::dsp::loudness::LoudnessMeter;
+use crate::decode::{DecodeError, Decoder};
+use crate::dsp::LoudnessMeter;
 
 /// Measured loudness of a scanned track.
 #[derive(Debug, Clone, PartialEq)]
@@ -36,15 +36,36 @@ pub struct LoudnessScanResult {
 
 /// Decode `path` end to end and measure its loudness.
 ///
+/// Convenience wrapper around [`scan_decoder`] that opens a [`Decoder`] from
+/// the filesystem. Prefer [`scan_decoder`] directly if you already hold a
+/// [`Decoder`] (e.g. from a network stream or memory buffer) to avoid
+/// re-opening the file.
+///
 /// Returns `None` if the file cannot be opened or yields no measurable
 /// audio (e.g. a DSD file, which the Symphonia path does not decode).
 ///
 /// Measures the native channel stream directly per ITU-R BS.1770-4 / EBU R128
-/// with semantic channel weighting (L=1.0, R=1.0, C=1.0, LFE=0.0, SL=1.41,
-/// SR=1.41, RL=1.41, RR=1.41) rather than losing surround weighting by
+/// with semantic channel weighting rather than losing surround weighting by
 /// downmixing before measurement.
 pub fn scan_track_loudness(path: &Path) -> Option<LoudnessScanResult> {
-    let mut decoder = SymphoniaDecoder::open(path).ok()?;
+    let mut decoder = Decoder::open(path).ok()?;
+    scan_decoder(&mut decoder)
+}
+
+/// Decode `decoder` end to end and measure its loudness.
+///
+/// Returns `None` if the decoder yields no measurable audio frames.
+///
+/// This is the primary entry point — it works with any [`Decoder`] variant
+/// (Symphonia, DSD/PCM, APE, Opus, WavPack, TTA) and any byte source the
+/// decoder was opened from (file, memory buffer, network stream). Call
+/// [`scan_track_loudness`] if you only have a filesystem path and want the
+/// single-call convenience.
+///
+/// # Panics
+///
+/// Never panics. Returns `None` on decode errors or empty streams.
+pub fn scan_decoder(decoder: &mut Decoder) -> Option<LoudnessScanResult> {
     let sample_rate = decoder.info().sample_rate as f32;
     let src_channels = decoder.info().channels;
     let layout = decoder.format_info().channel_layout.clone();
@@ -108,6 +129,7 @@ pub fn scan_track_loudness(path: &Path) -> Option<LoudnessScanResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decode::SymphoniaDecoder;
     use std::io::Write;
 
     /// Write a stereo 16-bit PCM WAV containing a `freq` Hz sine at `amplitude`.
@@ -196,19 +218,14 @@ mod tests {
         let mut decoder = SymphoniaDecoder::open(&path).unwrap();
         let mut total = 0u64;
         let mut last_frame_count = 0usize;
-        loop {
-            match decoder.decode_next(4096) {
-                Ok(c) => {
-                    last_frame_count = c.frame_count;
-                    total += c.frame_count as u64;
-                    assert_eq!(
-                        c.samples.len(),
-                        c.frame_count * c.channels,
-                        "frame_count must match sample count"
-                    );
-                }
-                Err(_) => break,
-            }
+        while let Ok(c) = decoder.decode_next(4096) {
+            last_frame_count = c.frame_count;
+            total += c.frame_count as u64;
+            assert_eq!(
+                c.samples.len(),
+                c.frame_count * c.channels,
+                "frame_count must match sample count"
+            );
         }
         let _ = std::fs::remove_file(&path);
 

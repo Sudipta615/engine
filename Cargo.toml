@@ -3,13 +3,20 @@ members = [".", "crates/config"]
 
 [package]
 name = "engine"
-version = "2.1.0"
+version = "3.0.0"
 edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/Sudipta615/engine"
 
 [features]
 default = ["audio-output", "resample", "all-codecs"]
 audio-output = ["cpal", "thread-priority"]
 asio = ["cpal/asio"]
+# Native Steinberg ASIO backend in pure Rust (no C++ SDK). Bypasses cpal
+# entirely: COM vtable, IASIO interface, bufferSwitch callback, native DSD.
+# Windows-only; adds no dependency — just the `windows` crate already pulled
+# in for `wasapi-native`. Ignored on non-Windows targets.
+asio-native = ["audio-output"]
 # Native WASAPI exclusive-mode backend (no cpal): a real IAudioClient
 # AUDCLNT_SHAREMODE_EXCLUSIVE stream with OS-level exclusivity verification.
 # Windows-only; ignored on other platforms.
@@ -56,6 +63,22 @@ codec-tta = []
 codec-wavpack = ["dep:wavicle"]
 codec-musepack = []
 
+# Stream audio files over HTTP(S) using Range requests, enabling the engine
+# to decode from URLs without downloading the entire file first. Adds the
+# `ureq` blocking HTTP client (pure Rust, no async runtime).
+network-streaming = ["dep:ureq"]
+
+# Write loudness metadata (EBU R128 / ReplayGain) back into file tags.
+tag-write = ["dep:lofty"]
+
+# AcoustID/Chromaprint audio fingerprinting (`decode::extract_fingerprint`).
+fingerprint = ["dep:chromaprint-next"]
+
+# Stable C FFI boundary behind `c-ffi`. Adds no dependencies — only `std::ffi`.
+# Hosts written in C/C++ (or any language with C interop) call through the
+# opaque-pointer API in `src/ffi.rs` instead of linking the Rust crate directly.
+c-ffi = []
+
 all-codecs = [
     "codec-mp3",
     "codec-flac",
@@ -97,9 +120,21 @@ wavicle = { version = "0.1", optional = true }
 # `codec-opus` feature.
 ogg = { version = "0.9", optional = true }
 opus-decoder = { version = "0.1.1", optional = true }
+# Blocking HTTP client for network audio streaming (`network-streaming` feature).
+# Pure Rust, no async runtime — fits the synchronous `AudioByteSource` trait.
+ureq = { version = "2.12", optional = true }
 etcetera = "0.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+env_logger = "0.11"
+termcolor = "1.4"
+# Loudness/ReplayGain tag write-back (`tag-write` feature): pure-Rust
+# metadata library for reading & writing ID3v2, Vorbis, MP4, and APEv2 tags.
+lofty = { version = "0.22", optional = true }
+# AcoustID/Chromaprint audio fingerprinting (`fingerprint` feature): pure-Rust,
+# bit-identical drop-in for the reference Chromaprint, used for track
+# identification via the AcoustID service.
+chromaprint-next = { version = "0.1", optional = true }
 # (WavPack previously used a runtime-loaded `libwavpack` via `libloading`;
 # removed — see `codec-wavpack` above. No native codec backend now needs
 # `libloading`.)
@@ -151,6 +186,8 @@ windows = { version = "0.59", features = [
     "Win32_Security",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    # ASIO driver enumeration (asio-native backend).
+    "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_System_Variant",
     "Win32_Media_Audio",
@@ -176,6 +213,13 @@ wavicle = { version = "0.1", features = ["encode"] }
 [[bin]]
 name = "audio-engine-cli"
 path = "src/bin/audio_engine_cli.rs"
+
+[[bin]]
+name = "replaygain-scanner"
+path = "src/bin/replaygain_scanner.rs"
+# Loudness tag write-back is the scanner's whole point, so require the
+# feature when the binary is built.
+required-features = ["tag-write"]
 
 [[bench]]
 name = "dsp_bench"

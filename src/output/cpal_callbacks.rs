@@ -50,7 +50,7 @@ fn clamp_and_count(sample: f32, clip_counter: &AtomicU32, nan_counter: &AtomicU3
     if !sample.is_finite() {
         nan_counter.fetch_add(1, Ordering::Relaxed);
         0.0
-    } else if sample > 1.0 || sample < -1.0 {
+    } else if !(-1.0..=1.0).contains(&sample) {
         clip_counter.fetch_add(1, Ordering::Relaxed);
         sample.clamp(-1.0, 1.0)
     } else {
@@ -64,6 +64,9 @@ fn clamp_and_count(sample: f32, clip_counter: &AtomicU32, nan_counter: &AtomicU3
 /// callback materially reduces synchronization traffic while preserving the
 /// same observable totals.
 #[inline]
+// Generic integer-conversion kernel shared by the f32/i16/i32 callback
+// paths; the closure pair carries the quantization policy.
+#[allow(clippy::too_many_arguments)]
 fn convert_stereo_integer_block<T, Pair, Mono>(
     data: &mut [T],
     scratch: &[f32],
@@ -92,8 +95,8 @@ fn convert_stereo_integer_block<T, Pair, Mono>(
         let right_finite = right.is_finite();
         if left_finite && right_finite {
             clips = clips
-                .saturating_add(u32::from(left > 1.0 || left < -1.0))
-                .saturating_add(u32::from(right > 1.0 || right < -1.0));
+                .saturating_add(u32::from(!(-1.0..=1.0).contains(&left)))
+                .saturating_add(u32::from(!(-1.0..=1.0).contains(&right)));
             // The common finite case stays paired, so stereo-aware dither
             // advances once for the pair instead of once per lane.
             let (converted_left, converted_right) = pair_converter(converter, left, right);
@@ -104,14 +107,14 @@ fn convert_stereo_integer_block<T, Pair, Mono>(
                 nans = nans.saturating_add(1);
                 dst[0] = zero;
             } else {
-                clips = clips.saturating_add(u32::from(left > 1.0 || left < -1.0));
+                clips = clips.saturating_add(u32::from(!(-1.0..=1.0).contains(&left)));
                 dst[0] = mono_converter(converter, left);
             }
             if !right_finite {
                 nans = nans.saturating_add(1);
                 dst[1] = zero;
             } else {
-                clips = clips.saturating_add(u32::from(right > 1.0 || right < -1.0));
+                clips = clips.saturating_add(u32::from(!(-1.0..=1.0).contains(&right)));
                 dst[1] = mono_converter(converter, right);
             }
         }
@@ -123,7 +126,7 @@ fn convert_stereo_integer_block<T, Pair, Mono>(
             nans = nans.saturating_add(1);
             data[pair_samples] = zero;
         } else {
-            clips = clips.saturating_add(u32::from(sample > 1.0 || sample < -1.0));
+            clips = clips.saturating_add(u32::from(!(-1.0..=1.0).contains(&sample)));
             data[pair_samples] = mono_converter(converter, sample);
         }
     }
@@ -259,7 +262,7 @@ pub fn audio_callback_i16(
                 nan_counter.fetch_add(1, Ordering::Relaxed);
                 *sample = 0;
             } else {
-                if val > 1.0 || val < -1.0 {
+                if !(-1.0..=1.0).contains(&val) {
                     clip_counter.fetch_add(1, Ordering::Relaxed);
                 }
                 *sample = converter.convert_mono_to_i16(val);
@@ -349,7 +352,7 @@ pub fn audio_callback_i32(
                 nan_counter.fetch_add(1, Ordering::Relaxed);
                 *sample = 0;
             } else {
-                if val > 1.0 || val < -1.0 {
+                if !(-1.0..=1.0).contains(&val) {
                     clip_counter.fetch_add(1, Ordering::Relaxed);
                 }
                 *sample = converter.convert_mono_to_i32(val);
@@ -410,10 +413,10 @@ pub fn audio_callback_f64(
             let left_finite = l_in.is_finite();
             let right_finite = r_in.is_finite();
             if left_finite && right_finite {
-                if l_in > 1.0 || l_in < -1.0 {
+                if !(-1.0..=1.0).contains(&l_in) {
                     clip_counter.fetch_add(1, Ordering::Relaxed);
                 }
-                if r_in > 1.0 || r_in < -1.0 {
+                if !(-1.0..=1.0).contains(&r_in) {
                     clip_counter.fetch_add(1, Ordering::Relaxed);
                 }
                 let (l64, r64) = converter.convert_stereo_to_f64(l_in, r_in);
@@ -424,7 +427,7 @@ pub fn audio_callback_f64(
                     nan_counter.fetch_add(1, Ordering::Relaxed);
                     data[i] = 0.0;
                 } else {
-                    if l_in > 1.0 || l_in < -1.0 {
+                    if !(-1.0..=1.0).contains(&l_in) {
                         clip_counter.fetch_add(1, Ordering::Relaxed);
                     }
                     data[i] = converter.convert_mono_to_f64(l_in);
@@ -433,7 +436,7 @@ pub fn audio_callback_f64(
                     nan_counter.fetch_add(1, Ordering::Relaxed);
                     data[i + 1] = 0.0;
                 } else {
-                    if r_in > 1.0 || r_in < -1.0 {
+                    if !(-1.0..=1.0).contains(&r_in) {
                         clip_counter.fetch_add(1, Ordering::Relaxed);
                     }
                     data[i + 1] = converter.convert_mono_to_f64(r_in);
@@ -447,7 +450,7 @@ pub fn audio_callback_f64(
                 nan_counter.fetch_add(1, Ordering::Relaxed);
                 data[i] = 0.0;
             } else {
-                if src > 1.0 || src < -1.0 {
+                if !(-1.0..=1.0).contains(&src) {
                     clip_counter.fetch_add(1, Ordering::Relaxed);
                 }
                 data[i] = converter.convert_mono_to_f64(src);
@@ -475,7 +478,7 @@ pub fn audio_callback_f64(
                 nan_counter.fetch_add(1, Ordering::Relaxed);
                 *sample = 0.0;
             } else {
-                if val > 1.0 || val < -1.0 {
+                if !(-1.0..=1.0).contains(&val) {
                     clip_counter.fetch_add(1, Ordering::Relaxed);
                 }
                 *sample = converter.convert_mono_to_f64(val);
@@ -565,7 +568,7 @@ pub fn audio_callback_u16(
                 nan_counter.fetch_add(1, Ordering::Relaxed);
                 *sample = 32768;
             } else {
-                if val > 1.0 || val < -1.0 {
+                if !(-1.0..=1.0).contains(&val) {
                     clip_counter.fetch_add(1, Ordering::Relaxed);
                 }
                 *sample = converter.convert_mono_to_u16(val);

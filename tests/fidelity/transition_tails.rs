@@ -203,10 +203,10 @@ fn resampler_emits_full_output_and_drains_to_silence() {
 
     // Phase A: feed the whole burst, flush the partial chunk, drain.
     for &(l, r) in &burst {
-        let _ = rs.feed(l, r);
+        rs.feed(l, r);
     }
     rs.flush();
-    let (count_a, energy_a) = drain(&mut rs);
+    let (_count_a, energy_a) = drain(&mut rs);
     assert!(
         energy_a > 50.0,
         "resampler output must contain most of the signal (energy {energy_a:.3})"
@@ -218,7 +218,7 @@ fn resampler_emits_full_output_and_drains_to_silence() {
     // so the frame count is legitimately larger — what must be conserved is
     // the signal energy across A + B.
     for _ in 0..(latency + 2048) {
-        let _ = rs.feed(0.0, 0.0);
+        rs.feed(0.0, 0.0);
     }
     rs.flush();
     let (count_b, energy_b) = drain(&mut rs);
@@ -245,7 +245,7 @@ fn resampler_emits_full_output_and_drains_to_silence() {
     // their own; what must be true is that they carry no signal at all
     // (the burst's tail has fully drained).
     for _ in 0..1024 {
-        let _ = rs.feed(0.0, 0.0);
+        rs.feed(0.0, 0.0);
     }
     rs.flush();
     let (count_c, energy_c) = drain(&mut rs);
@@ -287,7 +287,7 @@ fn resampler_switching_rates_keeps_sample_phase_continuity() {
     assert!(rs.is_passthrough(), "equal rates must bypass SRC entirely");
     let input = sine_pair(44_100.0, 997.0, 0.3, 2048);
     for &(l, r) in &input {
-        let _ = rs.feed(l, r);
+        rs.feed(l, r);
     }
     let mut out = Vec::new();
     while let Some((l, r)) = rs.read() {

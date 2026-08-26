@@ -274,11 +274,11 @@ impl AutoEq {
             let half = (width * params.bands_per_octave / 2.0).round() as usize;
             if half > 0 {
                 let smoothed = deviation.clone();
-                for i in 0..n_bands {
+                for (i, dev) in deviation.iter_mut().enumerate().take(n_bands) {
                     let lo = i.saturating_sub(half);
                     let hi = (i + half).min(n_bands - 1);
                     let sum: f32 = smoothed[lo..=hi].iter().sum();
-                    deviation[i] = sum / (hi - lo + 1) as f32;
+                    *dev = sum / (hi - lo + 1) as f32;
                 }
             }
         }

@@ -4,8 +4,8 @@
 //! detects device arrivals (e.g. USB DAC plugged in) and removals (e.g. DAC unplugged),
 //! and reports delta changes to the engine runtime for event emission and auto-recovery.
 
-use std::time::{Duration, Instant};
 use config::AudioBackend;
+use std::time::{Duration, Instant};
 
 /// Result of polling audio device changes.
 #[derive(Debug, Clone, Default)]

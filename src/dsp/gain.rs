@@ -107,8 +107,8 @@ impl<T: AudioFloat> GainProcessor<T> {
                 self.gain = self.target_gain;
             }
             let g = self.gain.to_f32();
-            for c in 0..ch {
-                planes[c][i] *= g;
+            for plane in planes.iter_mut().take(ch) {
+                plane[i] *= g;
             }
         }
     }
@@ -300,8 +300,8 @@ impl FadeProcessor {
         let ch = channels.min(planes.len());
         for i in 0..frames {
             let g = self.current_curve_gain();
-            for c in 0..ch {
-                planes[c][i] *= g;
+            for plane in planes.iter_mut().take(ch) {
+                plane[i] *= g;
             }
             self.advance(1);
             if self.state == FadeState::Idle && (self.gain - 1.0).abs() < 1e-6 {

@@ -2,6 +2,7 @@
 
 use config::EngineConfig;
 
+use super::helpers::*;
 use crate::{
     buffer::{EngineCommand, PlaybackInfo, PlaybackState, MAX_AUDIO_BLOCK_FRAMES},
     decode::Decoder,
@@ -10,9 +11,9 @@ use crate::{
         pipeline::{DspPipeline, OutputSampleFormat},
     },
     engine::{AudioEngine, EngineError, PlaybackStream},
+    events::EngineEvent,
     output::format_converter::{AudioFormatConverter, TargetFormat},
 };
-use super::helpers::*;
 
 /// Gate A (spec §40): exact sample equality through the real source → decode
 /// → pipeline → output-conversion path.
@@ -282,7 +283,7 @@ fn test_incoming_metadata_applied_to_pipeline() {
     engine
         .pipeline_mut()
         .in_loudness
-        .set_mode(crate::dsp::loudness::LoudnessMode::EbuR128);
+        .set_mode(crate::dsp::LoudnessMode::EbuR128);
     engine.pipeline_mut().in_loudness.set_target_lufs(-23.0);
     engine
         .prepare_next_track(&path)
@@ -386,7 +387,9 @@ fn test_long_realtime_pipeline_stress_keeps_fixed_storage() {
         }
     }
 
-    assert!(MAX_AUDIO_BLOCK_FRAMES >= BLOCK);
+    const {
+        assert!(MAX_AUDIO_BLOCK_FRAMES >= BLOCK);
+    }
     assert_eq!(
         engine.pipeline.realtime_scratch_capacity(),
         scratch_capacity
@@ -474,7 +477,6 @@ fn test_playback_state_machine_script() {
             std::time::Instant::now() < deadline,
             "crossfade did not trigger"
         );
-        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     assert_eq!(engine.playback_info().state, PlaybackState::Playing);
     assert!(engine.pipeline.mixer().is_crossfading());
@@ -499,4 +501,163 @@ fn test_playback_state_machine_script() {
 
     let _ = std::fs::remove_file(track);
     let _ = std::fs::remove_file(next);
+}
+
+/// Stress test: engine with NoopSink at maximum speed (4.0× Varispeed) must
+/// decode a long track to completion without stalling, and telemetry must
+/// remain accurate (clock source frames, position, no errors).
+///
+/// Because there is no ring buffer to fill, the decode loop runs at
+/// full CPU speed — this exercises the tightest possible decode-
+/// then-process path and catches buffer-bound stalls or telemetry drift
+/// that a real-time output device might mask.
+#[test]
+fn test_noop_sink_max_speed_stress() {
+    let sample_rate: u32 = 48_000;
+    let duration_secs: u32 = 10;
+    let path = write_test_wav_duration(sample_rate, duration_secs, "stress");
+    let expected_source_frames: u64 = (sample_rate as u64) * (duration_secs as u64);
+    let expected_duration = duration_secs as f32;
+
+    // Engine with NoopSink: no output device, no ring buffer pressure.
+    let mut config = EngineConfig::default();
+    config.speed_mode = config::SpeedMode::Varispeed;
+    let sink = Box::new(crate::sink::NoopSink);
+    let mut engine =
+        AudioEngine::with_sink(config.clone(), sink).expect("engine init with NoopSink");
+
+    // Telemetry verification before load.
+    {
+        let pb = engine.playback_info();
+        assert_eq!(pb.state, PlaybackState::Stopped);
+        assert_eq!(pb.position_secs, 0.0);
+        assert!(!pb.native_dsd_active);
+        assert!(!pb.dop_active);
+    }
+
+    let info = engine.load_track(&path).expect("load WAV");
+    assert_eq!(info.sample_rate, sample_rate);
+    assert_eq!(info.channels, 2);
+    assert_eq!(info.duration_secs, expected_duration);
+    assert_eq!(engine.clock.source_frames, 0);
+
+    // Set max speed then start playback.
+    engine.send_command(EngineCommand::SetSpeed(4.0));
+    engine.send_command(EngineCommand::Play);
+    engine.tick(); // process SetSpeed + Play
+    assert_eq!(engine.speed, 4.0);
+
+    // The engine must reach end-of-stream within a generous deadline
+    // (10 s ÷ 4× = 2.5 s real-time minimum, plus overhead).
+    let start = std::time::Instant::now();
+    let deadline = start + std::time::Duration::from_secs(30);
+    let mut last_pos: f32 = 0.0;
+    let mut tick_count: u64 = 0;
+    let events = engine.handle().clone_event_receiver();
+    let mut saw_source_finished = false;
+    let mut saw_error = false;
+
+    loop {
+        engine.tick();
+        tick_count += 1;
+
+        // Drain events first — SourceFinished may arrive on the final tick
+        // before stream_ended is set.
+        while let Ok(event) = events.try_recv() {
+            match event {
+                EngineEvent::SourceFinished { .. } => saw_source_finished = true,
+                EngineEvent::Error(msg) => {
+                    eprintln!("Engine error during stress test: {}", msg);
+                    saw_error = true;
+                }
+                _ => {}
+            }
+        }
+
+        if engine.stream_ended {
+            break;
+        }
+
+        let elapsed = start.elapsed().as_secs_f32();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "NoopSink playback stalled: {} ticks, {:.3}s position after {:.1}s wall-clock",
+            tick_count,
+            engine.clock.position_secs(),
+            elapsed
+        );
+
+        // Position must advance monotonically (cannot go backwards).
+        let pos = engine.clock.position_secs();
+        assert!(
+            pos >= last_pos,
+            "playhead regressed: {} → {} at tick {}",
+            last_pos,
+            pos,
+            tick_count
+        );
+        last_pos = pos;
+    }
+
+    // Drain remaining events (after EOS).
+    while let Ok(event) = events.try_recv() {
+        match event {
+            EngineEvent::SourceFinished { .. } => saw_source_finished = true,
+            EngineEvent::Error(msg) => {
+                eprintln!("Engine error (post-EOS): {}", msg);
+                saw_error = true;
+            }
+            _ => {}
+        }
+    }
+
+    // ── Assertions ───────────────────────────────────────────────────────
+    assert!(!saw_error, "no engine errors during stress playback");
+    assert!(saw_source_finished, "SourceFinished event must fire at EOS");
+    assert!(tick_count > 0, "engine must process at least one tick");
+
+    // Clock: every source frame must be consumed.
+    let clock_frames = engine.clock.source_frames;
+    assert_eq!(
+        clock_frames, expected_source_frames,
+        "clock must advance through all {} source frames, got {}",
+        expected_source_frames, clock_frames
+    );
+
+    // Position must match the exact source duration.
+    let pos = engine.clock.position_secs();
+    let expected_pos = clock_frames as f32 / sample_rate as f32;
+    assert!(
+        (pos - expected_pos).abs() < 0.001,
+        "position {:.6}s must match {:.6}s ({} frames / {} Hz)",
+        pos,
+        expected_pos,
+        clock_frames,
+        sample_rate
+    );
+
+    // Telemetry snapshot must agree with the clock.
+    let pb = engine.playback_info();
+    assert_eq!(pb.state, PlaybackState::Stopped);
+    assert!(
+        (pb.position_secs - expected_pos).abs() < 0.001,
+        "telemetry position {:.6}s must match clock {:.6}s",
+        pb.position_secs,
+        expected_pos
+    );
+    assert_eq!(
+        pb.sample_rate, sample_rate,
+        "telemetry must reflect source sample rate"
+    );
+    assert_eq!(pb.speed, 4.0, "telemetry must reflect the configured speed");
+    assert_eq!(
+        pb.duration_secs, expected_duration,
+        "telemetry duration must match source"
+    );
+    assert!(
+        !pb.native_dsd_active && !pb.dop_active,
+        "no DSD transport on a PCM WAV"
+    );
+
+    let _ = std::fs::remove_file(&path);
 }

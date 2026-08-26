@@ -164,24 +164,24 @@ impl DspPipeline {
         if channels <= 2 {
             // Delegate to the stereo block path, which keeps the Quality-mode
             // f64 promotion and the exact stereo chain order.
-            for i in 0..n {
-                let base = i * channels;
-                planes[0][i] = interleaved[base];
-                planes[1][i] = if channels == 2 {
-                    interleaved[base + 1]
-                } else {
-                    interleaved[base]
-                };
+            for (i, chunk) in interleaved[..n * channels]
+                .chunks_exact(channels)
+                .enumerate()
+            {
+                planes[0][i] = chunk[0];
+                planes[1][i] = if channels == 2 { chunk[1] } else { chunk[0] };
             }
             {
                 let (front, rest) = planes.split_at_mut(1);
                 self.process_block(&mut front[0][..n], &mut rest[0][..n]);
             }
-            for i in 0..n {
-                let base = i * channels;
-                interleaved[base] = planes[0][i];
+            for (i, chunk) in interleaved[..n * channels]
+                .chunks_exact_mut(channels)
+                .enumerate()
+            {
+                chunk[0] = planes[0][i];
                 if channels == 2 {
-                    interleaved[base + 1] = planes[1][i];
+                    chunk[1] = planes[1][i];
                 }
             }
             self.scratch_mc = planes;

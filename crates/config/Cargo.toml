@@ -1,7 +1,9 @@
 [package]
 name = "config"
-version = "2.1.0"
+version = "3.0.0"
 edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/Sudipta615/engine"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }

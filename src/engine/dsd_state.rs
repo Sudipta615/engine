@@ -1,9 +1,47 @@
 //! State and buffers for native DSD bitstream and DoP transport.
 
-use std::sync::Arc;
 use crate::buffer::DsdByteBuffer;
 use crate::decode::dsd::DsdWireFormat;
 use crate::decode::DsdTransportReport;
+use std::sync::Arc;
+
+/// Build the reason text for why DoP cannot engage because the output is not
+/// exclusive (used by the `load_track` fallback warning). When the user is on
+/// the Auto/shared backend it names a concrete exclusive backend to switch to,
+/// so the failure is actionable rather than a dead-end log line.
+pub fn dop_exclusive_reason(
+    out_info: &crate::output::OutputInfo,
+    requested_backend: config::AudioBackend,
+) -> String {
+    if out_info.is_fallback {
+        match &out_info.fallback_reason {
+            Some(r) => format!("the exclusive backend request fell back to a shared device ({r})"),
+            None => "the exclusive backend request fell back to a shared device".to_string(),
+        }
+    } else if requested_backend == config::AudioBackend::Auto {
+        let exclusive_names = if cfg!(target_os = "linux") {
+            "ExclusiveAlsa (or select a direct hw: device)".to_string()
+        } else if cfg!(target_os = "windows") {
+            "ExclusiveAsio (WASAPI exclusive requires a native IAudioClient \
+             backend not available through cpal)"
+                .to_string()
+        } else {
+            "a native CoreAudio hog-mode backend (not available through cpal)".to_string()
+        };
+        format!(
+            "the backend is Auto (shared device); switch to an exclusive backend \
+             ({exclusive_names})"
+        )
+    } else if requested_backend == config::AudioBackend::ExclusiveAsio
+        && !cfg!(feature = "asio")
+        && !cfg!(feature = "asio-native")
+    {
+        "the ASIO backend is not compiled in (enable the 'asio-native' or 'asio' feature)"
+            .to_string()
+    } else {
+        "the selected backend did not provide exclusive access".to_string()
+    }
+}
 
 pub(crate) struct DsdTransportState {
     /// True when the current track is being output as DSD-over-PCM (DoP): raw

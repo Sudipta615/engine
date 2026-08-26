@@ -236,38 +236,38 @@ impl OpusSource {
         let mut reader = PacketReader::new(BufReader::new(file));
 
         // ── Headers ──────────────────────────────────────────────────────
-        let mut head: Option<OpusHead> = None;
+        // The first packet of the logical stream must be OpusHead; every
+        // other outcome (EOF, non-Opus content) is an immediate error, so
+        // this runs exactly once.
         let mut tags: HashMap<String, String> = HashMap::new();
-        let mut serial = 0u32;
-        while head.is_none() {
-            match reader.read_packet().map_err(map_ogg_error)? {
-                Some(packet) => {
-                    serial = packet.stream_serial();
-                    if packet.data.len() >= 8 && &packet.data[..8] == OPUS_HEAD_MAGIC {
-                        head = Some(parse_opus_head(&packet.data)?);
-                        // OpusTags is the next packet of the same stream.
-                        match reader.read_packet().map_err(map_ogg_error)? {
-                            Some(t) if &t.data[..8] == OPUS_TAGS_MAGIC => {
-                                tags = parse_opus_tags(&t.data);
-                            }
-                            _ => {}
+        let serial: u32;
+        let head = match reader.read_packet().map_err(map_ogg_error)? {
+            Some(packet) => {
+                serial = packet.stream_serial();
+                if packet.data.len() >= 8 && &packet.data[..8] == OPUS_HEAD_MAGIC {
+                    let head = parse_opus_head(&packet.data)?;
+                    // OpusTags is the next packet of the same stream.
+                    match reader.read_packet().map_err(map_ogg_error)? {
+                        Some(t) if t.data.len() >= 8 && &t.data[..8] == OPUS_TAGS_MAGIC => {
+                            tags = parse_opus_tags(&t.data);
                         }
-                        break;
+                        _ => {}
                     }
+                    head
+                } else {
                     // A non-Opus first packet: reject (could be a chained
                     // non-Opus stream, which we do not follow).
                     return Err(DecodeError::UnsupportedFormat(
                         "first Ogg packet is not an OpusHead".to_string(),
                     ));
                 }
-                None => {
-                    return Err(DecodeError::UnsupportedFormat(
-                        "no OpusHead found in Ogg stream".to_string(),
-                    ))
-                }
             }
-        }
-        let head = head.expect("OpusHead parsed above");
+            None => {
+                return Err(DecodeError::UnsupportedFormat(
+                    "no OpusHead found in Ogg stream".to_string(),
+                ))
+            }
+        };
         let channels = head.channels;
 
         // ── Duration: scan to the final page's granule position ─────────
@@ -362,11 +362,7 @@ impl OpusSource {
         }
         self.interleaved.clear();
         let channels = self.info.channels;
-        loop {
-            let packet = match self.reader.read_packet().map_err(map_ogg_error)? {
-                Some(p) => p,
-                None => break,
-            };
+        while let Some(packet) = self.reader.read_packet().map_err(map_ogg_error)? {
             // Skip headers / other logical streams.
             if packet.stream_serial() != self.serial
                 || (packet.data.len() >= 8
@@ -529,11 +525,7 @@ pub fn extract_opus_info(path: &Path) -> Option<(HashMap<String, String>, f64)> 
     let mut seen_head = false;
     let mut last_granule: Option<u64> = None;
     let mut serial = 0u32;
-    loop {
-        let packet = match reader.read_packet().ok()? {
-            Some(p) => p,
-            None => break,
-        };
+    while let Some(packet) = reader.read_packet().ok()? {
         if packet.data.len() < 8 {
             continue;
         }
@@ -571,8 +563,8 @@ pub fn extract_opus_info(path: &Path) -> Option<(HashMap<String, String>, f64)> 
 }
 
 /// Extract ReplayGain / EBU R128 loudness metadata from OpusTags.
-pub fn extract_loudness_metadata(path: &Path) -> crate::dsp::loudness::LoudnessMetadata {
-    use crate::dsp::loudness::LoudnessMetadata;
+pub fn extract_loudness_metadata(path: &Path) -> crate::dsp::LoudnessMetadata {
+    use crate::dsp::LoudnessMetadata;
     let mut meta = LoudnessMetadata::default();
     let Some((tags, _)) = extract_opus_info(path) else {
         return meta;

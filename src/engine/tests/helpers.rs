@@ -84,7 +84,7 @@ pub fn write_test_dsf() -> std::path::PathBuf {
     let mut audio = vec![0u8; (padded * 2) as usize];
     for (ch, data) in [&ch0[..], &ch1[..]].iter().enumerate() {
         for (b, chunk) in data.chunks(block_size as usize).enumerate() {
-            let base = (b as usize * block_size as usize) * 2 + ch * block_size as usize;
+            let base = (b * block_size as usize) * 2 + ch * block_size as usize;
             audio[base..base + chunk.len()].copy_from_slice(chunk);
         }
     }

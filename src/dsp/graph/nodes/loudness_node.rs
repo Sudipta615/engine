@@ -56,14 +56,17 @@ impl DspNode for LoudnessNode {
             let (l, r) = planes.split_at_mut(1);
             self.normalizer.process_block(l[0], r[0]);
         } else {
-            let frames = planes[0].len();
-            for i in 0..frames {
-                let l = planes[0][i];
-                let r = if channels > 1 { planes[1][i] } else { l };
-                let (ol, or) = self.normalizer.process(l, r);
-                planes[0][i] = ol;
-                if channels > 1 {
-                    planes[1][i] = or;
+            let (first, rest) = planes.split_at_mut(1);
+            if let Some(second) = rest.first_mut() {
+                for (l, r) in first[0].iter_mut().zip(second.iter_mut()) {
+                    let (ol, or) = self.normalizer.process(*l, *r);
+                    *l = ol;
+                    *r = or;
+                }
+            } else {
+                for l in first[0].iter_mut() {
+                    let (ol, _) = self.normalizer.process(*l, *l);
+                    *l = ol;
                 }
             }
         }
@@ -78,14 +81,17 @@ impl DspNode for LoudnessNode {
             let (l, r) = planes.split_at_mut(1);
             self.normalizer.process_block_f64(l[0], r[0]);
         } else {
-            let frames = planes[0].len();
-            for i in 0..frames {
-                let l = planes[0][i];
-                let r = if channels > 1 { planes[1][i] } else { l };
-                let (ol, or) = self.normalizer.process_f64(l, r);
-                planes[0][i] = ol;
-                if channels > 1 {
-                    planes[1][i] = or;
+            let (first, rest) = planes.split_at_mut(1);
+            if let Some(second) = rest.first_mut() {
+                for (l, r) in first[0].iter_mut().zip(second.iter_mut()) {
+                    let (ol, or) = self.normalizer.process_f64(*l, *r);
+                    *l = ol;
+                    *r = or;
+                }
+            } else {
+                for l in first[0].iter_mut() {
+                    let (ol, _) = self.normalizer.process_f64(*l, *l);
+                    *l = ol;
                 }
             }
         }

@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Install ALSA dev headers (native backend)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (default features)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (optional features)
+        run: cargo clippy --workspace --all-targets --features tag-write,fingerprint -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install ALSA dev headers (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Build all targets
+        run: cargo build --workspace --all-targets
+      - name: Build with optional features
+        run: cargo build --workspace --all-targets --features tag-write,fingerprint
+      - name: Test (default features)
+        run: cargo test --workspace
+      - name: Test (optional features)
+        run: cargo test --workspace --features tag-write,fingerprint
+
+  # Windows-only native backends are cfg-gated; verify they compile for the
+  # msvc target even when the runner is Linux (windows crate + COM bindings).
+  cross-check-windows:
+    name: cross-check (x86_64-pc-windows-msvc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - name: Check native WASAPI + ASIO backends
+        run: |
+          cargo check --target x86_64-pc-windows-msvc --lib --features wasapi-native
+          cargo check --target x86_64-pc-windows-msvc --lib --features asio-native

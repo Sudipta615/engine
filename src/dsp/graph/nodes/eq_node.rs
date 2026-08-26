@@ -12,7 +12,7 @@ pub struct EqNode {
 
 impl EqNode {
     pub fn new(num_bands: usize, sample_rate: f32) -> Self {
-        let bands = num_bands.max(10).min(MAX_EQ_BANDS);
+        let bands = num_bands.clamp(10, MAX_EQ_BANDS);
         Self {
             eq: ParametricEq::new(bands, sample_rate),
             midside_enabled: false,

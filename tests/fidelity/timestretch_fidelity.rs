@@ -43,10 +43,8 @@ fn estimate_dominant_frequency(signal: &[f32], sample_rate: f32) -> f32 {
 
     let mut max_mag = 0.0f32;
     let mut peak_bin = 1usize;
-    for k in 1..out_spectrum.len() {
-        let mag = (out_spectrum[k].re * out_spectrum[k].re
-            + out_spectrum[k].im * out_spectrum[k].im)
-            .sqrt();
+    for (k, &bin) in out_spectrum.iter().enumerate().skip(1) {
+        let mag = (bin.re * bin.re + bin.im * bin.im).sqrt();
         if mag > max_mag {
             max_mag = mag;
             peak_bin = k;
@@ -766,7 +764,7 @@ fn test_time_stretch_duration_expansion() {
     // At speed=0.5, the 1.0s tone expands ~2x to ~2.0s.
     // We pump 4.0s of input + 4.0s of flushing silence to collect the full 8.0s output stream.
     let sample_rate = 44100.0f32;
-    let burst_len = (sample_rate as usize) * 1; // 1.0s tone
+    let burst_len = sample_rate as usize; // 1.0s tone
     let silence_len = (sample_rate as usize) * 3; // 3.0s silence
     let mut input = sine_wave(440.0, sample_rate, burst_len);
     input.resize(burst_len + silence_len + (sample_rate as usize) * 4, 0.0); // 8.0s total feed
@@ -790,7 +788,7 @@ fn test_time_stretch_duration_expansion() {
     let active_duration_sec = active_blocks as f32 * 0.1;
     // Input burst was 1.0s; at speed=0.5, expected ~2.0s (allow 1.7s to 2.3s)
     assert!(
-        active_duration_sec >= 1.7 && active_duration_sec <= 2.3,
+        (1.7..=2.3).contains(&active_duration_sec),
         "Expected active duration ~2.0s at speed=0.5 for 1.0s input burst, but got {active_duration_sec:.2}s"
     );
 }

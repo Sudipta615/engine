@@ -197,7 +197,7 @@ fn bench_resampler_tiers(c: &mut Criterion) {
         group.bench_function(format!("44k_to_48k/{quality:?}"), |b| {
             b.iter(|| {
                 for i in 0..512 {
-                    let _ = rs.feed(0.5, 0.3);
+                    rs.feed(0.5, 0.3);
                     let _ = rs.read();
                     black_box(i);
                 }
@@ -212,8 +212,10 @@ fn bench_multichannel(c: &mut Criterion) {
     use config::ChannelTrimConfig;
     use engine::dsp::channel_trim::ChannelTrimmer;
 
-    let mut config = ChannelTrimConfig::default();
-    config.enabled = true;
+    let config = ChannelTrimConfig {
+        enabled: true,
+        ..ChannelTrimConfig::default()
+    };
     let mut trimmer = ChannelTrimmer::new(48_000.0);
     trimmer.set_config(&config, 48_000.0);
 

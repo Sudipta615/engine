@@ -95,8 +95,8 @@ use crate::output::format_converter::{AudioFormatConverter, TargetFormat};
 use crate::output::output::{StreamErrorBatch, StreamErrorState};
 use crate::output::output_info::OutputInfo;
 
-mod client;
-mod com;
+pub(crate) mod client;
+pub(crate) mod com;
 mod format;
 mod render;
 mod volume;
@@ -318,27 +318,11 @@ impl WasapiOutput {
         self.exclusive_verified = false;
     }
 
-    fn replace_client(&mut self, rate: u32) -> Result<(), OutputError> {
-        let device = self
-            .device
-            .as_ref()
-            .expect("WASAPI device released")
-            .0
-            .clone();
-        let new_client = open_exclusive_client(&device, rate)?;
-        // Release the old client (and with it the exclusive lock) only after
-        // the new one is negotiated. The exclusive-rate list is a device
-        // property, not a per-open one, so it is not re-probed here (probing
-        // while an exclusive client holds the endpoint can return
-        // AUDCLNT_E_DEVICE_IN_USE); `open_exclusive_client` re-validates the
-        // target rate with its own IsFormatSupported before Initialize.
-        self.client = Some(SendCom(new_client));
-        Ok(())
-    }
-
-    /// Like [`Self::replace_client`] but requesting `preferred` as the first
-    /// container choice (e.g. I32 for DSD-over-PCM). The endpoint may still
-    /// negotiate another container; callers verify via `sample_format()`.
+    /// Replace the client, requesting `preferred` as the first container
+    /// choice (e.g. I32 for DSD-over-PCM). The endpoint may still negotiate
+    /// another container; callers verify via `sample_format()`. The old
+    /// client (and with it the exclusive lock) is released only after the
+    /// new one is negotiated.
     fn replace_client_with_format(
         &mut self,
         rate: u32,

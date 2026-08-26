@@ -218,20 +218,19 @@ impl DsdToPcmDecimator {
         // the FIR cascade supplies the ultrasonic rejection.
         const DSD_SCALE: f32 = 2.0;
         let required = num_bytes.saturating_mul(8);
-        for ch in 0..nch {
-            if required > self.scratch[ch].capacity() {
+        for (ch, scratch) in self.scratch.iter_mut().enumerate().take(nch) {
+            if required > scratch.capacity() {
                 log::warn!(
                     "DSD block exceeds preallocated decimator capacity ({} samples); dropping block",
                     required
                 );
                 return;
             }
-            self.scratch[ch].clear();
-            for i in 0..num_bytes {
-                let b = channel_bytes[ch][i];
+            scratch.clear();
+            for &b in channel_bytes[ch].iter().take(num_bytes) {
                 for bit_idx in 0..8u32 {
                     let bit = if lsbf { bit_idx } else { 7 - bit_idx };
-                    self.scratch[ch].push(if b & (1 << bit) != 0 {
+                    scratch.push(if b & (1 << bit) != 0 {
                         DSD_SCALE
                     } else {
                         -DSD_SCALE
@@ -240,11 +239,11 @@ impl DsdToPcmDecimator {
             }
         }
 
-        for ch in 0..nch {
+        for (ch, scratch) in self.scratch.iter().enumerate().take(nch) {
             process_channel(
                 &mut self.stages[ch],
                 &mut self.buffers[ch],
-                &self.scratch[ch],
+                scratch,
                 out[ch],
             );
             // The output stage is the only place where the DSD +6 dB

@@ -2,11 +2,11 @@
 
 use config::EngineConfig;
 
+use super::helpers::*;
 use crate::{
     buffer::EngineCommand,
     engine::{AudioClock, AudioEngine},
 };
-use super::helpers::*;
 
 #[test]
 fn test_clock_position_secs() {
@@ -75,7 +75,7 @@ fn test_playback_position_is_latency_compensated() {
     engine.load_track(&path).expect("load WAV");
     engine.send_command(EngineCommand::Play);
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         engine.tick();
         let info = engine.playback_info();
@@ -101,7 +101,6 @@ fn test_playback_position_is_latency_compensated() {
             std::time::Instant::now() < deadline,
             "playback did not progress"
         );
-        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     let _ = std::fs::remove_file(&path);
 }
@@ -131,7 +130,6 @@ fn test_long_playback_clock_tracks_decoded_frames_exactly() {
             std::time::Instant::now() < deadline,
             "long track did not reach end of stream"
         );
-        std::thread::sleep(std::time::Duration::from_millis(2));
     }
 
     assert_eq!(

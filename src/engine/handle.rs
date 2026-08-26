@@ -14,7 +14,7 @@ use arc_swap::ArcSwap;
 use crossbeam::channel::{Receiver, Sender};
 
 use crate::buffer::{EngineCommand, PlaybackInfo, PlaybackState};
-use crate::events::EngineEvent;
+use crate::events::{EngineEvent, OutputEvent};
 use crate::source::AudioSource;
 
 /// A thread-safe, cloneable client handle to an active [`AudioEngine`].
@@ -23,6 +23,11 @@ pub struct EngineHandle {
     cmd_tx: Sender<EngineCommand>,
     playback_info: Arc<ArcSwap<PlaybackInfo>>,
     event_rx: Receiver<EngineEvent>,
+    /// Output device events — only present when `audio-output` is enabled.
+    #[cfg(feature = "audio-output")]
+    output_event_rx: Receiver<OutputEvent>,
+    /// Shared real-time analyzer (levels + spectrum).
+    analyzer: Arc<crate::dsp::AudioAnalyzer>,
 }
 
 impl std::fmt::Debug for EngineHandle {
@@ -35,22 +40,34 @@ impl std::fmt::Debug for EngineHandle {
 }
 
 impl EngineHandle {
-    /// Create a new `EngineHandle` from command channel, shared telemetry, and event receiver.
+    /// Create a new `EngineHandle` (only called internally).
+    #[allow(clippy::too_many_arguments, reason = "Internal-only constructor.")]
     pub fn new(
         cmd_tx: Sender<EngineCommand>,
         playback_info: Arc<ArcSwap<PlaybackInfo>>,
         event_rx: Receiver<EngineEvent>,
+        #[cfg(feature = "audio-output")] output_event_rx: Receiver<OutputEvent>,
+        analyzer: Arc<crate::dsp::AudioAnalyzer>,
     ) -> Self {
         Self {
             cmd_tx,
             playback_info,
             event_rx,
+            #[cfg(feature = "audio-output")]
+            output_event_rx,
+            analyzer,
         }
     }
 
     /// Send a raw [`EngineCommand`] directly to the engine.
     #[inline]
-    pub fn send_command(&self, cmd: EngineCommand) -> Result<(), crossbeam::channel::SendError<EngineCommand>> {
+    // The Err variant is the rejected command itself; boxing it would hide
+    // the payload from callers who want to retry after a shutdown.
+    #[allow(clippy::result_large_err)]
+    pub fn send_command(
+        &self,
+        cmd: EngineCommand,
+    ) -> Result<(), crossbeam::channel::SendError<EngineCommand>> {
         self.cmd_tx.send(cmd)
     }
 
@@ -113,6 +130,70 @@ impl EngineHandle {
             data,
             extension_hint,
         }));
+    }
+
+    // ── Playlist / Queue ────────────────────────────────────────────────
+
+    /// Append a source to the end of the playback queue.
+    pub fn enqueue(&self, source: impl Into<AudioSource>) {
+        let _ = self.send_command(EngineCommand::Enqueue(source.into()));
+    }
+
+    /// Append a file to the end of the playback queue.
+    pub fn enqueue_file(&self, path: impl Into<PathBuf>) {
+        let _ = self.send_command(EngineCommand::Enqueue(AudioSource::File(path.into())));
+    }
+
+    /// Remove the queue entry at `index`. Removing the current entry stops
+    /// playback.
+    pub fn remove_from_playlist(&self, index: usize) {
+        let _ = self.send_command(EngineCommand::RemoveFromPlaylist(index));
+    }
+
+    /// Clear the playback queue (the current track keeps playing).
+    pub fn clear_playlist(&self) {
+        let _ = self.send_command(EngineCommand::ClearPlaylist);
+    }
+
+    /// Jump to queue entry `index` and start playing it.
+    pub fn play_index(&self, index: usize) {
+        let _ = self.send_command(EngineCommand::PlayIndex(index));
+    }
+
+    /// Skip to the next queue entry.
+    pub fn next(&self) {
+        let _ = self.send_command(EngineCommand::Next);
+    }
+
+    /// Skip to the previous queue entry.
+    pub fn previous(&self) {
+        let _ = self.send_command(EngineCommand::Previous);
+    }
+
+    /// Set the repeat mode (Off / All / One).
+    pub fn set_repeat_mode(&self, mode: crate::playlist::RepeatMode) {
+        let _ = self.send_command(EngineCommand::SetRepeatMode(mode));
+    }
+
+    /// Enable or disable shuffle.
+    pub fn set_shuffle(&self, enabled: bool) {
+        let _ = self.send_command(EngineCommand::SetShuffle(enabled));
+    }
+
+    /// Scan a file for EBU R128 / ReplayGain loudness and write the result
+    /// back into its tags (requires the `tag-write` feature).
+    pub fn write_loudness_tags(&self, path: impl Into<PathBuf>) {
+        let _ = self.send_command(EngineCommand::WriteLoudnessTags(path.into()));
+    }
+
+    /// Number of entries in the playback queue.
+    pub fn playlist_len(&self) -> usize {
+        self.playback_info.load().playlist_length
+    }
+
+    /// Index of the currently-playing queue entry, if any.
+    pub fn playlist_index(&self) -> Option<usize> {
+        self.playback_info.load().playlist_index
     }
 
     /// Start or resume playback.
@@ -298,8 +379,29 @@ impl EngineHandle {
     }
 
     /// List currently available output devices for the default/active backend.
+    #[cfg(feature = "audio-output")]
     pub fn available_devices(&self) -> Vec<String> {
         crate::output::cpal_devices::enumerate_devices(config::AudioBackend::default())
+    }
+
+    /// Open the active ASIO driver's manufacturer settings dialog.
+    /// No-op when the current backend is not ASIO or the feature is not compiled in.
+    pub fn open_asio_control_panel(&self) {
+        let _ = self.send_command(EngineCommand::OpenAsioControlPanel);
+    }
+
+    /// Start capturing the system mix (WASAPI loopback on Windows) to a WAV
+    /// file. `path` defaults to `capture.wav`; `device` selects the render
+    /// endpoint (`None` = system default). Emits `CaptureStarted` or
+    /// `CaptureError`. No-op on platforms without the `wasapi-native` feature.
+    pub fn start_capture(&self, path: Option<std::path::PathBuf>, device: Option<String>) {
+        let _ = self.send_command(EngineCommand::CaptureStart { path, device });
+    }
+
+    /// Stop the active system-audio capture and finalize its WAV file.
+    /// Emits `CaptureStopped` (or `CaptureError` if none is active).
+    pub fn stop_capture(&self) {
+        let _ = self.send_command(EngineCommand::CaptureStop);
     }
 
     /// Set sample rate policy (TrackNative, DevicePreferred, Fixed, etc.).
@@ -379,8 +481,23 @@ impl EngineHandle {
         self.playback_info.load().speed
     }
 
+    /// Clone the output event receiver for standalone asynchronous device-event listening.
+    /// Only available when the `audio-output` feature is enabled.
+    #[cfg(feature = "audio-output")]
+    #[inline]
+    pub fn clone_output_event_receiver(&self) -> Receiver<OutputEvent> {
+        self.output_event_rx.clone()
+    }
+
     /// End-to-end audio pipeline latency in milliseconds.
     pub fn latency_ms(&self) -> f32 {
         self.playback_info.load().latency_ms
+    }
+
+    /// Shared real-time analyzer: peak/RMS meters and FFT spectrum updated
+    /// continuously during playback. Poll [`crate::dsp::AudioAnalyzer::snapshot`]
+    /// for the latest values.
+    pub fn analyzer(&self) -> Arc<crate::dsp::AudioAnalyzer> {
+        Arc::clone(&self.analyzer)
     }
 }

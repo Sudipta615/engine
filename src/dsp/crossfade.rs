@@ -872,8 +872,7 @@ mod tests {
         assert!(le.abs() < 0.1, "end of fade-out: {le}");
 
         // Gap: both tracks silent.
-        for i in fade_out_end..gap_end {
-            let (l, r) = out_f32[i];
+        for (i, &(l, r)) in out_f32.iter().enumerate().take(gap_end).skip(fade_out_end) {
             assert!(l.abs() < 1e-6 && r.abs() < 1e-6, "gap frame {i}: ({l},{r})");
         }
 

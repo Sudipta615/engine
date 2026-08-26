@@ -1,3 +1,25 @@
+//! # Production DSP Pipeline
+//!
+//! This is the **production** signal processing chain used by the audio engine.
+//! It operates per-frame (stereo pair) through [`DspPipeline::process`] and
+//! per-block through [`DspPipeline::process_block`]. Every stage runs in a
+//! fixed, linear sequence with pre-allocated scratch state — no dynamic
+//! allocation on the hot path.
+//!
+//! ## Relationship to `crate::dsp::graph`
+//!
+//! The [`crate::dsp::graph::DspGraph`] is a **work-in-progress** node-based
+//! architecture that generalizes the pipeline through the [`DspNode`] trait:
+//! planar audio, explicit capability introspection per node (`name,
+//! channel_support, precision, stateful, realtime_safe, bit_perfect_compatible,
+//! sample_rate_sensitive`), and block-level processing. It currently exists
+//! alongside the pipeline for capability introspection and future migration —
+//! the engine's hot path does NOT route through `DspGraph`.
+//!
+//! The static [`DSP_STAGE_CAPABILITIES`] table describes every stage in both
+//! the pipeline and the graph. When the graph matures and matches the
+//! pipeline's performance, the engine can switch to it behind a feature flag.
+
 use crate::buffer::{MAX_AUDIO_BLOCK_FRAMES, MAX_CHANNELS};
 use crate::decode::ChannelLayout;
 use crate::dsp::{
@@ -364,7 +386,7 @@ pub struct DspPipeline {
 
 impl DspPipeline {
     pub fn from_config(config: &EngineConfig, sample_rate: f32) -> Self {
-        let num_bands = config.eq.bands.len().max(10).min(MAX_EQ_BANDS);
+        let num_bands = config.eq.bands.len().clamp(10, MAX_EQ_BANDS);
         let eq = ParametricEq::new(num_bands, sample_rate);
         let loudness_out = LoudnessNormalizer::new(sample_rate);
         let loudness_in = LoudnessNormalizer::new(sample_rate);
@@ -616,6 +638,13 @@ impl DspPipeline {
         );
     }
 
+    /// Create a builder for constructing a [`DspPipeline`] without an
+    /// [`EngineConfig`](crate::engine::EngineConfig). The host sets each
+    /// stage explicitly and calls [`DspPipelineBuilder::build`].
+    pub fn builder(sample_rate: f32) -> DspPipelineBuilder {
+        DspPipelineBuilder::new(sample_rate)
+    }
+
     fn apply_performance_mode(&mut self) {
         if self.performance_mode == PerformanceMode::LowPower {
             // Battery-saver mode: disable the most CPU-hungry DSP stages.
@@ -627,5 +656,154 @@ impl DspPipeline {
             self.convolution.set_enabled(false);
             self.limiter.enable_true_peak(false);
         }
+    }
+}
+
+// ── DspPipelineBuilder ──────────────────────────────────────────────────────
+
+/// Build a [`DspPipeline`] piecemeal — the host sets each stage explicitly
+/// instead of passing an [`EngineConfig`](crate::engine::EngineConfig).
+///
+/// # Example
+///
+/// ```ignore
+/// use engine::dsp::pipeline::DspPipeline;
+///
+/// let pipeline = DspPipeline::builder(48_000.0)
+///     .with_eq(true)
+///     .with_limiter(-1.0, 5.0, 50.0)
+///     .build();
+/// ```
+pub struct DspPipelineBuilder {
+    sample_rate: f32,
+    eq_enabled: bool,
+    eq_preamp_db: f32,
+    eq_post_gain_db: f32,
+    limiter_enabled: bool,
+    limiter_ceiling_db: f32,
+    limiter_attack_ms: f32,
+    limiter_release_ms: f32,
+    limiter_lookahead_ms: f32,
+    crossfeed_enabled: bool,
+    crossfeed_profile: config::CrossfeedProfile,
+    stereo_enhancer_enabled: bool,
+    stereo_width: f32,
+    compressor_enabled: bool,
+    loudness_mode: crate::dsp::LoudnessMode,
+    loudness_target_lufs: f32,
+    precision: PrecisionMode,
+    volume_fade_ms: f32,
+}
+
+impl DspPipelineBuilder {
+    pub fn new(sample_rate: f32) -> Self {
+        Self {
+            sample_rate,
+            eq_enabled: false,
+            eq_preamp_db: 0.0,
+            eq_post_gain_db: 0.0,
+            limiter_enabled: true,
+            limiter_ceiling_db: -1.0,
+            limiter_attack_ms: 5.0,
+            limiter_release_ms: 50.0,
+            limiter_lookahead_ms: 2.0,
+            crossfeed_enabled: false,
+            crossfeed_profile: config::CrossfeedProfile::Bauer,
+            stereo_enhancer_enabled: false,
+            stereo_width: 1.0,
+            compressor_enabled: false,
+            loudness_mode: crate::dsp::LoudnessMode::Off,
+            loudness_target_lufs: -18.0,
+            precision: PrecisionMode::Performance,
+            volume_fade_ms: 10.0,
+        }
+    }
+
+    pub fn with_eq(mut self, enabled: bool) -> Self {
+        self.eq_enabled = enabled;
+        self
+    }
+
+    pub fn with_eq_preamp(mut self, db: f32) -> Self {
+        self.eq_preamp_db = db;
+        self
+    }
+
+    pub fn with_limiter(mut self, ceiling_db: f32, attack_ms: f32, release_ms: f32) -> Self {
+        self.limiter_enabled = true;
+        self.limiter_ceiling_db = ceiling_db;
+        self.limiter_attack_ms = attack_ms;
+        self.limiter_release_ms = release_ms;
+        self
+    }
+
+    pub fn with_limiter_disabled(mut self) -> Self {
+        self.limiter_enabled = false;
+        self
+    }
+
+    pub fn with_crossfeed(mut self, enabled: bool, profile: config::CrossfeedProfile) -> Self {
+        self.crossfeed_enabled = enabled;
+        self.crossfeed_profile = profile;
+        self
+    }
+
+    pub fn with_stereo_width(mut self, width: f32) -> Self {
+        self.stereo_enhancer_enabled = true;
+        self.stereo_width = width;
+        self
+    }
+
+    pub fn with_loudness(mut self, mode: crate::dsp::LoudnessMode, target_lufs: f32) -> Self {
+        self.loudness_mode = mode;
+        self.loudness_target_lufs = target_lufs;
+        self
+    }
+
+    pub fn with_precision(mut self, precision: PrecisionMode) -> Self {
+        self.precision = precision;
+        self
+    }
+
+    /// Build the [`DspPipeline`] from the accumulated builder state.
+    pub fn build(self) -> DspPipeline {
+        let cfg = config::EngineConfig::default();
+        let mut pipeline = DspPipeline::from_config(&cfg, self.sample_rate);
+
+        pipeline.eq.set_enabled(self.eq_enabled);
+        pipeline.eq.set_preamp_db(self.eq_preamp_db);
+        pipeline.eq.set_post_gain_db(self.eq_post_gain_db);
+
+        pipeline.limiter.set_enabled(self.limiter_enabled);
+        pipeline.limiter.set_ceiling_db(self.limiter_ceiling_db);
+        pipeline.limiter.set_attack(self.limiter_attack_ms);
+        pipeline.limiter.set_release(self.limiter_release_ms);
+        pipeline.limiter.set_lookahead(self.limiter_lookahead_ms);
+
+        pipeline.crossfeed.set_enabled(self.crossfeed_enabled);
+        pipeline.crossfeed.set_profile(self.crossfeed_profile);
+
+        pipeline
+            .stereo_enhancer
+            .set_enabled(self.stereo_enhancer_enabled);
+        pipeline.stereo_enhancer.set_width(self.stereo_width);
+
+        pipeline
+            .multiband_compressor
+            .set_enabled(self.compressor_enabled);
+
+        pipeline.out_loudness.set_mode(self.loudness_mode);
+        pipeline
+            .out_loudness
+            .set_target_lufs(self.loudness_target_lufs);
+        pipeline.in_loudness.set_mode(self.loudness_mode);
+        pipeline
+            .in_loudness
+            .set_target_lufs(self.loudness_target_lufs);
+
+        pipeline.precision_mode = self.precision;
+        pipeline.volume_fade_ms = self.volume_fade_ms;
+
+        pipeline
     }
 }

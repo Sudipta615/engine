@@ -105,11 +105,7 @@ fn exercise_dsd(bytes: &[u8], ext: &str) {
     let path = write_fixture(bytes, ext);
     if let Ok(mut reader) = DsdReader::open(&path) {
         let mut iterations = 0u32;
-        loop {
-            match reader.read_dsd_block(512) {
-                Ok(Some(_)) => {}
-                _ => break,
-            }
+        while let Ok(Some(_)) = reader.read_dsd_block(512) {
             iterations += 1;
             assert!(
                 iterations < 100_000,
@@ -126,7 +122,7 @@ fn exercise_tta(bytes: &[u8]) {
         let mut iterations = 0u32;
         loop {
             match decoder.decode_next(512) {
-                Ok(chunk) if chunk.samples.len() > 0 => {}
+                Ok(chunk) if !chunk.samples.is_empty() => {}
                 _ => break,
             }
             iterations += 1;
@@ -145,7 +141,7 @@ fn exercise_opus(bytes: &[u8]) {
         let mut iterations = 0u32;
         loop {
             match decoder.decode_next(512) {
-                Ok(chunk) if chunk.samples.len() > 0 => {}
+                Ok(chunk) if !chunk.samples.is_empty() => {}
                 _ => break,
             }
             iterations += 1;
@@ -469,7 +465,7 @@ fn decoder_dispatch_mutations_never_panic() {
                 let mut iterations = 0u32;
                 loop {
                     match decoder.decode_next(512) {
-                        Ok(chunk) if chunk.samples.len() > 0 => {}
+                        Ok(chunk) if !chunk.samples.is_empty() => {}
                         _ => break,
                     }
                     iterations += 1;

@@ -109,7 +109,6 @@ fn process_stereo(
 fn rms_steady(samples: &[f32], frac: f32) -> f32 {
     let window = (samples.len() as f32 * frac) as usize;
     let start = samples.len() / 2 - window / 2;
-    let start = start.max(0);
     let end = (start + window).min(samples.len());
     let mut sum = 0.0f64;
     for &s in &samples[start..end] {
@@ -343,7 +342,7 @@ fn f64_pipeline_preserves_pitch_and_stays_finite() {
     for i in 0..n {
         left.push(0.5 * (omega * i as f64).sin());
     }
-    let mut right = left.clone();
+    let right = left.clone();
 
     let mut stretcher = TimeStretcher::new(sr);
     stretcher.set_speed(1.5);

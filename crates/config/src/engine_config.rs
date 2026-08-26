@@ -123,7 +123,96 @@ pub enum EnginePreset {
     Fidelity,
 }
 
+/// Result of validating an [`EngineConfig`]. Each entry is a human-readable
+/// description of a contradiction or unsupported combination.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ConfigValidation {
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl ConfigValidation {
+    pub fn is_valid(&self) -> bool {
+        self.errors.is_empty()
+    }
+}
+
 impl EngineConfig {
+    /// Validate the configuration for contradictions or unsupported combinations.
+    /// Call this before passing the config to `AudioEngine::new()` to surface
+    /// configuration problems early (e.g. BitPerfect + DitherEnabled).
+    pub fn validate(&self) -> ConfigValidation {
+        let mut v = ConfigValidation::default();
+
+        // When all DSP stages are disabled and Exclusive backend is requested,
+        // the user is likely aiming for bit-perfect — dither on contradicts that.
+        let all_dsp_off = !self.eq.enabled
+            && !self.limiter.enabled
+            && !self.crossfeed.enabled
+            && !self.stereo_enhancer.enabled
+            && !self.multiband_compressor.enabled
+            && !self.convolution.enabled;
+        if all_dsp_off && self.dither_enabled {
+            v.warnings.push(
+                "All DSP stages are disabled (potential bit-perfect setup) but dither \
+                 is enabled. Dither operates on the integer PCM sample path and will \
+                 alter sample values. Disable dither if bit-perfect output is desired."
+                    .to_string(),
+            );
+        }
+
+        // ExclusiveAsio only meaningful on Windows.
+        if self.output_backend == AudioBackend::ExclusiveAsio && !cfg!(target_os = "windows") {
+            v.warnings.push(
+                "ExclusiveAsio backend is only available on Windows. The engine will fall back \
+                 to the default backend on this platform."
+                    .to_string(),
+            );
+        }
+
+        // ASIO without the asio or asio-native feature is caught at runtime by
+        // the engine; the config crate cannot see which features the engine was
+        // built with, so we emit a warning on all platforms here.
+        if self.output_backend == AudioBackend::ExclusiveAsio {
+            v.warnings.push(
+                "ExclusiveAsio backend selected. Ensure the 'asio' or 'asio-native' \
+                 feature is enabled when compiling the engine crate."
+                    .to_string(),
+            );
+        }
+
+        // Hardware-only volume with no hardware backend available.
+        if self.volume_mode == VolumeMode::HardwareOnly {
+            v.warnings.push(
+                "VolumeMode::HardwareOnly selected. If the output device does not support \
+                 hardware volume control, the engine will report an error instead of applying \
+                 software gain. Consider HardwarePreferred if a software fallback is acceptable."
+                    .to_string(),
+            );
+        }
+
+        // Extreme limiter ceiling.
+        if self.limiter.enabled && self.limiter.ceiling_db > 0.0 {
+            v.warnings.push(format!(
+                "Limiter ceiling is {:.1} dB — values above 0 dB may cause clipping at the \
+                 DAC. Conventional practice sets the ceiling between -1.0 and 0.0 dB.",
+                self.limiter.ceiling_db
+            ));
+        }
+
+        // Quality mode without resample — emits a warning; the engine handles
+        // this at runtime by attempting to build the resampler.
+        if self.precision_mode == PrecisionMode::Quality {
+            v.warnings.push(
+                "PrecisionMode::Quality selected. For best results, ensure the 'resample' \
+                 feature is enabled when compiling the engine crate."
+                    .to_string(),
+            );
+        }
+
+        v
+    }
+
     /// Build a configuration from a named preset.
     pub fn from_preset(preset: EnginePreset) -> Self {
         match preset {

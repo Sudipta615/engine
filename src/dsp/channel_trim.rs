@@ -345,21 +345,21 @@ impl ChannelTrimmer {
         for i in 0..frames {
             // 1. Routing matrix: out[dst] = Σ_src matrix[src][dst] · in[src].
             if routing {
-                for dst in 0..ch {
+                for (dst, slot) in tmp.iter_mut().enumerate().take(ch) {
                     let mut acc = 0.0f32;
-                    for src in 0..ch {
-                        acc += self.routing[src][dst] * planes[src][i];
+                    for (src, plane) in planes.iter().enumerate().take(ch) {
+                        acc += self.routing[src][dst] * plane[i];
                     }
-                    tmp[dst] = acc;
+                    *slot = acc;
                 }
-                for c in 0..ch {
-                    planes[c][i] = tmp[c];
+                for (c, plane) in planes.iter_mut().enumerate().take(ch) {
+                    plane[i] = tmp[c];
                 }
             }
 
             // 2–4. Per-channel gain → polarity → delay, then LFE gain, then
             // the optional LFE low-pass (bass management).
-            for c in 0..ch {
+            for (c, plane) in planes.iter_mut().enumerate().take(ch) {
                 let is_lfe = self.lfe_enabled && self.lfe_channel_flags[c];
                 let mut g = if self.enabled { self.gains[c] } else { 1.0 };
                 if self.enabled && self.invert[c] {
@@ -373,7 +373,7 @@ impl ChannelTrimmer {
                 } else {
                     0.0
                 };
-                let x = planes[c][i];
+                let x = plane[i];
                 if d > 0.0 {
                     let i0 = d.floor() as usize;
                     let frac = d - i0 as f32;
@@ -394,27 +394,26 @@ impl ChannelTrimmer {
                     let y = a_val * (1.0 - frac) + b_val * frac;
                     self.delay_bufs[c][pos] = x;
                     self.delay_pos[c] = (pos + 1) & self.delay_mask;
-                    planes[c][i] = y * g;
+                    plane[i] = y * g;
                 } else {
-                    planes[c][i] = x * g;
+                    plane[i] = x * g;
                 }
                 // LFE low-pass runs after gain, only on LFE-role channels.
                 if self.lfe_lp_enabled && is_lfe {
-                    planes[c][i] = self.lfe_lp_states[c].process(planes[c][i], &self.lfe_lp_coeffs);
+                    plane[i] = self.lfe_lp_states[c].process(plane[i], &self.lfe_lp_coeffs);
                 }
                 // Main high-pass is applied to every non-LFE speaker channel;
                 // the LFE path has its own explicitly configured low-pass.
                 if self.mains_hp_enabled && !is_lfe {
-                    planes[c][i] =
-                        self.mains_hp_states[c].process(planes[c][i], &self.mains_hp_coeffs);
+                    plane[i] = self.mains_hp_states[c].process(plane[i], &self.mains_hp_coeffs);
                 }
                 // Finally apply the channel-specific EQ cascade. EQ state is
                 // independent per channel, so center/surround/height content
                 // cannot leak into the front-pair stereo filters.
                 if self.channel_eq_enabled {
                     for band in 0..self.channel_eq_coeffs[c].len() {
-                        planes[c][i] = self.channel_eq_states[c][band]
-                            .process(planes[c][i], &self.channel_eq_coeffs[c][band]);
+                        plane[i] = self.channel_eq_states[c][band]
+                            .process(plane[i], &self.channel_eq_coeffs[c][band]);
                     }
                 }
             }
@@ -482,22 +481,19 @@ mod tests {
         );
         let mut p = planes(4, 4, |_c, i| (i + 1) as f32);
         t.process_planes(&mut p, 4, 4);
-        for i in 0..4 {
+        for (i, (a, b, c2, c3)) in p[0]
+            .iter()
+            .zip(p[1].iter())
+            .zip(p[2].iter())
+            .zip(p[3].iter())
+            .map(|(((a, b), c2), c3)| (a, b, c2, c3))
+            .enumerate()
+        {
             let v = (i + 1) as f32;
-            assert!(
-                (p[0][i] - v * 0.5).abs() < 1e-3,
-                "ch0 {:.4} != {:.4}",
-                p[0][i],
-                v * 0.5
-            );
-            assert!(
-                (p[1][i] + v).abs() < 1e-5,
-                "ch1 {:.4} != {:.4}",
-                p[1][i],
-                -v
-            );
-            assert!((p[2][i] - v).abs() < 1e-5, "ch2 should be untouched");
-            assert!((p[3][i] - v).abs() < 1e-5, "ch3 should be untouched");
+            assert!((a - v * 0.5).abs() < 1e-3, "ch0 {a:.4} != {:.4}", v * 0.5);
+            assert!((b + v).abs() < 1e-5, "ch1 {b:.4} != {:.4}", -v);
+            assert!((c2 - v).abs() < 1e-5, "ch2 should be untouched");
+            assert!((c3 - v).abs() < 1e-5, "ch3 should be untouched");
         }
     }
 
@@ -521,12 +517,12 @@ mod tests {
         assert_eq!(p[0][0], 0.0);
         assert_eq!(p[0][1], 0.0);
         assert_eq!(p[0][2], 0.0);
-        for i in 3..10 {
-            assert!((p[0][i] - (i + 1 - 3) as f32).abs() < 1e-5);
+        for (i, &v) in p[0].iter().enumerate().skip(3) {
+            assert!((v - (i + 1 - 3) as f32).abs() < 1e-5);
         }
         // ch1 untouched.
-        for i in 0..10 {
-            assert!((p[1][i] - (i + 1) as f32).abs() < 1e-5);
+        for (i, &v) in p[1].iter().enumerate().take(10) {
+            assert!((v - (i + 1) as f32).abs() < 1e-5);
         }
     }
 
@@ -547,13 +543,9 @@ mod tests {
         // Ramp input: y[n] = 0.5·x[n] + 0.5·x[n−1] = n + 0.5.
         let mut p = planes(1, 16, |_c, i| (i + 1) as f32);
         t.process_planes(&mut p, 1, 16);
-        for i in 0..16 {
+        for (i, &v) in p[0].iter().enumerate() {
             let expected = i as f32 + 0.5;
-            assert!(
-                (p[0][i] - expected).abs() < 1e-5,
-                "y[{i}] = {} != {expected}",
-                p[0][i]
-            );
+            assert!((v - expected).abs() < 1e-5, "y[{i}] = {v} != {expected}");
         }
     }
 
@@ -637,13 +629,10 @@ mod tests {
         t.set_lfe_channels(vec![3]); // 5.1 layout LFE slot
         let mut p = planes(6, 4, |_c, _i| 0.5);
         t.process_planes(&mut p, 6, 4);
-        for i in 0..4 {
-            assert!(
-                (p[3][i] - 0.5 * 1.995).abs() < 1e-3,
-                "LFE ch must be boosted"
-            );
-            for c in [0, 1, 2, 4, 5] {
-                assert!((p[c][i] - 0.5).abs() < 1e-5, "non-LFE ch must be untouched");
+        for (i, &lfe) in p[3].iter().enumerate() {
+            assert!((lfe - 0.5 * 1.995).abs() < 1e-3, "LFE ch must be boosted");
+            for &v in [&p[0][i], &p[1][i], &p[2][i], &p[4][i], &p[5][i]] {
+                assert!((v - 0.5).abs() < 1e-5, "non-LFE ch must be untouched");
             }
         }
     }

@@ -196,7 +196,12 @@ impl Default for ASIOChannelInfo {
 
 impl ASIOChannelInfo {
     pub fn name_string(&self) -> String {
-        let bytes = self.name.iter().map(|&b| b as u8).take_while(|&b| b != 0).collect::<Vec<_>>();
+        let bytes = self
+            .name
+            .iter()
+            .map(|&b| b as u8)
+            .take_while(|&b| b != 0)
+            .collect::<Vec<_>>();
         String::from_utf8_lossy(&bytes).to_string()
     }
 }
@@ -244,11 +249,20 @@ pub struct ASIOTime {
 #[derive(Clone, Copy)]
 pub struct ASIOCallbacks {
     /// Ping-pong buffer switch callback: `fn(doubleBufferIndex: i32, directProcess: ASIOBool)`.
-    pub buffer_switch: Option<unsafe extern "C" fn(double_buffer_index: i32, direct_process: ASIOBool)>,
+    pub buffer_switch:
+        Option<unsafe extern "C" fn(double_buffer_index: i32, direct_process: ASIOBool)>,
     /// Sample rate change notification.
     pub sample_rate_did_change: Option<unsafe extern "C" fn(sample_rate: f64)>,
     /// Driver message handler.
-    pub asio_message: Option<unsafe extern "C" fn(selector: i32, value: i32, message: *mut c_void, opt: *mut f64) -> i32>,
+    pub asio_message: Option<
+        unsafe extern "C" fn(selector: i32, value: i32, message: *mut c_void, opt: *mut f64) -> i32,
+    >,
     /// Time-stamped buffer switch callback.
-    pub buffer_switch_time_info: Option<unsafe extern "C" fn(params: *mut ASIOTime, double_buffer_index: i32, direct_process: ASIOBool) -> *mut ASIOTime>,
+    pub buffer_switch_time_info: Option<
+        unsafe extern "C" fn(
+            params: *mut ASIOTime,
+            double_buffer_index: i32,
+            direct_process: ASIOBool,
+        ) -> *mut ASIOTime,
+    >,
 }

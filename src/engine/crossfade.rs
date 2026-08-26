@@ -112,7 +112,7 @@ impl AudioEngine {
 
     /// Transition from Single to Transitioning state by spawning the
     /// incoming decoder and initializing the crossfade parameters.
-    fn begin_crossfade_transition(&mut self) {
+    pub(super) fn begin_crossfade_transition(&mut self) {
         let next_path = match self.loudness_scan.next_track_path.take() {
             Some(p) => p,
             None => return,

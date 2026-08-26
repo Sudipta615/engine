@@ -16,7 +16,7 @@ pub use dsp_config::{
     GraphicEqConfig, GraphicEqLayout, LfeConfig, LimiterConfig, LoudnessConfig,
     MultibandCompressorConfig, StereoEnhancerConfig,
 };
-pub use engine_config::{EngineConfig, EnginePreset};
+pub use engine_config::{ConfigValidation, EngineConfig, EnginePreset};
 pub use enums::{
     AudioBackend, ChannelPolicy, CompressorDetector, CrossfadeCurve, CrossfeedProfile,
     DitherPolicy, DsdOutput, FallbackPolicy, FilterType, LoudnessMode, OutputAccessMode,

@@ -44,7 +44,7 @@ impl DspNode for ResamplerNode {
         {
             self.resampler
                 .as_ref()
-                .map_or(false, |r| !r.is_passthrough() && !r.is_disabled())
+                .is_some_and(|r| !r.is_passthrough() && !r.is_disabled())
         }
         #[cfg(not(feature = "resample"))]
         {

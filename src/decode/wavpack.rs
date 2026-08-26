@@ -512,7 +512,7 @@ mod tests {
             state ^= state >> 17;
             state ^= state << 5;
             // Mix in a deterministic ramp so the signal is not pure noise.
-            let v = ((state as i64 % (max * 2 + 1)) - max) + (i as i64 % 97) as i64;
+            let v = ((state as i64 % (max * 2 + 1)) - max) + (i as i64 % 97);
             out.push(v.clamp(-max, max) as i32);
         }
         out

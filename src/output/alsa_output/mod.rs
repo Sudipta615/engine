@@ -61,6 +61,10 @@ use crate::output::output_info::OutputInfo;
 /// another thread to interrupt a blocked write — that is how `stop_render`
 /// unblocks the render thread during shutdown).
 #[derive(Clone)]
+// The ALSA `PCM` type is not Sync, but the handle is confined to a single
+// owner at a time (the output or its render thread), so sharing an `Arc`
+// across the hand-off is sound — the unsafe impls document that contract.
+#[allow(clippy::arc_with_non_send_sync)]
 struct PcmArc(Arc<PCM>);
 
 unsafe impl Send for PcmArc {}
@@ -210,6 +214,8 @@ impl AlsaOutput {
         }
         pcm.prepare()
             .map_err(|e| OutputError::StreamOpen(format!("prepare: {e}")))?;
+        // See `PcmArc`: the handle is confined to a single owner at a time.
+        #[allow(clippy::arc_with_non_send_sync)]
         Ok(PcmArc(Arc::new(pcm)))
     }
 

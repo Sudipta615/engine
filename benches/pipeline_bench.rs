@@ -62,8 +62,10 @@ fn bench_pipeline(c: &mut Criterion) {
     });
 
     // Block API in Quality (f64) mode.
-    let mut quality_config = EngineConfig::default();
-    quality_config.precision_mode = config::PrecisionMode::Quality;
+    let quality_config = EngineConfig {
+        precision_mode: config::PrecisionMode::Quality,
+        ..EngineConfig::default()
+    };
     let mut quality_pipeline = DspPipeline::from_config(&quality_config, 44100.0);
     group.throughput(Throughput::Elements(BLOCK_4K as u64));
     group.bench_function("full_chain/block_4096_block_api_quality", |b| {

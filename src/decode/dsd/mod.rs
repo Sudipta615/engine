@@ -20,6 +20,7 @@
 //!   always LSB-first. (DST-compressed files are rejected.)
 
 mod decimator;
+pub mod decoder;
 mod packer;
 mod reader;
 #[cfg(test)]
@@ -28,6 +29,7 @@ mod tests;
 use thiserror::Error;
 
 pub use decimator::DsdToPcmDecimator;
+pub use decoder::DsdDecoder;
 pub use packer::{DopPacker, DsdWireFormat, NativeDsdPacker};
 pub use reader::DsdReader;
 

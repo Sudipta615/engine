@@ -2,6 +2,7 @@
 /target
 Cargo.lock.bak
 **/*.rs.bk
+*.rlib
 
 # IDE and Editor files
 .vscode/

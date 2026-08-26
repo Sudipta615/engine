@@ -371,7 +371,7 @@ mod tests {
         let mut c = AudioFormatConverter::new(TargetFormat::I24Le, DitherType::None);
         let (l, _) = c.convert_stereo_to_i24le(1.0, 0.0);
         // Max 24-bit signed = 2^23 - 1 = 8388607
-        assert!(l <= 8388607 && l >= -8388608);
+        assert!((-8388608..=8388607).contains(&l));
     }
 
     #[test]

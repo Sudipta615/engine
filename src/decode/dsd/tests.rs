@@ -285,8 +285,8 @@ fn test_dsf_read_stereo() {
         assert_eq!(right.len(), block.frames as usize);
         let start = got_frames as usize;
         let end = start + block.frames as usize;
-        assert_eq!(&block.left()[..], &ch0[start..end], "left channel mismatch");
-        assert_eq!(&right[..], &ch1[start..end], "right channel mismatch");
+        assert_eq!(block.left(), &ch0[start..end], "left channel mismatch");
+        assert_eq!(right, &ch1[start..end], "right channel mismatch");
         got_frames += block.frames as u64;
     }
     assert_eq!(got_frames, frames, "all frames consumed");
@@ -313,7 +313,7 @@ fn test_dsf_read_mono() {
     let mut got = Vec::new();
     while let Some(block) = reader.read_dsd_block(32).expect("read") {
         assert!(block.right().is_none(), "mono file has no right channel");
-        got.extend_from_slice(&block.left());
+        got.extend_from_slice(block.left());
     }
     assert_eq!(got, ch0);
     assert!(reader.read_dsd_block(32).expect("read").is_none());
@@ -434,12 +434,12 @@ fn test_dsf_multichannel_exposes_all_channels() {
     let mut decoded: Vec<Vec<u8>> = vec![Vec::new(); channels];
     while let Some(block) = reader.read_dsd_block(20).expect("read block") {
         assert_eq!(block.channels.len(), channels);
-        for ch in 0..channels {
-            decoded[ch].extend_from_slice(&block.channels[ch]);
+        for (ch, dst) in decoded.iter_mut().enumerate().take(channels) {
+            dst.extend_from_slice(&block.channels[ch]);
         }
     }
-    for ch in 0..channels {
-        assert_eq!(decoded[ch], data[ch], "channel {ch} bitstream mismatch");
+    for (ch, chan) in decoded.iter().enumerate().take(channels) {
+        assert_eq!(chan, &data[ch], "channel {ch} bitstream mismatch");
     }
 
     // PCM path: every channel produces decimated output.
@@ -448,15 +448,15 @@ fn test_dsf_multichannel_exposes_all_channels() {
     let mut total_pcm = 0usize;
     while let Some(pcm) = reader.decode_block(16).expect("decode block") {
         assert_eq!(pcm.channels.len(), channels);
-        for ch in 0..channels {
-            pcm_channels[ch].extend_from_slice(&pcm.channels[ch]);
+        for (ch, dst) in pcm_channels.iter_mut().enumerate().take(channels) {
+            dst.extend_from_slice(&pcm.channels[ch]);
         }
         total_pcm += pcm.channels[0].len();
     }
     // 64 bytes × 8 bits / 32 = 16 PCM frames per channel.
     assert_eq!(total_pcm, 16);
-    for ch in 0..channels {
-        assert_eq!(pcm_channels[ch].len(), total_pcm, "channel {ch} PCM count");
+    for (ch, chan) in pcm_channels.iter().enumerate().take(channels) {
+        assert_eq!(chan.len(), total_pcm, "channel {ch} PCM count");
     }
     let _ = std::fs::remove_file(&path);
 }
@@ -466,9 +466,9 @@ fn test_decimator_state_carries_across_blocks() {
     // Feeding a signal block-by-block must produce exactly the same PCM
     // as feeding the whole signal in one call — i.e. no discontinuity at
     // block boundaries.
-    let block1 = vec![0xFFu8; 64];
-    let block2 = vec![0xABu8; 64];
-    let block3 = vec![0x00u8; 64];
+    let block1 = [0xFFu8; 64];
+    let block2 = [0xABu8; 64];
+    let block3 = [0x00u8; 64];
     let blocks = [&block1[..], &block2[..], &block3[..]];
 
     // Split path: one decimate_channels call per block.
@@ -537,8 +537,8 @@ fn test_dsf_format_info() {
             1,
             2_822_400,
             frames,
-            &vec![0u8; 32],
-            Some(&vec![0u8; 32]),
+            &[0u8; 32],
+            Some(&[0u8; 32]),
         ),
     );
     let reader = DsdReader::open(&path).expect("open DSF");
@@ -558,10 +558,7 @@ fn test_dsf_format_info() {
 fn test_dsf_invalid_inputs() {
     // Unsupported channel count (7 is outside the DSF spec range).
     let path = temp_path("dsf");
-    write_bytes(
-        &path,
-        &build_dsf(7, 16, 1, 2_822_400, 16, &vec![0u8; 16], None),
-    );
+    write_bytes(&path, &build_dsf(7, 16, 1, 2_822_400, 16, &[0u8; 16], None));
     assert!(matches!(
         DsdReader::open(&path),
         Err(DsdError::UnsupportedChannels(7))
@@ -581,7 +578,7 @@ fn test_dsf_invalid_inputs() {
     let path = temp_path("dsf");
     write_bytes(
         &path,
-        &build_dsf(2, 16, 1, 48_000, 16, &vec![0u8; 16], Some(&vec![0u8; 16])),
+        &build_dsf(2, 16, 1, 48_000, 16, &[0u8; 16], Some(&[0u8; 16])),
     );
     assert!(matches!(
         DsdReader::open(&path),
@@ -616,12 +613,8 @@ fn test_dff_read_stereo_partial_blocks() {
         let right = block.right().expect("stereo");
         let start = got_frames as usize;
         let end = start + block.frames as usize;
-        assert_eq!(
-            &block.left()[..],
-            &ch0[start..end],
-            "left mismatch at {start}"
-        );
-        assert_eq!(&right[..], &ch1[start..end], "right mismatch at {start}");
+        assert_eq!(block.left(), &ch0[start..end], "left mismatch at {start}");
+        assert_eq!(right, &ch1[start..end], "right mismatch at {start}");
         got_frames += block.frames as u64;
         if block.frames as u64 != 3000 && block.frames as u64 != frames - 4096 {
             splits += 1;
@@ -638,7 +631,7 @@ fn test_dff_dst_rejected() {
     let path = temp_path("dff");
     write_bytes(
         &path,
-        &build_dff(2_822_400, 2, b"DST ", &vec![0u8; 64], Some(&vec![0u8; 64])),
+        &build_dff(2_822_400, 2, b"DST ", &[0u8; 64], Some(&[0u8; 64])),
     );
     assert!(matches!(
         DsdReader::open(&path),
@@ -652,7 +645,7 @@ fn test_dff_unsupported_channels() {
     let path = temp_path("dff");
     write_bytes(
         &path,
-        &build_dff(2_822_400, 6, b"DSD ", &vec![0u8; 64], Some(&vec![0u8; 64])),
+        &build_dff(2_822_400, 6, b"DSD ", &[0u8; 64], Some(&[0u8; 64])),
     );
     match DsdReader::open(&path) {
         Err(DsdError::UnsupportedChannels(6)) => {}

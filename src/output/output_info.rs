@@ -104,7 +104,7 @@ impl OutputInfo {
         };
 
         Self {
-            requested_backend: backend.clone(),
+            requested_backend: backend,
             actual_backend: backend,
             requested_rate: rate,
             actual_rate: rate,
@@ -178,7 +178,7 @@ impl OutputInfo {
     /// suffix is only shown when it is meaningful (enabled AND the container
     /// is integer); f32/f64 streams quantize nowhere.
     pub fn format_summary(&self) -> String {
-        let rate_str = if self.actual_rate > 0 && self.actual_rate % 1000 == 0 {
+        let rate_str = if self.actual_rate > 0 && self.actual_rate.is_multiple_of(1000) {
             format!("{} kHz", self.actual_rate / 1000)
         } else if self.actual_rate > 0 {
             format!("{:.1} kHz", self.actual_rate as f32 / 1000.0)

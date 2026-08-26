@@ -601,17 +601,15 @@ impl LookaheadLimiter {
 
     /// Process an audio frame (alternative API).
     pub fn process_frame(&mut self, frame: &mut AudioFrame) {
-        let ch = (frame.num_channels as usize)
-            .min(crate::buffer::MAX_CHANNELS)
-            .max(1);
+        let ch = (frame.num_channels as usize).clamp(1, crate::buffer::MAX_CHANNELS);
         let mut in_s = [0.0f64; crate::buffer::MAX_CHANNELS];
-        for i in 0..ch {
-            in_s[i] = frame.channels[i] as f64;
+        for (slot, v) in in_s.iter_mut().zip(frame.channels.iter()).take(ch) {
+            *slot = *v as f64;
         }
         let mut out_s = [0.0f64; crate::buffer::MAX_CHANNELS];
         self.process_sample_multichannel(&in_s[..ch], &mut out_s[..ch]);
-        for i in 0..ch {
-            frame.channels[i] = out_s[i] as f32;
+        for (slot, v) in frame.channels.iter_mut().zip(out_s.iter()).take(ch) {
+            *slot = *v as f32;
         }
     }
 
@@ -647,12 +645,8 @@ impl LookaheadLimiter {
         let mut out_s = [0.0f64; crate::buffer::MAX_CHANNELS];
         for _ in 0..tail {
             self.process_sample_multichannel(&in_silence[..ch], &mut out_s[..ch]);
-            for c in 0..ch {
-                out.push(out_s[c] as f32);
-            }
-            for _ in ch..channels {
-                out.push(0.0);
-            }
+            out.extend(out_s[..ch].iter().map(|&v| v as f32));
+            out.resize(out.len() + (channels - ch), 0.0);
         }
         out
     }

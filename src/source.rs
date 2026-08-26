@@ -73,7 +73,10 @@ impl AudioSource {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.to_string_lossy().into_owned()),
             Self::Uri(uri) => uri.clone(),
-            Self::Memory { extension_hint, data } => {
+            Self::Memory {
+                extension_hint,
+                data,
+            } => {
                 let ext = extension_hint.as_deref().unwrap_or("unknown");
                 format!("<memory: {} bytes, hint: {}>", data.len(), ext)
             }

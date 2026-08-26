@@ -45,7 +45,7 @@ fn assert_block_matches_per_frame(mode: PrecisionMode) {
     let mut input_r = Vec::with_capacity(n);
     let mut x = 0.1234567f32;
     for i in 0..n {
-        x = (x * 1.0001 + 0.61803398875).fract();
+        x = (x * 1.0001 + 0.618_034).fract();
         let t = i as f32;
         input_l.push((t * 0.01).sin() * 0.5 + (x - 0.5) * 0.25);
         input_r.push((t * 0.013).cos() * 0.5 + (x - 0.5) * 0.25);
@@ -681,8 +681,10 @@ fn multichannel_trim_routing_and_lfe_apply() {
 #[test]
 fn bit_perfect_bypasses_volume_and_fade_in_all_precisions() {
     for mode in [PrecisionMode::Performance, PrecisionMode::Quality] {
-        let mut cfg = EngineConfig::default();
-        cfg.precision_mode = mode;
+        let cfg = EngineConfig {
+            precision_mode: mode,
+            ..EngineConfig::default()
+        };
         let mut pipeline = DspPipeline::from_config(&cfg, 48_000.0);
         pipeline.set_volume(0.25);
         pipeline.volume.snap();

@@ -122,10 +122,10 @@ fn convolution_matches_naive_direct_convolution_stereo() {
     // A genuinely stereo IR: L and R differ, so each channel convolves with
     // its own kernel.
     let ir_l: Vec<f64> = (0..80)
-        .map(|i| (0.85f64).powi(i as i32) * (0.04 * i as f64).cos())
+        .map(|i| (0.85f64).powi(i) * (0.04 * i as f64).cos())
         .collect();
     let ir_r: Vec<f64> = (0..80)
-        .map(|i| (0.8f64).powi(i as i32) * (0.03 * i as f64).sin())
+        .map(|i| (0.8f64).powi(i) * (0.03 * i as f64).sin())
         .collect();
     let ir: Vec<(f64, f64)> = ir_l.iter().zip(&ir_r).map(|(l, r)| (*l, *r)).collect();
 
@@ -423,10 +423,10 @@ fn multichannel_permutation_routing_reorders_exactly() {
     let mut p = vec![vec![a; 4], vec![b; 4], vec![c; 4]];
     trim.process_planes(&mut p, 3, 4);
 
-    for i in 0..4 {
-        assert!((p[0][i] - c).abs() < 1e-6, "out[0] should be C");
-        assert!((p[1][i] - b).abs() < 1e-6, "out[1] should be B");
-        assert!((p[2][i] - a).abs() < 1e-6, "out[2] should be A");
+    for ((x0, x1), x2) in p[0].iter().zip(p[1].iter()).zip(p[2].iter()) {
+        assert!((x0 - c).abs() < 1e-6, "out[0] should be C");
+        assert!((x1 - b).abs() < 1e-6, "out[1] should be B");
+        assert!((x2 - a).abs() < 1e-6, "out[2] should be A");
     }
 }
 
@@ -451,14 +451,14 @@ fn multichannel_trim_applies_to_every_channel() {
 
     let mut p = planes(8, 8, |_c, i| (i + 1) as f32);
     trim.process_planes(&mut p, 8, 8);
-    for c in 0..8 {
-        for i in 0..8 {
+    for (c, plane) in p.iter().enumerate().take(8) {
+        for (i, &val) in plane.iter().enumerate().take(8) {
             let v = (i + 1) as f32;
             let expected = if c == 7 { v * 0.5 } else { v };
             assert!(
-                (p[c][i] - expected).abs() < 1e-3,
+                (val - expected).abs() < 1e-3,
                 "channel {c}[{i}] = {} != {expected}",
-                p[c][i]
+                val
             );
         }
     }

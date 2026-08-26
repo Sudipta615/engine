@@ -75,12 +75,13 @@ impl DspNode for LimiterNode {
             let mut in_s = [0.0f64; crate::buffer::MAX_CHANNELS];
             let mut out_s = [0.0f64; crate::buffer::MAX_CHANNELS];
             for i in 0..frames {
-                for c in 0..channels {
-                    in_s[c] = planes[c][i] as f64;
+                for (c, s) in planes.iter().enumerate().take(channels) {
+                    in_s[c] = s[i] as f64;
                 }
-                self.limiter.process_sample_multichannel(&in_s[..channels], &mut out_s[..channels]);
-                for c in 0..channels {
-                    planes[c][i] = out_s[c] as f32;
+                self.limiter
+                    .process_sample_multichannel(&in_s[..channels], &mut out_s[..channels]);
+                for (c, s) in planes.iter_mut().enumerate().take(channels) {
+                    s[i] = out_s[c] as f32;
                 }
             }
         }
@@ -99,12 +100,13 @@ impl DspNode for LimiterNode {
             let mut in_s = [0.0f64; crate::buffer::MAX_CHANNELS];
             let mut out_s = [0.0f64; crate::buffer::MAX_CHANNELS];
             for i in 0..frames {
-                for c in 0..channels {
-                    in_s[c] = planes[c][i];
+                for (c, s) in planes.iter().enumerate().take(channels) {
+                    in_s[c] = s[i];
                 }
-                self.limiter.process_sample_multichannel(&in_s[..channels], &mut out_s[..channels]);
-                for c in 0..channels {
-                    planes[c][i] = out_s[c];
+                self.limiter
+                    .process_sample_multichannel(&in_s[..channels], &mut out_s[..channels]);
+                for (c, s) in planes.iter_mut().enumerate().take(channels) {
+                    s[i] = out_s[c];
                 }
             }
         }

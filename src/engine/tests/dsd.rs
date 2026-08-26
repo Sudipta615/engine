@@ -1,14 +1,14 @@
 //! DSD playback, DoP packing and Native DSD routing tests.
 
-use std::sync::Arc;
 use config::EngineConfig;
+use std::sync::Arc;
 
+use super::helpers::*;
 use crate::{
     buffer::EngineCommand,
     decode::Decoder,
     engine::{AudioEngine, PlaybackStream},
 };
-use super::helpers::*;
 
 /// C1 acceptance: known DSD vectors must produce **identical** DoP packing.
 #[test]
@@ -48,7 +48,11 @@ fn test_dop_decode_matches_reference_packer() {
                     // Markers must be the alternating base 0x05/0xFA, or the
                     // deterministic per-channel substitution when a payload
                     // byte mimics the marker (DoP v1.1).
-                    let base = if frame_index % 2 == 0 { 0x05u8 } else { 0xFAu8 };
+                    let base = if frame_index.is_multiple_of(2) {
+                        0x05u8
+                    } else {
+                        0xFAu8
+                    };
                     let expected = |payload: u16| -> u8 {
                         if (payload >> 8) == 0x05 {
                             0x06
@@ -121,14 +125,13 @@ fn test_dsd_pcm_dsd_track_transition_sequence() {
     assert!(!engine.playback_info().dop_active);
 
     engine.send_command(EngineCommand::Play);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         engine.tick();
         if engine.stream_ended {
             break;
         }
         assert!(std::time::Instant::now() < deadline, "DSD did not finish");
-        std::thread::sleep(std::time::Duration::from_millis(2));
     }
     let dsd_frames = engine.clock.source_frames;
 
@@ -142,14 +145,13 @@ fn test_dsd_pcm_dsd_track_transition_sequence() {
     );
 
     engine.send_command(EngineCommand::Play);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         engine.tick();
         if engine.stream_ended {
             break;
         }
         assert!(std::time::Instant::now() < deadline, "WAV did not finish");
-        std::thread::sleep(std::time::Duration::from_millis(2));
     }
     assert!(
         engine.clock.source_frames > dsd_frames,
@@ -225,7 +227,10 @@ fn test_seek_during_transition_cancels_outgoing_at_every_boundary() {
             "{label}: seek must promote the incoming decoder to Single"
         );
         assert!(!engine.pipeline().mixer().is_crossfading());
-        assert_eq!(engine.loudness_scan.current_track_path.as_deref(), Some(second.as_path()));
+        assert_eq!(
+            engine.loudness_scan.current_track_path.as_deref(),
+            Some(second.as_path())
+        );
         assert_eq!(engine.clock.source_sample_rate, first_info.sample_rate);
         assert!(
             (engine.playback_info().position_secs - seek_position).abs() < 0.01,
@@ -340,7 +345,7 @@ fn test_pcm_to_dsd_crossfade_transition() {
         .set_source_frames(total_source_frames.saturating_sub(1));
     engine.send_command(EngineCommand::Play);
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         engine.tick();
         if matches!(engine.stream, Some(PlaybackStream::Transitioning { .. })) {
@@ -350,7 +355,6 @@ fn test_pcm_to_dsd_crossfade_transition() {
             std::time::Instant::now() < deadline,
             "PCM→DSD crossfade did not trigger"
         );
-        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
     let mut drained = [0.0f32; 8192];
@@ -372,7 +376,6 @@ fn test_pcm_to_dsd_crossfade_transition() {
             std::time::Instant::now() < deadline,
             "PCM→DSD transition did not complete"
         );
-        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
     assert!(
@@ -396,7 +399,10 @@ fn test_engine_loads_dsf_and_plays_to_end() {
     assert!(info.duration_secs > 0.0);
 
     engine.send_command(EngineCommand::Play);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    // Tight loop (no sleep): the wall-clock deadline would otherwise be
+    // hostage to parallel test load on shared CI runners. 0.37 s of audio
+    // finishes in well under a second even when CPU-starved.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         engine.tick();
         if engine.stream_ended {
@@ -406,7 +412,6 @@ fn test_engine_loads_dsf_and_plays_to_end() {
             std::time::Instant::now() < deadline,
             "DSF playback did not reach end of stream"
         );
-        std::thread::sleep(std::time::Duration::from_millis(2));
     }
 
     assert_eq!(
@@ -505,7 +510,10 @@ fn test_native_dsd_config_falls_back_explicitly_without_dsd_output() {
         info.sample_rate, 88_200,
         "native DSD must fall back to DSD→PCM decimation without a DSD-capable output"
     );
-    assert!(!engine.dsd.native_dsd_active, "native DSD must not be active");
+    assert!(
+        !engine.dsd.native_dsd_active,
+        "native DSD must not be active"
+    );
     assert!(
         !engine.dsd.dop_active,
         "DoP must also fall back (no exclusive I32 output)"
@@ -536,7 +544,8 @@ fn test_native_dsd_config_falls_back_explicitly_without_dsd_output() {
     );
 
     engine.send_command(EngineCommand::Play);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    // Tight loop (no sleep): see test_engine_loads_dsf_and_plays_to_end.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         engine.tick();
         if engine.stream_ended {
@@ -546,7 +555,6 @@ fn test_native_dsd_config_falls_back_explicitly_without_dsd_output() {
             std::time::Instant::now() < deadline,
             "DSF did not play to end in native-DSD fallback mode"
         );
-        std::thread::sleep(std::time::Duration::from_millis(2));
     }
     assert_eq!(
         engine.clock.source_frames, 32_768,
@@ -580,7 +588,7 @@ fn test_dop_config_falls_back_without_suitable_output() {
     assert!(!engine.playback_info().dop_active);
 
     engine.send_command(EngineCommand::Play);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         engine.tick();
         if engine.stream_ended {
@@ -590,7 +598,6 @@ fn test_dop_config_falls_back_without_suitable_output() {
             std::time::Instant::now() < deadline,
             "DSF did not play to end in DoP-fallback mode"
         );
-        std::thread::sleep(std::time::Duration::from_millis(2));
     }
     assert_eq!(
         engine.clock.source_frames, 32_768,

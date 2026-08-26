@@ -86,7 +86,11 @@ fn test_headless_engine_lifecycle_and_events() {
     let mut started_event = false;
     while let Ok(evt) = event_rx.try_recv() {
         match evt {
-            EngineEvent::SourceOpened { source, sample_rate, .. } => {
+            EngineEvent::SourceOpened {
+                source,
+                sample_rate,
+                ..
+            } => {
                 assert_eq!(source, source1);
                 assert_eq!(sample_rate, 44100);
                 opened_event = true;

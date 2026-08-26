@@ -20,6 +20,25 @@ pub enum EngineCommand {
     Open(AudioSource),
     /// Prepare the next audio source for gapless / crossfade transition.
     PrepareNext(AudioSource),
+
+    // ── Playlist / queue ─────────────────────────────────────────────────
+    /// Append a source to the end of the playback queue.
+    Enqueue(AudioSource),
+    /// Remove the entry at `index` from the playback queue.
+    RemoveFromPlaylist(usize),
+    /// Clear the playback queue (does not stop the current track).
+    ClearPlaylist,
+    /// Jump directly to the entry at `index` and start playing it.
+    PlayIndex(usize),
+    /// Skip to the next queue entry (manual Next).
+    Next,
+    /// Skip to the previous queue entry (manual Previous).
+    Previous,
+    /// Set the repeat mode (Off / All / One).
+    SetRepeatMode(crate::playlist::RepeatMode),
+    /// Enable or disable shuffle.
+    SetShuffle(bool),
+
     Shutdown,
     SetOutputBackend(config::AudioBackend),
     SetOutputDevice(Option<String>),
@@ -100,6 +119,11 @@ pub enum EngineCommand {
         result: Option<crate::decode::LoudnessScanResult>,
     },
 
+    /// Scan a file for EBU R128 / ReplayGain loudness and write the result
+    /// into the file's tags (requires the `tag-write` feature). Emits a
+    /// `LoudnessScanComplete` event when done.
+    WriteLoudnessTags(std::path::PathBuf),
+
     // ── New Poweramp-class commands ─────────────────────────────────────
     /// Set the output sample rate policy.
     /// The engine will apply this on the next stream restart.
@@ -161,4 +185,22 @@ pub enum EngineCommand {
 
     /// Set bass management configuration (mains high-pass and shared crossover).
     SetBassManagement(config::BassManagementConfig),
+
+    /// Open the active ASIO driver's manufacturer settings dialog
+    /// (`IASIO::controlPanel`). No-op when the current output backend is not
+    /// ASIO or the `asio-native` feature is not compiled in.
+    OpenAsioControlPanel,
+
+    // ── System audio capture ───────────────────────────────────────────
+    /// Start capturing the system mix (WASAPI loopback) to a WAV file.
+    /// `path` defaults to `capture.wav`. No-op unless the `wasapi-native`
+    /// feature is compiled in on Windows.
+    CaptureStart {
+        /// Output WAV path (`None` → `capture.wav` in the current directory).
+        path: Option<std::path::PathBuf>,
+        /// Render endpoint to capture (`None` → system default).
+        device: Option<String>,
+    },
+    /// Stop the active system-audio capture and finalize its WAV file.
+    CaptureStop,
 }

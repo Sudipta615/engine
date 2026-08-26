@@ -10,7 +10,7 @@
 //! It is consumed by:
 //!
 //! - the [`crate::dsp::limiter::LookaheadLimiter`] peak envelope detector,
-//! - the [`crate::dsp::loudness::LoudnessMeter`],
+//! - the [`crate::dsp::LoudnessMeter`],
 //! - the offline loudness scanner (`crate::decode::scanner`),
 //!
 //! so there is deliberately exactly **one** definition of "true peak" in the

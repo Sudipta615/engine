@@ -137,7 +137,8 @@ impl AudioEngine {
                         Ok(Some(actual_format)) => {
                             actual_rate = new_output.sample_rate();
                             self.dsd.dsd_wire_format = Some(actual_format);
-                            self.dsd.dsd_transport_report.actual = crate::decode::DsdTransport::Native;
+                            self.dsd.dsd_transport_report.actual =
+                                crate::decode::DsdTransport::Native;
                             self.dsd.dsd_transport_report.wire_format = Some(actual_format);
                             needs_start = false;
                             new_output.set_dither_enabled(false);
@@ -181,7 +182,7 @@ impl AudioEngine {
         // raw DSD can never be sent to a PCM stream accidentally.
         if native_was_disabled
             && self.config.dsd_output == config::DsdOutput::NativeDsd
-            && self.dsd.dop_active == false
+            && !self.dsd.dop_active
         {
             if let Some(dop_rate) = self.enable_dop_for_recovery() {
                 let direct = new_output.output_info().access_state.is_bit_perfect();
@@ -202,7 +203,8 @@ impl AudioEngine {
                             let reason = native_failure_reason
                                 .as_deref()
                                 .unwrap_or("native DSD transport was unavailable");
-                            self.dsd.dsd_transport_report
+                            self.dsd
+                                .dsd_transport_report
                                 .step(format!("native DSD unavailable during recovery ({reason})"));
                             self.dsd.dsd_transport_report.step("fallback: DoP");
                             self.dsd.dsd_transport_report.actual = crate::decode::DsdTransport::Dop;
@@ -304,7 +306,7 @@ impl AudioEngine {
         // into the new ratio. Only a DoP→PCM encoding transition must flush
         // encoded samples, because DoP words cannot be mixed with PCM frames.
         if dop_was_disabled || native_was_disabled {
-            self.output_buffer.reset();
+            self.sample_sink.reset();
             self.scratch.pending_output_frames.clear();
             self.scratch.pending_multichannel.clear();
             self.scratch.pending_multichannel_channels = 0;
@@ -556,9 +558,11 @@ impl AudioEngine {
     fn record_native_dsd_pcm_fallback(&mut self, reason: &str) {
         self.dsd.dsd_transport_report.actual = crate::decode::DsdTransport::PcmConversion;
         self.dsd.dsd_transport_report.wire_format = None;
-        self.dsd.dsd_transport_report
+        self.dsd
+            .dsd_transport_report
             .step(format!("native DSD unavailable during recovery ({reason})"));
-        self.dsd.dsd_transport_report
+        self.dsd
+            .dsd_transport_report
             .step("fallback: DSD→PCM conversion");
         let report = self.dsd.dsd_transport_report.clone();
         self.write_playback_info(|pb| {
@@ -644,9 +648,11 @@ impl AudioEngine {
     fn record_dop_pcm_fallback(&mut self, reason: &str) {
         self.dsd.dsd_transport_report.actual = crate::decode::DsdTransport::PcmConversion;
         self.dsd.dsd_transport_report.wire_format = None;
-        self.dsd.dsd_transport_report
+        self.dsd
+            .dsd_transport_report
             .step(format!("DoP unavailable during recovery ({reason})"));
-        self.dsd.dsd_transport_report
+        self.dsd
+            .dsd_transport_report
             .step("fallback: DSD→PCM conversion");
         let report = self.dsd.dsd_transport_report.clone();
         self.write_playback_info(|pb| {
@@ -699,12 +705,59 @@ impl AudioEngine {
             // reporting-window total (published in `EngineStats`) instead of
             // discarding it after the warning check.
             let underruns = output.take_underruns();
-            self.telemetry.underruns_window = self.telemetry.underruns_window.saturating_add(underruns);
+            self.telemetry.underruns_window =
+                self.telemetry.underruns_window.saturating_add(underruns);
             if underruns > 10 {
                 warn!(
                     "High underrun count ({}) detected; may indicate device issue",
                     underruns
                 );
+            }
+        }
+    }
+}
+
+/// Shared helper for creating a resampler with the engine's current config
+/// and speed settings. Eliminates duplicated match/Ok/Err blocks across
+/// `load_track`, `begin_crossfade_transition`, and `recover_output_stream`.
+///
+/// Returns `None` if the resampler feature is disabled or if creation fails
+/// (a warning is logged on failure).
+#[cfg(feature = "resample")]
+pub(super) fn build_resampler(
+    quality: config::ResamplerQuality,
+    source_rate: f32,
+    output_rate: f32,
+    speed: f32,
+    precision: config::PrecisionMode,
+) -> Option<GenericResampler> {
+    match precision {
+        config::PrecisionMode::Performance => {
+            match AudioResampler::<f32>::new(quality, source_rate, output_rate) {
+                Ok(mut r) => {
+                    if (speed - 1.0).abs() > 0.001 {
+                        r.set_speed(speed);
+                    }
+                    Some(GenericResampler::F32(r))
+                }
+                Err(e) => {
+                    warn!("Failed to create f32 resampler: {}", e);
+                    None
+                }
+            }
+        }
+        config::PrecisionMode::Quality => {
+            match AudioResampler::<f64>::new(quality, source_rate, output_rate) {
+                Ok(mut r) => {
+                    if (speed - 1.0).abs() > 0.001 {
+                        r.set_speed(speed);
+                    }
+                    Some(GenericResampler::F64(r))
+                }
+                Err(e) => {
+                    warn!("Failed to create f64 resampler: {}", e);
+                    None
+                }
             }
         }
     }
@@ -777,51 +830,5 @@ mod tests {
             AudioEngine::rescale_source_frames(u64::MAX, 1, u32::MAX),
             u64::MAX
         );
-    }
-}
-
-/// Shared helper for creating a resampler with the engine's current config
-/// and speed settings. Eliminates duplicated match/Ok/Err blocks across
-/// `load_track`, `begin_crossfade_transition`, and `recover_output_stream`.
-///
-/// Returns `None` if the resampler feature is disabled or if creation fails
-/// (a warning is logged on failure).
-#[cfg(feature = "resample")]
-pub(super) fn build_resampler(
-    quality: config::ResamplerQuality,
-    source_rate: f32,
-    output_rate: f32,
-    speed: f32,
-    precision: config::PrecisionMode,
-) -> Option<GenericResampler> {
-    match precision {
-        config::PrecisionMode::Performance => {
-            match AudioResampler::<f32>::new(quality, source_rate, output_rate) {
-                Ok(mut r) => {
-                    if (speed - 1.0).abs() > 0.001 {
-                        r.set_speed(speed);
-                    }
-                    Some(GenericResampler::F32(r))
-                }
-                Err(e) => {
-                    warn!("Failed to create f32 resampler: {}", e);
-                    None
-                }
-            }
-        }
-        config::PrecisionMode::Quality => {
-            match AudioResampler::<f64>::new(quality, source_rate, output_rate) {
-                Ok(mut r) => {
-                    if (speed - 1.0).abs() > 0.001 {
-                        r.set_speed(speed);
-                    }
-                    Some(GenericResampler::F64(r))
-                }
-                Err(e) => {
-                    warn!("Failed to create f64 resampler: {}", e);
-                    None
-                }
-            }
-        }
     }
 }
