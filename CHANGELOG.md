@@ -2,6 +2,53 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.4.0] — 2026-08-27
+
+Phase 4 S1+S2 of the player → graph-runtime roadmap: the mix bus slot count
+becomes a first-class generation parameter and secondary streams go
+N-channel. From here the graph is `EngineConfig::mix_slots` lanes (slots 0/1
+are the transition pair, slots ≥ 2 are independent simultaneous streams), and
+multichannel output can be fed N simultaneous N-channel `Tracks`.
+
+### Added
+
+- **Slot-count generation parameter** (`EngineConfig::mix_slots`,
+  default 2): the mix bus is built with `config.mix_slots` inputs (clamped
+  to `MAX_MIX_SLOTS`), so a graph carrying N simultaneous streams is a
+  plain generation rebuild ride the Phase-2 publish/swap/retire handshake.
+  `MixBusNode::with_slots` constructs an N-slot bus; slots ≥ 2 carry
+  `lane_preamp` / `lane_loudness` chains.
+- **Per-slot user state** (`SlotState`): gain / balance / mute / active are
+  mirrored onto sticky per-slot atomics at drain and replayed into fresh
+  generations on `reconfigure`, so a reconfig never snaps a lane's settings
+  (gains replay as one-pole targets; slot 0 is never detached).
+- **N-channel secondary planes** (Phase 4 S2): `MixInput` planes are now
+  channel-major and preallocated to `MAX_CHANNELS × MAX_AUDIO_BLOCK_FRAMES`;
+  `DspGraph::process_block_multichannel_streams` feeds each secondary slot
+  from an N-channel source (interleaved + channel count) and the multichannel
+  mix step (`normal_mc` plan) sums every secondary slot channel-wise into
+  the master planes — front L/R shaped by per-slot balance, extra channels
+  at per-input gain. Stereo streams feed slots 0/1 as before via
+  `process_block_inputs` / `process_block_streams`.
+- **Modular split**: `mix_node.rs` (701 lines) is split by concern into
+  `nodes/mix/{mod,envelope,sum}.rs`, following the house split-by-concern
+  pattern (`dsp/pipeline/`, `dsp/graph/` precedent). The split is pure code
+  motion — the equivalence suite pins the bit-exact contract unchanged.
+
+### Fixed
+
+- The background loudness-scan tests' 15 s wall-clock deadline flaked under
+  parallel test-suite load; the bound is now a generous 120 s (still fails on
+  a genuine hang, tolerates CPU starvation).
+
+### Changed
+
+- `MixInput` field `planes_l` / `planes_r` → channel-major `planes`;
+  secondary pre-mix and sums run over every active channel with zero
+  allocation (fixed stack array sized to `MAX_CHANNELS`).
+- `dsp/graph` module docs updated to reflect the graph as the production hot
+  path since Phase 3.
+
 ## [3.3.0] — 2026-08-27
 
 Phase 3 of the player → graph-runtime roadmap: the mix bus and the engine

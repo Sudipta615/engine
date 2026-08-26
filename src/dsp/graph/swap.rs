@@ -22,12 +22,40 @@
 
 use super::*;
 
-/// Immutable snapshot of the listener-facing user state that a fresh
-/// generation inherits: volume / balance / speed targets and the volume-ramp
-/// duration. The audio thread mirrors these onto the control bus at every
-/// drain; the control side seeds each new generation from a snapshot so a
-/// reconfig never snaps the listener's settings.
+/// One mix-bus slot's listener-facing user state (Phase 4 S1). Slots 0/1 are
+/// the transition pair; slots >= 2 are independent lanes. Mirrored from the
+/// audio side at drain and replayed into fresh generations so a reconfig
+/// never snaps a lane's gain / balance / mute / detachment.
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SlotState {
+    /// Linear user gain target in [0, 1].
+    pub gain: f32,
+    /// Balance in [-1, 1] (0 = center).
+    pub balance: f32,
+    /// Muted: the slot contributes silence.
+    pub mute: bool,
+    /// Detached: the slot contributes nothing and its chains do not advance.
+    /// Slot 0 is never detached.
+    pub active: bool,
+}
+
+impl Default for SlotState {
+    fn default() -> Self {
+        Self {
+            gain: 1.0,
+            balance: 0.0,
+            mute: false,
+            active: true,
+        }
+    }
+}
+
+/// Immutable snapshot of the listener-facing user state that a fresh
+/// generation inherits: volume / balance / speed targets, the volume-ramp
+/// duration, and per-slot mix-bus state. The audio thread mirrors these onto
+/// the control bus at every drain; the control side seeds each new generation
+/// from a snapshot so a reconfig never snaps the listener's settings.
+#[derive(Clone, Debug, PartialEq)]
 pub struct UserState {
     /// Linear volume target in [0, 1].
     pub volume: f32,
@@ -37,6 +65,10 @@ pub struct UserState {
     pub speed: f32,
     /// Volume-ramp duration in milliseconds.
     pub volume_fade_ms: f32,
+    /// Per-slot user state, indexed by mix-bus slot. Shorter than the new
+    /// generation's slot count is fine (remaining slots keep defaults);
+    /// entries beyond the generation's slots are ignored.
+    pub slots: Vec<SlotState>,
 }
 
 impl Default for UserState {
@@ -46,6 +78,7 @@ impl Default for UserState {
             balance: 0.0,
             speed: 1.0,
             volume_fade_ms: 10.0,
+            slots: Vec::new(),
         }
     }
 }
