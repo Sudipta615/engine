@@ -114,6 +114,7 @@ impl AudioEngine {
             loudness_scan: LoudnessScanState::default(),
             recovery: RecoveryState::default(),
             scratch: EngineScratch::default(),
+            lanes: Vec::new(),
         })
     }
 

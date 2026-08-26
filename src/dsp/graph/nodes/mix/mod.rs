@@ -52,8 +52,22 @@ pub struct MixInput {
     pub loudness: LoudnessNode,
     /// Per-input user gain (one-pole ramp; defaults to unity).
     pub gain: GainProcessor,
-    /// Per-input balance in [-1, 1] (0 = center).
+    /// Per-input balance in [-1, 1] (0 = center). Shapes the front L/R pair.
     pub balance: f32,
+    /// Per-input pan in [-1, 1] (Phase 4 S3): -1 hard left, 0 center,
+    /// +1 hard right, shaped by [`pan_law`]. Compounds with `balance` on the
+    /// front pair; pan = 0 yields a (1, 1) pair so the existing `balance`
+    /// paths stay bit-exact.
+    pub pan: f32,
+    /// Pan law for the per-input `pan` (Phase 4 S3).
+    pub pan_law: PanLaw,
+    /// Peak / RMS metering accumulators for this slot (Phase 4 S3), published
+    /// to the control bus once per block. Zero-alloc block scratch.
+    pub(crate) meters: SlotMeters,
+    /// Automation track (Phase 4 S5): generation-carried immutable
+    /// breakpoints + audio-side cursor. `None` = no track, which keeps the
+    /// sum bit-exact.
+    pub(crate) automation: Option<SlotAutomation>,
     /// Mute: the input contributes silence.
     pub mute: bool,
     /// Detached slot: the input contributes nothing and its chains do not
@@ -81,18 +95,52 @@ impl MixInput {
             loudness: LoudnessNode::new(loudness_name, "pre-mix", sample_rate),
             gain: GainProcessor::with_ramp(1.0, preamp_ramp_ms, sample_rate),
             balance: 0.0,
+            pan: 0.0,
+            pan_law: PanLaw::Linear,
+            meters: SlotMeters::default(),
             mute: false,
             active: true,
+            automation: None,
             channels: 2,
             planes: (0..MAX_CHANNELS)
                 .map(|_| vec![0.0; MAX_AUDIO_BLOCK_FRAMES])
                 .collect(),
         }
     }
+
+    /// Full per-frame front-pair gains `(l, r)` for this slot's automation
+    /// track at an absolute stream position, or `None` when the slot carries
+    /// no (non-empty) track. For a Gain track the static balance/pan product
+    /// is scaled by the automation value; for a Pan track the automation
+    /// value replaces the static pan while the static balance still shapes
+    /// the pair. Advancing the cursor is the caller's job (`value_at` moves
+    /// it; call once per frame in stream order).
+    fn full_front_gains(&mut self, absolute: usize) -> Option<(f32, f32)> {
+        let auto = self.automation.as_mut()?;
+        if auto.count == 0 {
+            return None;
+        }
+        let v = auto.value_at(absolute);
+        match auto.target {
+            AutomationTarget::Gain => {
+                let (bl, br) = balance_gains(self.balance);
+                let (pl, pr) = pan_gains(self.pan, self.pan_law);
+                Some(((bl * pl) * v, (br * pr) * v))
+            }
+            AutomationTarget::Pan => {
+                let (bl, br) = balance_gains(self.balance);
+                let (pl, pr) = pan_gains(v, self.pan_law);
+                Some((bl * pl, br * pr))
+            }
+        }
+    }
 }
 
 /// Per-input control commands (plain data; ride the SPSC control queues).
+/// `SetAutomation` carries a fixed 64-point breakpoint array, so the enum is
+/// large-variant by design (same `PlaybackStream` precedent).
 #[derive(Clone, Copy, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum MixInputCmd {
     /// Set the linear user gain target in [0, 1].
     SetGain(f32),
@@ -100,6 +148,19 @@ pub enum MixInputCmd {
     SetGainDb(f32),
     /// Set the per-input balance in [-1, 1].
     SetBalance(f32),
+    /// Set the per-input pan in [-1, 1] (Phase 4 S3).
+    SetPan(f32),
+    /// Set the per-input pan law (Phase 4 S3).
+    SetPanLaw(PanLaw),
+    /// Replace the slot's automation track (Phase 4 S5). Fixed-array points
+    /// keep this `Copy`; a track with `count == 0` is treated as cleared.
+    SetAutomation {
+        target: AutomationTarget,
+        points: [AutomationPoint; MAX_AUTOMATION_POINTS],
+        count: usize,
+    },
+    /// Remove the slot's automation track (Phase 4 S5).
+    ClearAutomation,
     SetMute(bool),
     /// Detach / re-attach the slot (Phase 3 S2 stream slots).
     SetActive(bool),
@@ -136,6 +197,168 @@ fn balance_gains(balance: f32) -> (f32, f32) {
     }
 }
 
+/// Maximum number of duck targets one [`DuckState`] can address.
+pub const MAX_DUCK_TARGETS: usize = 4;
+
+/// Program-gated, block-synchronous ducking configuration (Phase 4 S4).
+/// Plain `Copy` data that rides the SPSC control queues; the audio side
+/// evaluates the trigger once per block from the *source* slot's peak meter
+/// and ramps the duck gain toward the depth target over attack/release.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DuckState {
+    /// Source slot whose peak meter gates the duck.
+    pub source: usize,
+    /// Source peak (dBFS) above which the duck engages.
+    pub threshold_db: f32,
+    /// Attenuation applied to targets (positive dB, e.g. 12.0).
+    pub depth_db: f32,
+    /// Ramp-down frames to full duck.
+    pub attack_frames: usize,
+    /// Ramp-up frames back to unity.
+    pub release_frames: usize,
+    /// Target slots attenuated while the duck is engaged.
+    pub targets: [usize; MAX_DUCK_TARGETS],
+    pub target_count: usize,
+}
+
+impl DuckState {
+    /// Runtime duck gain as a linear multiplier from the current db value.
+    #[inline]
+    fn linear(depth_db: f32) -> f32 {
+        10.0_f32.powf(-depth_db.abs() / 20.0)
+    }
+}
+
+/// Maximum number of automation breakpoints a single slot track may carry.
+/// The fixed array keeps `SetAutomation` `Copy` data that rides the SPSC
+/// control queues without heap traffic.
+pub const MAX_AUTOMATION_POINTS: usize = 64;
+
+/// One automation breakpoint: `value` at an absolute `frame` (stream
+/// samples, relative to the slot's generation start). Points must be
+/// monotonically non-decreasing in `frame`; between points the value is
+/// linearly interpolated, and before the first / after the last point the
+/// edge value holds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AutomationPoint {
+    pub frame: usize,
+    pub value: f32,
+}
+
+/// What a slot's automation track modulates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AutomationTarget {
+    /// Per-frame gain multiplier (folds multiplicatively like ducking).
+    Gain,
+    /// Per-frame pan position (replaces the static `pan` while the track
+    /// is active; the static balance still shapes the pair).
+    #[default]
+    Pan,
+}
+
+/// A slot's automation track (Phase 4 S5): generation-carried immutable
+/// breakpoints plus an audio-side cursor. The track is replaced wholesale by
+/// `SetAutomation` (append-only live trims ride the same command), and the
+/// runner advances the cursor monotonically as stream time moves forward.
+/// Zero-alloc on the hot path; a slot with no track contributes nothing.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SlotAutomation {
+    pub(crate) target: AutomationTarget,
+    pub(crate) points: [AutomationPoint; MAX_AUTOMATION_POINTS],
+    pub(crate) count: usize,
+    /// Absolute stream position of the start of the NEXT block (advanced by
+    /// the runner once per block).
+    pub(crate) pos: usize,
+    /// Index of the first point with `frame >= pos` (interpolation cursor).
+    pub(crate) cursor: usize,
+}
+
+impl SlotAutomation {
+    /// Interpolated value at an absolute stream position, advancing the
+    /// cursor. Edge values hold before the first / after the last point.
+    fn value_at(&mut self, absolute: usize) -> f32 {
+        let n = self.count;
+        if n == 0 {
+            return 1.0;
+        }
+        let pts = &self.points[..n];
+        if absolute <= pts[0].frame {
+            return pts[0].value;
+        }
+        if absolute >= pts[n - 1].frame {
+            return pts[n - 1].value;
+        }
+        // Monotonic scan from the cursor (stream time only moves forward).
+        let mut k = self.cursor.min(n - 1);
+        while k + 1 < n && pts[k + 1].frame <= absolute {
+            k += 1;
+        }
+        while k > 0 && pts[k].frame > absolute {
+            k -= 1;
+        }
+        self.cursor = k;
+        let f0 = pts[k].frame;
+        let f1 = pts[k + 1].frame;
+        let v0 = pts[k].value;
+        let v1 = pts[k + 1].value;
+        if f1 == f0 {
+            v0
+        } else {
+            let t = (absolute - f0) as f32 / (f1 - f0) as f32;
+            v0 + (v1 - v0) * t
+        }
+    }
+}
+
+/// Per-slot pan law (Phase 4 S3). Affects the front L/R pair only; channels
+/// ≥ 2 pass through at per-input gain.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum PanLaw {
+    EqualPower,
+    Linear,
+    #[default]
+    Center,
+}
+
+/// Per-slot peak/RMS metering accumulators (Phase 4 S3). Peak is a
+/// per-channel max over the block; RMS is a one-pole envelope over the
+/// per-frame channel sum. Published to the control bus once per block.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SlotMeters {
+    pub(crate) peak_db: f32,
+    pub(crate) rms_db: f32,
+}
+
+/// Per-slot front-pair pan gains `(l, r)` for a pan position and law. pan = 0
+/// always yields `(1, 1)`, so folding this into an existing `* balance`
+/// product multiplies by 1.0 (bit-exact).
+#[inline]
+fn pan_gains(pan: f32, law: PanLaw) -> (f32, f32) {
+    if pan == 0.0 {
+        return (1.0, 1.0);
+    }
+    let pan = pan.clamp(-1.0, 1.0);
+    // Equal-power uses cos/sin of the normalized angle for a constant-power
+    // drop toward center; Linear is a linear left/right taper; Center keeps
+    // full gain at center and tapers both sides (a simple balance-style law).
+    match law {
+        PanLaw::EqualPower => {
+            let t = (pan + 1.0) * 0.5; // 0..=1
+            let cos_t = (std::f32::consts::FRAC_PI_2 * t).cos();
+            let sin_t = (std::f32::consts::FRAC_PI_2 * t).sin();
+            (cos_t, sin_t)
+        }
+        PanLaw::Linear => {
+            if pan >= 0.0 {
+                (1.0 - pan, 1.0)
+            } else {
+                (1.0, 1.0 + pan)
+            }
+        }
+        PanLaw::Center => (1.0 - pan.abs(), 1.0 - pan.abs()),
+    }
+}
+
 /// The mix bus: N per-input pre-mix chains summed into the master planes.
 pub struct MixBusNode {
     pub inputs: Vec<MixInput>,
@@ -146,6 +369,21 @@ pub struct MixBusNode {
     pub curve: CrossfadeCurve,
     /// Whether crossfade transitions are enabled (`config.crossfade.enabled`).
     pub crossfade_enabled: bool,
+    /// Program-gated ducking (Phase 4 S4). `None` = ducking disabled, which
+    /// keeps the sum bit-exact. Runtime gain is advanced once per block by
+    /// [`Self::duck_tick`] and folded into the target slots' gains.
+    pub(crate) duck: Option<DuckRuntime>,
+}
+
+/// Ducking configuration plus its audio-side runtime state.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DuckRuntime {
+    pub(crate) cfg: DuckState,
+    /// Whether the trigger is currently engaged (source peak above
+    /// threshold), evaluated once per block.
+    pub(crate) engaged: bool,
+    /// Current duck gain as a linear multiplier in [depth_linear, 1].
+    pub(crate) current_linear: f32,
 }
 
 impl MixBusNode {
@@ -202,6 +440,7 @@ impl MixBusNode {
                 as usize,
             curve: curve.into(),
             crossfade_enabled,
+            duck: None,
         }
     }
 
@@ -225,6 +464,27 @@ impl MixBusNode {
                 }
             }
             MixInputCmd::SetBalance(b) => slot.balance = b.clamp(-1.0, 1.0),
+            MixInputCmd::SetPan(p) => slot.pan = p.clamp(-1.0, 1.0),
+            MixInputCmd::SetPanLaw(law) => slot.pan_law = law,
+            MixInputCmd::SetAutomation {
+                target,
+                points,
+                count,
+            } => {
+                let count = count.min(MAX_AUTOMATION_POINTS);
+                slot.automation = if count == 0 {
+                    None
+                } else {
+                    Some(SlotAutomation {
+                        target,
+                        points,
+                        count,
+                        pos: 0,
+                        cursor: 0,
+                    })
+                };
+            }
+            MixInputCmd::ClearAutomation => slot.automation = None,
             MixInputCmd::SetMute(m) => slot.mute = m,
             MixInputCmd::SetActive(a) => {
                 // Slot 0 is the caller's in-place planes; it cannot be
@@ -237,6 +497,98 @@ impl MixBusNode {
             MixInputCmd::ApplyLoudnessMetadata(meta) => {
                 slot.loudness.normalizer.set_track_metadata(&meta)
             }
+        }
+    }
+
+    /// Compute per-slot peak/RMS metering over the `frames` just processed
+    /// (Phase 4 S3). Peak is the max |sample| over the slot's channels in
+    /// dBFS; RMS is the block-windowed RMS of the per-frame channel sum.
+    /// Slot 0 processes the caller's master planes in place (its secondary
+    /// storage is never fed), so it is metered from `master`; inputs >= 1
+    /// are metered from their own pre-mixed planes. Stored into each slot's
+    /// `meters` for the graph shell to publish. Deterministic and zero-alloc.
+    pub(super) fn compute_meters(&mut self, master: &[&mut [f32]], frames: usize) {
+        if frames == 0 {
+            return;
+        }
+        for (i, input) in self.inputs.iter_mut().enumerate() {
+            let (peak, mean_sq) = if i == 0 {
+                let ch = master.len().max(1);
+                let mut peak = 0.0f32;
+                let mut sum_sq = 0.0f32;
+                for plane in master.iter().take(ch) {
+                    for &v in plane.iter().take(frames) {
+                        let a = v.abs();
+                        if a > peak {
+                            peak = a;
+                        }
+                        sum_sq += v * v;
+                    }
+                }
+                (peak, sum_sq / (ch as f32 * frames as f32))
+            } else {
+                let ch = input.channels.clamp(1, input.planes.len());
+                let mut peak = 0.0f32;
+                let mut sum_sq = 0.0f32;
+                for plane in input.planes.iter().take(ch) {
+                    for &v in plane.iter().take(frames) {
+                        let a = v.abs();
+                        if a > peak {
+                            peak = a;
+                        }
+                        sum_sq += v * v;
+                    }
+                }
+                (peak, sum_sq / (ch as f32 * frames as f32))
+            };
+            let eps = 1e-12f32;
+            let peak_db = 20.0 * (peak.max(eps)).log10();
+            let rms_db = 20.0 * (mean_sq.max(eps).sqrt()).log10();
+            input.meters = SlotMeters { peak_db, rms_db };
+        }
+    }
+
+    /// f64 twin of [`Self::compute_meters`]: slot 0 is metered from the f64
+    /// master planes (cast per sample), inputs >= 1 from their own f32
+    /// planes. Zero-alloc on the hot path.
+    pub(super) fn compute_meters_f64(&mut self, master: &[&mut [f64]], frames: usize) {
+        if frames == 0 {
+            return;
+        }
+        for (i, input) in self.inputs.iter_mut().enumerate() {
+            let (peak, mean_sq) = if i == 0 {
+                let ch = master.len().max(1);
+                let mut peak = 0.0f32;
+                let mut sum_sq = 0.0f64;
+                for plane in master.iter().take(ch) {
+                    for &v in plane.iter().take(frames) {
+                        let a = v.abs() as f32;
+                        if a > peak {
+                            peak = a;
+                        }
+                        sum_sq += v * v;
+                    }
+                }
+                (peak, (sum_sq / (ch as f64 * frames as f64)) as f32)
+            } else {
+                let ch = input.channels.clamp(1, input.planes.len());
+                let mut peak = 0.0f32;
+                let mut sum_sq = 0.0f32;
+                for plane in input.planes.iter().take(ch) {
+                    for &v in plane.iter().take(frames) {
+                        let a = v.abs();
+                        if a > peak {
+                            peak = a;
+                        }
+                        sum_sq += v * v;
+                    }
+                }
+                (peak, sum_sq / (ch as f32 * frames as f32))
+            };
+            let eps = 1e-12f32;
+            let peak_db = 20.0 * (peak.max(eps)).log10();
+            let rms_db = 20.0 * (mean_sq.max(eps).sqrt()).log10();
+            input.meters = SlotMeters { peak_db, rms_db };
         }
     }
 
@@ -289,6 +641,64 @@ impl MixBusNode {
                 self.state = MixerState::Silent;
                 self.crossfade_pos = 0;
             }
+        }
+    }
+
+    /// Apply a ducking configuration (Phase 4 S4). `None` disables ducking.
+    /// Control path (queued command); the runtime starts disengaged at unity.
+    pub fn apply_duck(&mut self, cfg: Option<DuckState>) {
+        self.duck = cfg.map(|cfg| DuckRuntime {
+            engaged: false,
+            current_linear: 1.0,
+            cfg,
+        });
+    }
+
+    /// Advance the duck envelope once per block (Phase 4 S4). `source_peak_db`
+    /// is the trigger slot's peak from this block's metering; the trigger is
+    /// evaluated block-synchronously and the gain ramps toward the depth
+    /// target over attack/release frames. Zero-alloc, disabled is a no-op.
+    pub(super) fn duck_tick(&mut self, frames: usize) {
+        let Some(duck) = &mut self.duck else {
+            return;
+        };
+        let target_linear = DuckState::linear(duck.cfg.depth_db);
+        let threshold = duck.cfg.threshold_db;
+        let source_peak_db = self
+            .inputs
+            .get(duck.cfg.source)
+            .map(|s| s.meters.peak_db)
+            .unwrap_or(-96.0);
+        let engaged = source_peak_db > threshold;
+        // One-pole step toward the target over the block: after
+        // attack/release frames the gain reaches the target.
+        let step = if engaged {
+            if duck.cfg.attack_frames > 0 {
+                (frames as f32 / duck.cfg.attack_frames as f32).min(1.0)
+            } else {
+                1.0
+            }
+        } else if duck.cfg.release_frames > 0 {
+            (frames as f32 / duck.cfg.release_frames as f32).min(1.0)
+        } else {
+            1.0
+        };
+        let goal = if engaged { target_linear } else { 1.0 };
+        duck.current_linear += (goal - duck.current_linear) * step;
+        duck.engaged = engaged;
+    }
+
+    /// Duck gain (linear multiplier) for `slot`, 1.0 when ducking is disabled
+    /// or the slot is not a target. Called per block, folded into the slot's
+    /// gain in the sums.
+    pub(super) fn duck_gain_for(&self, slot: usize) -> f32 {
+        let Some(duck) = &self.duck else {
+            return 1.0;
+        };
+        if duck.cfg.targets[..duck.cfg.target_count].contains(&slot) {
+            duck.current_linear
+        } else {
+            1.0
         }
     }
 }
@@ -365,6 +775,8 @@ impl DspNode for MixBusNode {
         } else {
             self.mix_multichannel(planes);
         }
+        let frames = planes[0].len();
+        self.compute_meters(planes, frames);
     }
 
     fn process_block_f64(&mut self, planes: &mut [&mut [f64]]) {
@@ -380,5 +792,7 @@ impl DspNode for MixBusNode {
         } else {
             self.mix_multichannel_f64(planes);
         }
+        let frames = planes[0].len();
+        self.compute_meters_f64(planes, frames);
     }
 }

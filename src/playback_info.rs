@@ -106,6 +106,32 @@ pub struct PlaybackInfo {
     pub playlist_index: Option<usize>,
     /// Number of entries in the playback queue.
     pub playlist_length: usize,
+    /// Multi-track lane telemetry (Phase 4 S6): one entry per active lane,
+    /// refreshed every engine tick from the lane registry + the mix bus's
+    /// per-slot meters.
+    pub lanes: Vec<LaneInfo>,
+}
+
+/// Telemetry for one playback lane (Phase 4 S6).
+#[derive(Debug, Clone)]
+pub struct LaneInfo {
+    /// Mix-bus slot (≥ 2).
+    pub slot: u8,
+    /// The source being played.
+    pub source: Option<crate::source::AudioSource>,
+    /// User gain in [0, 1].
+    pub gain: f32,
+    /// User pan in [-1, 1].
+    pub pan: f32,
+    /// Whether the lane is contributing audio (false once its stream ends).
+    pub active: bool,
+    /// Peak level (dBFS) of the lane's bus slot (max over its channels),
+    /// from the graph's per-slot meters (Phase 4 S3).
+    pub level_db: f32,
+    /// Decoded position in seconds.
+    pub position_secs: f32,
+    /// Source duration in seconds.
+    pub duration_secs: f32,
 }
 
 impl Default for PlaybackInfo {
@@ -141,6 +167,7 @@ impl Default for PlaybackInfo {
             active_output_profile: None,
             playlist_index: None,
             playlist_length: 0,
+            lanes: Vec::new(),
         }
     }
 }

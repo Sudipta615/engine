@@ -84,6 +84,37 @@ impl DspGraph {
     }
 
     /// Process a stereo block with one primary stream and any number of
+    /// lane streams (Phase 4 S6). Identical to [`Self::process_block_streams`]
+    /// except lane `k` feeds mix-bus slot `k + 2`, leaving slot 1 (the pair's
+    /// incoming member) untouched — the lane feed for the single-stream path,
+    /// where no crossfade is in progress. `process_block_inputs` still covers
+    /// the crossfade path (lanes ride after the incoming stream there).
+    pub fn process_block_lanes(
+        &mut self,
+        primary: (&mut [f32], &mut [f32]),
+        lanes: &mut [(&mut [f32], &mut [f32])],
+    ) {
+        self.control_tick();
+        let n = primary.0.len().min(primary.1.len());
+        if n > MAX_AUDIO_BLOCK_FRAMES {
+            let mut start = 0;
+            while start < n {
+                let end = (start + MAX_AUDIO_BLOCK_FRAMES).min(n);
+                for (k, lane) in lanes.iter_mut().enumerate() {
+                    self.feed_secondary_slot(k + 2, (lane.0, lane.1), start, end);
+                }
+                self.process_block_inner(&mut primary.0[start..end], &mut primary.1[start..end]);
+                start = end;
+            }
+            return;
+        }
+        for (k, lane) in lanes.iter_mut().enumerate() {
+            self.feed_secondary_slot(k + 2, (lane.0, lane.1), 0, n);
+        }
+        self.process_block_inner(primary.0, primary.1);
+    }
+
+    /// Process a stereo block with one primary stream and any number of
     /// secondary mix-bus streams (Phase 3 S2 stream slots). `primary` is
     /// processed in place through the full chain; secondary `k` feeds mix-bus
     /// slot `k + 1` (slots ≥ 2 are independent streams summed after the
@@ -258,6 +289,20 @@ impl DspGraph {
                 self.scratch.scratch_f64_r = r64;
             }
         }
+        self.publish_mix_meters();
+    }
+
+    /// Copy the mix bus's per-slot meters (computed during the plan run) onto
+    /// the control bus atomics so telemetry can read them from any thread
+    /// (Phase 4 S3). Audio-side, allocation-free, relaxed stores.
+    fn publish_mix_meters(&mut self) {
+        let inputs = &self.active.nodes[node_id::MIX];
+        if let GraphNode::Mix(mix) = inputs {
+            for (i, input) in mix.inputs.iter().enumerate() {
+                self.bus
+                    .publish_slot_meters(i, input.meters.peak_db, input.meters.rms_db);
+            }
+        }
     }
 
     /// Process a block of stereo frames in f64 precision in place.
@@ -408,5 +453,6 @@ impl DspGraph {
             }
         }
         self.scratch.scratch_mc = planes;
+        self.publish_mix_meters();
     }
 }

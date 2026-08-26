@@ -386,6 +386,25 @@ impl AudioEngine {
 
             let is_bp = stats.bit_perfect;
 
+            // ── Lane telemetry (Phase 4 S6) ────────────────────────────
+            let lanes = self
+                .lanes
+                .iter()
+                .map(|lane| {
+                    let (peak, _rms) = self.graph.control_handle().slot_meters(lane.slot);
+                    crate::playback_info::LaneInfo {
+                        slot: lane.slot as u8,
+                        source: Some(lane.source.clone()),
+                        gain: lane.gain,
+                        pan: lane.pan,
+                        active: !lane.finished,
+                        level_db: peak,
+                        position_secs: lane.frames_played as f32 / self.output_sample_rate as f32,
+                        duration_secs: lane.decoder.duration_secs(),
+                    }
+                })
+                .collect::<Vec<_>>();
+
             self.playback_info.rcu(|old| {
                 let mut next: PlaybackInfo = old.as_ref().clone();
                 next.cpu_usage_pct = cpu_pct;
@@ -394,6 +413,7 @@ impl AudioEngine {
                 next.clip_count = next.clip_count.saturating_add(new_clips as u64);
                 next.nan_count = next.nan_count.saturating_add(new_nans as u64);
                 next.engine_stats = Some(stats.clone());
+                next.lanes = lanes.clone();
                 #[cfg(feature = "audio-output")]
                 {
                     next.output_info = out_info.clone();

@@ -42,6 +42,12 @@ pub(crate) struct EngineScratch {
     pub(crate) mix_r: Vec<f32>,
     pub(crate) mix_in_l: Vec<f32>,
     pub(crate) mix_in_r: Vec<f32>,
+    /// Per-lane block buffers (Phase 4 S6): the decode loop fills each active
+    /// lane's planes with up to [`MAX_AUDIO_BLOCK_FRAMES`] frames per block
+    /// and hands them to the graph as secondaries. Sized to [`MAX_LANES`];
+    /// preallocated so the audio path never allocates.
+    pub(crate) lane_l: Vec<Vec<f32>>,
+    pub(crate) lane_r: Vec<Vec<f32>>,
 }
 
 impl Default for EngineScratch {
@@ -60,6 +66,12 @@ impl Default for EngineScratch {
             mix_r: Vec::with_capacity(MIX_BLOCK_FRAMES),
             mix_in_l: Vec::with_capacity(MIX_BLOCK_FRAMES),
             mix_in_r: Vec::with_capacity(MIX_BLOCK_FRAMES),
+            lane_l: (0..crate::engine::lanes::MAX_LANES)
+                .map(|_| vec![0.0f32; crate::buffer::MAX_AUDIO_BLOCK_FRAMES])
+                .collect(),
+            lane_r: (0..crate::engine::lanes::MAX_LANES)
+                .map(|_| vec![0.0f32; crate::buffer::MAX_AUDIO_BLOCK_FRAMES])
+                .collect(),
         }
     }
 }

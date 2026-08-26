@@ -782,3 +782,239 @@ fn multichannel_stream_slots_sum_channel_wise() {
         }
     }
 }
+
+// ── Phase 4 S3: per-slot pan law + meters ─────────────────────────────────
+
+#[test]
+fn pan_shapes_front_pair_and_meters_publish() {
+    use crate::dsp::crossfade::MixerState;
+
+    let sr = 48000.0;
+    let cfg = EngineConfig {
+        mix_slots: 2,
+        ..EngineConfig::default()
+    };
+    let mut graph = DspGraph::from_config(&cfg, sr);
+
+    let n = 256;
+    // Pan slot 0 hard right (Linear law): L = 0, R = full.
+    graph.set_input_pan(0, 1.0);
+    graph.drain_queued_control();
+
+    let mut l0 = vec![0.5f32; n];
+    let mut r0 = vec![0.5f32; n];
+    let mut l1 = vec![0.0f32; n];
+    let mut r1 = vec![0.0f32; n];
+    graph.process_block_inputs((&mut l0, &mut r0), (&mut l1, &mut r1));
+    assert_eq!(graph.mixer_state(), MixerState::PlayingCurrent);
+
+    // Linear pan 1.0: L = 0.5 * 0 = 0, R = 0.5 * 1 = 0.5.
+    for i in 0..n {
+        assert!(
+            l0[i].abs() < 1e-6,
+            "panned-left channel must be silent: {i}: {}",
+            l0[i]
+        );
+        assert!(
+            (r0[i] - 0.5).abs() < 1e-6,
+            "panned-right channel: {i}: {}",
+            r0[i]
+        );
+    }
+
+    // Meters: slot 0 processed 0.5-amplitude stereo (post-pan: L=0, R=0.5),
+    // so peak = 20*log10(0.5) ≈ -6.02 dB, RMS over both channels:
+    // sqrt((0 + 0.25)/2) = 0.3536 -> 20*log10(0.3536) ≈ -9.03 dB.
+    let (peak, rms) = graph.control_handle().slot_meters(0);
+    assert!((peak - (-6.02)).abs() < 0.2, "peak {peak}");
+    assert!((rms - (-9.03)).abs() < 0.2, "rms {rms}");
+}
+
+#[test]
+fn duck_gates_target_slot_from_source_peak() {
+    // Phase 4 S4: program-gated ducking. Slot 1 (a loud secondary stream)
+    // gates slot 0: once engaged, slot 0's level drops by the depth. The
+    // trigger is block-synchronous from the source slot's peak meter.
+    let sr = 48000.0;
+    let cfg = EngineConfig {
+        mix_slots: 3,
+        ..EngineConfig::default()
+    };
+    let mut graph = DspGraph::from_config(&cfg, sr);
+    let n = 256;
+
+    // Loud voice-over on slot 1 (0 dBFS) ducks the music on slot 0 by 12 dB.
+    graph.set_duck(Some(DuckState {
+        source: 1,
+        threshold_db: -60.0,
+        depth_db: 12.0,
+        attack_frames: 0,
+        release_frames: 0,
+        targets: [0; MAX_DUCK_TARGETS],
+        target_count: 1,
+    }));
+    graph.drain_queued_control();
+
+    let mut l0 = vec![0.5f32; n];
+    let mut r0 = vec![0.5f32; n];
+    let mut l1 = vec![1.0f32; n];
+    let mut r1 = vec![1.0f32; n];
+    // The trigger is block-synchronous: the duck gain lands one block after
+    // the source meter is published, so run a few blocks to reach steady
+    // state. The caller re-feeds fresh input each block (mix_stereo scales
+    // the master planes in place, so reusing the buffer would compound).
+    for _ in 0..4 {
+        l0.fill(0.5);
+        r0.fill(0.5);
+        l1.fill(1.0);
+        r1.fill(1.0);
+        graph.process_block_streams((&mut l0, &mut r0), &mut [(&mut l1, &mut r1)]);
+    }
+
+    // Slot 0 ducked: 0.5 * 10^(-12/20) = 0.1256 -> -18.02 dB peak.
+    let (peak0, _) = graph.control_handle().slot_meters(0);
+    assert!(
+        (peak0 - (-18.02)).abs() < 0.2,
+        "target slot ducked to ~-18 dB, got {peak0}"
+    );
+    // Slot 1 (source) untouched at 0 dBFS.
+    let (peak1, _) = graph.control_handle().slot_meters(1);
+    assert!((peak1 - 0.0).abs() < 0.2, "source peak ~0 dB, got {peak1}");
+
+    // Disabling restores the unducked level on the next block.
+    graph.set_duck(None);
+    graph.drain_queued_control();
+    for _ in 0..2 {
+        l0.fill(0.5);
+        r0.fill(0.5);
+        l1.fill(1.0);
+        r1.fill(1.0);
+        graph.process_block_streams((&mut l0, &mut r0), &mut [(&mut l1, &mut r1)]);
+    }
+    let (peak0, _) = graph.control_handle().slot_meters(0);
+    assert!(
+        (peak0 - (-6.02)).abs() < 0.2,
+        "duck disabled -> ~-6 dB, got {peak0}"
+    );
+}
+
+#[test]
+fn automation_track_shapes_lane_slot_sample_accurate() {
+    // Phase 4 S5: a Gain automation track on a lane slot (>= 2) is applied
+    // sample-accurately (linear interpolation between breakpoints), and the
+    // runner's absolute position advances across blocks (edge values hold).
+    let sr = 48000.0;
+    let cfg = EngineConfig {
+        mix_slots: 3,
+        ..EngineConfig::default()
+    };
+    let mut graph = DspGraph::from_config(&cfg, sr);
+    let n = 256;
+
+    // Ramp lane gain from 1.0 at frame 0 to 0.5 at frame 256, then hold.
+    let pts = [
+        AutomationPoint {
+            frame: 0,
+            value: 1.0,
+        },
+        AutomationPoint {
+            frame: 256,
+            value: 0.5,
+        },
+    ];
+    graph.set_slot_automation(2, AutomationTarget::Gain, &pts);
+    graph.drain_queued_control();
+
+    let mut l0 = vec![0.0f32; n];
+    let mut r0 = vec![0.0f32; n];
+    let mut l1 = vec![0.0f32; n];
+    let mut r1 = vec![0.0f32; n];
+    let mut l2 = vec![1.0f32; n];
+    let mut r2 = vec![1.0f32; n];
+    graph.process_block_streams(
+        (&mut l0, &mut r0),
+        &mut [(&mut l1, &mut r1), (&mut l2, &mut r2)],
+    );
+
+    // Frame 0: value 1.0 -> lane contributes 1.0.
+    assert!((l0[0] - 1.0).abs() < 1e-6, "frame 0 gain 1.0: {}", l0[0]);
+    // Midpoint (frame 128) interpolates linearly to exactly 0.75.
+    assert!(
+        (l0[128] - 0.75).abs() < 1e-6,
+        "frame 128 interpolated ~0.75: {}",
+        l0[128]
+    );
+
+    // Second block: absolute frames 256..512 are past the last point, so the
+    // edge value (0.5) holds across the whole block.
+    l0.fill(0.0);
+    r0.fill(0.0);
+    l2.fill(1.0);
+    r2.fill(1.0);
+    graph.process_block_streams(
+        (&mut l0, &mut r0),
+        &mut [(&mut l1, &mut r1), (&mut l2, &mut r2)],
+    );
+    for (i, &v) in l0.iter().enumerate() {
+        assert!(
+            (v - 0.5).abs() < 1e-6,
+            "hold value 0.5 past track end: {i}: {v}"
+        );
+    }
+
+    // Clearing the track restores unity (bit-exact shape).
+    graph.clear_slot_automation(2);
+    graph.drain_queued_control();
+    l2.fill(1.0);
+    r2.fill(1.0);
+    l0.fill(0.0);
+    r0.fill(0.0);
+    graph.process_block_streams(
+        (&mut l0, &mut r0),
+        &mut [(&mut l1, &mut r1), (&mut l2, &mut r2)],
+    );
+    assert!(
+        (l0[0] - 1.0).abs() < 1e-6,
+        "cleared automation unity: {}",
+        l0[0]
+    );
+}
+
+#[test]
+fn automation_pan_track_moves_lane_front_pair() {
+    // Phase 4 S5 Pan target: the automation value replaces the static pan.
+    // With the Linear law, pan 1.0 kills the left channel and keeps right.
+    let sr = 48000.0;
+    let cfg = EngineConfig {
+        mix_slots: 3,
+        ..EngineConfig::default()
+    };
+    let mut graph = DspGraph::from_config(&cfg, sr);
+    let n = 256;
+
+    let pts = [AutomationPoint {
+        frame: 0,
+        value: 1.0,
+    }];
+    graph.set_slot_automation(2, AutomationTarget::Pan, &pts);
+    graph.drain_queued_control();
+
+    let mut l0 = vec![0.0f32; n];
+    let mut r0 = vec![0.0f32; n];
+    let mut l1 = vec![0.0f32; n];
+    let mut r1 = vec![0.0f32; n];
+    let mut l2 = vec![1.0f32; n];
+    let mut r2 = vec![1.0f32; n];
+    graph.process_block_streams(
+        (&mut l0, &mut r0),
+        &mut [(&mut l1, &mut r1), (&mut l2, &mut r2)],
+    );
+    for i in 0..n {
+        assert!(l0[i].abs() < 1e-6, "pan right kills L: {i}: {}", l0[i]);
+        assert!(
+            (r0[i] - 1.0).abs() < 1e-6,
+            "pan right keeps R: {i}: {}",
+            r0[i]
+        );
+    }
+}

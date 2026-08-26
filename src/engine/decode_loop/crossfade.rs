@@ -620,13 +620,35 @@ impl AudioEngine {
         // post-mix chain — then the output-domain final limiter runs here as
         // before (the block is already in the output domain: both sides were
         // resampled before mixing).
-        self.graph.process_block_inputs(
-            (&mut self.scratch.mix_l[..n], &mut self.scratch.mix_r[..n]),
-            (
+        if self.lanes.is_empty() {
+            self.graph.process_block_inputs(
+                (&mut self.scratch.mix_l[..n], &mut self.scratch.mix_r[..n]),
+                (
+                    &mut self.scratch.mix_in_l[..n],
+                    &mut self.scratch.mix_in_r[..n],
+                ),
+            );
+        } else {
+            // Active lanes (Phase 4 S6) ride after the incoming stream:
+            // secondaries[0] is the incoming (slot 1), lanes occupy slots ≥ 2.
+            let active = self.fill_lane_scratch(n);
+            let mut iter_l = self.scratch.lane_l.iter_mut();
+            let mut iter_r = self.scratch.lane_r.iter_mut();
+            let mut secondaries: [(&mut [f32], &mut [f32]); crate::engine::lanes::MAX_LANES + 1] =
+                std::array::from_fn(|_| {
+                    let l: &mut Vec<f32> = iter_l.next().expect("lane planes preallocated");
+                    let r: &mut Vec<f32> = iter_r.next().expect("lane planes preallocated");
+                    (&mut l[..n], &mut r[..n])
+                });
+            secondaries[0] = (
                 &mut self.scratch.mix_in_l[..n],
                 &mut self.scratch.mix_in_r[..n],
-            ),
-        );
+            );
+            self.graph.process_block_streams(
+                (&mut self.scratch.mix_l[..n], &mut self.scratch.mix_r[..n]),
+                &mut secondaries[..1 + active],
+            );
+        }
         self.graph.process_final_limiter_block(
             &mut self.scratch.mix_l[..n],
             &mut self.scratch.mix_r[..n],

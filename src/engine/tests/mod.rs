@@ -5,5 +5,6 @@ mod commands;
 mod crossfade;
 mod dsd;
 mod helpers;
+mod lanes;
 mod playback;
 mod recovery;

@@ -21,6 +21,35 @@ pub enum EngineCommand {
     /// Prepare the next audio source for gapless / crossfade transition.
     PrepareNext(AudioSource),
 
+    // ── Multi-track lanes (Phase 4 S6) ───────────────────────────────────
+    /// Add a track as an independent lane on the first free mix-bus slot
+    /// ≥ 2, playing alongside the primary stream.
+    AddTrack(AudioSource),
+    /// Remove the lane on the given mix-bus slot (if any) and silence it.
+    RemoveTrack(u8),
+    /// Set a lane's linear gain in [0, 1].
+    SetTrackGain {
+        slot: u8,
+        gain: f32,
+    },
+    /// Set a lane's pan in [-1, 1].
+    SetTrackPan {
+        slot: u8,
+        pan: f32,
+    },
+    /// Configure program-gated ducking across lanes (Phase 4 S4): when the
+    /// `source_slot`'s peak rises above `threshold_db`, the `targets` slots
+    /// are attenuated by `depth_db`. `None`-style disabling is done with an
+    /// empty `targets` list.
+    DuckTracks {
+        source_slot: u8,
+        targets: Vec<u8>,
+        threshold_db: f32,
+        depth_db: f32,
+        attack_ms: f32,
+        release_ms: f32,
+    },
+
     // ── Playlist / queue ─────────────────────────────────────────────────
     /// Append a source to the end of the playback queue.
     Enqueue(AudioSource),
