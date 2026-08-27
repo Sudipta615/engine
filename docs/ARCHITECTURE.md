@@ -40,10 +40,6 @@ src/
 │   ├── lanes.rs              # Multi-track lane registry (Phase 4 S6): an
 │   │                         #   independent decoder+resampler per bus slot
 │   │                         #   ≥ 2, fed as secondaries each block
-│   ├── endpoints.rs          # Multi-endpoint routing matrix (Phase 5b): one
-│   │                         #   ring + resampler + final limiter per
-│   │                         #   additional output device, fanned out from
-│   │                         #   the decode loop
 │   └── commands/             # Command handlers, organized by concern
 │       ├── mod.rs            # Dispatch table
 │       ├── playback.rs       # play / pause / stop / seek / speed / pitch
@@ -104,9 +100,11 @@ src/
 │                             #   by concern into construction / access /
 │                             #   controls / lifecycle / process / limiter /
 │                             #   report / plan / swap / nodes/mix/
-│                             #   (MixBusNode split into mod/envelope/sum/
-│                             #   sends: N-slot + N-channel bus + aux-bus
-│                             #   accumulator with post-fader lane sends;
+│                             #   (MixBusNode split into mod/envelope/sum:
+│                             #   N-slot + N-channel bus with post-fader
+│                             #   lane sends), and nodes/aux_node.rs
+│                             #   (AuxBusNode + shared AuxSendBus: per-send
+│                             #   automation + accumulator + insert + return;
 │                             #   Phase 2: per-node
 │                             #   SPSC control queues + publish/swap/retire
 │                             #   live generation swap; Phase 3: engine
@@ -117,10 +115,10 @@ src/
 │                             #   program-gated ducking; S5: automation
 │                             #   tracks; S6: engine lane registry feeding
 │                             #   slots ≥ 2 via process_block_lanes;
-│                             #   Phase 5: per-slot PerChannelTrim banks,
-│                             #   post-fader SlotSend taps, and the AuxBus
-│                             #   (sends.rs) with aux metering/ducking and
-│                             #   a Phase-6 insert seam)
+│                             #   Phase 5: per-slot PerChannelTrim banks
+│                             #   and post-fader SlotSend taps; Phase 6:
+│                             #   aux promoted to its own AUX plan step with
+│                             #   per-send automation + independent metering)
 │
 ├── output/                   # ── Output backends ──
 │   ├── mod.rs                # Module wiring + re-exports
@@ -132,6 +130,10 @@ src/
 │   ├── device_match.rs       # Device-name matching heuristics
 │   ├── format_converter.rs   # Sample-format conversion (f32 → i16/i24/i32/u16)
 │   ├── rate_policy.rs        # Output sample-rate policy helpers
+│   ├── endpoint.rs           # Multi-endpoint routing matrix (Phase 5b): per-
+│   │                         #   endpoint ring + nominal-ratio resampler +
+│   │                           rubato Slip drift trim + final limiter, plus
+│   │                         #   the drift controller and virtual endpoint
 │   ├── cpal_output/          # cpal shared-mode fallback (all platforms)
 │   ├── alsa_output/          # Native ALSA exclusive (`hw:`/`plughw:`)
 │   ├── wasapi_output/        # Native WASAPI exclusive (IAudioClient)

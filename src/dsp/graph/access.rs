@@ -22,6 +22,22 @@ impl DspGraph {
         }
     }
 
+    // ── Aux bus (Phase 6: its own plan node) ──────────────────────────────
+
+    pub fn aux(&self) -> &AuxBusNode {
+        match &self.active.nodes[node_id::AUX] {
+            GraphNode::Aux(n) => n,
+            _ => unreachable!("arena slot AUX holds an AuxBusNode"),
+        }
+    }
+
+    pub fn aux_mut(&mut self) -> &mut AuxBusNode {
+        match &mut self.active.nodes[node_id::AUX] {
+            GraphNode::Aux(n) => n,
+            _ => unreachable!("arena slot AUX holds an AuxBusNode"),
+        }
+    }
+
     // ── Pre-mix accessors — input-0 / input-1 aliases into the mix bus ────
     //
     // Backward-compatible with the Phase-1 named pre-mix accessors: input 0

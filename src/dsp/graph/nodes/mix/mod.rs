@@ -24,8 +24,9 @@
 //! multichannel bus mixing is Phase 4 S2.
 
 pub mod envelope;
-pub mod sends;
 pub mod sum;
+
+use std::sync::Arc;
 
 use crate::buffer::{MAX_AUDIO_BLOCK_FRAMES, MAX_CHANNELS};
 use crate::dsp::{
@@ -36,8 +37,7 @@ use crate::dsp::{
     pipeline::{DspStageCapability, StageChannelSupport, StagePrecision},
 };
 
-use super::{GainNode, LoudnessNode};
-use sends::AuxBus;
+use super::{aux_node::AuxSendBus, GainNode, LoudnessNode};
 
 /// Upper bound on the number of mix-bus slots one generation can carry.
 /// Kept modest so the control bus's per-slot sticky atomics and the arena's
@@ -529,9 +529,12 @@ pub struct MixBusNode {
     /// keeps the sum bit-exact. Runtime gain is advanced once per block by
     /// [`Self::duck_tick`] and folded into the target slots' gains.
     pub(crate) duck: Option<DuckRuntime>,
-    /// Aux bus (Phase 5 S2/S3): accumulates the slots' post-fader sends and
-    /// returns into the master before the post-mix chain. Disabled = bit-exact.
-    pub(crate) aux: AuxBus,
+    /// Shared send bus (Phase 5 S2/S3): the sum loops write each slot's
+    /// post-fader front-pair signal here; the aux bus node (a separate plan
+    /// step, Phase 6) consumes it. `None`-free by construction — the aux
+    /// node builds the bus and passes a clone in. Disabled = bit-exact
+    /// (no taps, no writes).
+    pub(crate) send_bus: Arc<AuxSendBus>,
 }
 
 /// Ducking configuration plus its audio-side runtime state.
@@ -564,6 +567,10 @@ impl MixBusNode {
             crossfade_enabled,
             curve,
             preamp_ramp_ms,
+            // A standalone two-input bus (tests / direct use) owns its own
+            // send bus; the graph construction path shares one bus between
+            // the mix node and the aux node instead.
+            AuxSendBus::new(),
         )
     }
 
@@ -580,6 +587,7 @@ impl MixBusNode {
         crossfade_enabled: bool,
         curve: config::CrossfadeCurve,
         preamp_ramp_ms: f32,
+        send_bus: Arc<AuxSendBus>,
     ) -> Self {
         let slots = slots.clamp(2, MAX_MIX_SLOTS);
         let mut inputs = Vec::with_capacity(slots);
@@ -600,7 +608,7 @@ impl MixBusNode {
             curve: curve.into(),
             crossfade_enabled,
             duck: None,
-            aux: AuxBus::new(),
+            send_bus,
         }
     }
 
@@ -655,7 +663,14 @@ impl MixBusNode {
                 aux_gain,
             } => {
                 slot.send.master_gain = master_gain.clamp(0.0, 1.0);
-                slot.send.aux_gain = aux_gain.clamp(0.0, 1.0);
+                let aux = aux_gain.clamp(0.0, 1.0);
+                slot.send.aux_gain = aux;
+                // Phase 6: the aux bus node owns the per-slot send targets on
+                // the shared bus — keep the mirror in sync so the tap gating
+                // (`send_active`) and the per-send automation ramps follow.
+                let sb = self.send_bus.data_mut();
+                sb.send_targets[input] = aux;
+                sb.send_active[input] = aux != 0.0;
             }
             MixInputCmd::SetMute(m) => slot.mute = m,
             MixInputCmd::SetActive(a) => {
@@ -718,6 +733,59 @@ impl MixBusNode {
             let rms_db = 20.0 * (mean_sq.max(eps).sqrt()).log10();
             input.meters = SlotMeters { peak_db, rms_db };
         }
+    }
+
+    /// Recompute slot 0's (the master's) meters from the FINAL output planes
+    /// after the whole plan has run. The plan runs the aux bus node AFTER
+    /// this node (Phase 6), so `compute_meters` — which runs at the end of
+    /// the mix step — would otherwise miss the aux return; the graph shell
+    /// calls this once more at the end of the block so the published master
+    /// meter includes it. Zero-alloc.
+    pub(crate) fn meter_master_f32(&mut self, master: &[&mut [f32]], frames: usize) {
+        if frames == 0 {
+            return;
+        }
+        let ch = master.len().max(1);
+        let mut peak = 0.0f32;
+        let mut sum_sq = 0.0f32;
+        for plane in master.iter().take(ch) {
+            for &v in plane.iter().take(frames) {
+                let a = v.abs();
+                if a > peak {
+                    peak = a;
+                }
+                sum_sq += v * v;
+            }
+        }
+        let eps = 1e-12f32;
+        self.inputs[0].meters = SlotMeters {
+            peak_db: 20.0 * (peak.max(eps)).log10(),
+            rms_db: 20.0 * ((sum_sq / (ch as f32 * frames as f32)).max(eps).sqrt()).log10(),
+        };
+    }
+
+    /// f64 twin of [`Self::meter_master_f32`].
+    pub(crate) fn meter_master_f64(&mut self, master: &[&mut [f64]], frames: usize) {
+        if frames == 0 {
+            return;
+        }
+        let ch = master.len().max(1);
+        let mut peak = 0.0f32;
+        let mut sum_sq = 0.0f64;
+        for plane in master.iter().take(ch) {
+            for &v in plane.iter().take(frames) {
+                let a = v.abs() as f32;
+                if a > peak {
+                    peak = a;
+                }
+                sum_sq += v * v;
+            }
+        }
+        let eps = 1e-12f64;
+        self.inputs[0].meters = SlotMeters {
+            peak_db: 20.0 * (peak.max(eps as f32)).log10(),
+            rms_db: 20.0 * ((sum_sq / (ch as f64 * frames as f64)).max(eps).sqrt() as f32).log10(),
+        };
     }
 
     /// f64 twin of [`Self::compute_meters`]: slot 0 is metered from the f64
@@ -826,34 +894,6 @@ impl MixBusNode {
         });
     }
 
-    /// Apply the aux bus config (Phase 5 S2/S3). Control path (queued
-    /// command); the accumulator is only cleared/tapped/returned while
-    /// `enabled`, so disabling is bit-exact.
-    pub fn apply_aux(&mut self, enabled: bool, return_gain: f32) {
-        self.aux.enabled = enabled;
-        self.aux.return_gain = return_gain.clamp(0.0, 1.0);
-    }
-
-    /// Apply the Phase-6 aux insert (a global convolution between the
-    /// accumulator and the return). Control path; the IR file load happens
-    /// here. `ir_path: None` keeps the loaded IR (enabled/wet change only).
-    pub fn apply_aux_insert(
-        &mut self,
-        enabled: bool,
-        wet_mix: f32,
-        sample_rate: f32,
-        ir_path: Option<&str>,
-    ) {
-        self.aux
-            .apply_insert(enabled, wet_mix, sample_rate, ir_path);
-    }
-
-    /// Runtime toggle of the Phase-6 aux insert (enabled / wet only — the
-    /// IR stays as configured). Control path (queued command).
-    pub fn set_aux_insert(&mut self, enabled: bool, wet_mix: f32) {
-        self.aux.set_insert(enabled, wet_mix);
-    }
-
     /// Advance the duck envelope once per block (Phase 4 S4). `source_peak_db`
     /// is the trigger slot's peak from this block's metering; the trigger is
     /// evaluated block-synchronously and the gain ramps toward the depth
@@ -864,10 +904,10 @@ impl MixBusNode {
         };
         let target_linear = DuckState::linear(duck.cfg.depth_db);
         let threshold = duck.cfg.threshold_db;
-        // Phase 5 S3: a source of AUX_BUS_ID reads the aux accumulator's
-        // meter instead of a slot's.
+        // Phase 5 S3: a source of AUX_BUS_ID reads the aux bus node's meter
+        // (published to the shared bus after its step) instead of a slot's.
         let source_peak_db = if duck.cfg.source == AUX_BUS_ID {
-            self.aux.meters.peak_db
+            self.send_bus.data().aux_peak_db
         } else {
             self.inputs
                 .get(duck.cfg.source)
@@ -932,8 +972,6 @@ impl DspNode for MixBusNode {
         self.crossfade_enabled
             || self.state != MixerState::PlayingCurrent
             || self.duck.is_some()
-            || self.aux.enabled
-            || self.aux.insert_active()
             || self.inputs.iter().any(|i| {
                 i.preamp.is_active()
                     || i.loudness.is_active()
@@ -990,8 +1028,19 @@ impl DspNode for MixBusNode {
         self.inputs[0].preamp.process_block_f32(planes);
         self.inputs[0].loudness.process_block_f32(planes);
         self.inputs[0].apply_trim(planes, channels, frames);
-        if self.aux.enabled {
-            self.aux.clear(frames);
+        // Phase 5 S2/S3: prepare the send bus for this block — clear the
+        // active slots' planes so the taps write fresh values. The aux bus
+        // node (a separate plan step after this one) consumes them.
+        {
+            let sb = self.send_bus.data();
+            if sb.enabled {
+                for k in 0..MAX_MIX_SLOTS {
+                    if sb.send_active[k] {
+                        self.send_bus.data_mut().slots[k * 2][..frames].fill(0.0);
+                        self.send_bus.data_mut().slots[k * 2 + 1][..frames].fill(0.0);
+                    }
+                }
+            }
         }
         if channels == 2 {
             self.mix_secondary_f32(planes);
@@ -999,11 +1048,11 @@ impl DspNode for MixBusNode {
         } else {
             self.mix_multichannel(planes);
         }
-        // Aux return after all slot sums (the aux content joins the master
-        // before the downstream post-mix chain), then the per-slot meters.
-        self.aux.return_into(planes, frames, self.aux_duck_gain());
+        // Publish the current duck gain for the aux return (the aux node,
+        // running next in the plan, reads it for THIS block).
+        self.send_bus.data_mut().aux_duck_gain = self.aux_duck_gain();
+        // Per-slot meters only — the aux bus meters live on the aux node.
         self.compute_meters(planes, frames);
-        self.aux.compute_meters(frames);
     }
 
     fn process_block_f64(&mut self, planes: &mut [&mut [f64]]) {
@@ -1015,8 +1064,16 @@ impl DspNode for MixBusNode {
         self.inputs[0].preamp.process_block_f64(planes);
         self.inputs[0].loudness.process_block_f64(planes);
         self.inputs[0].apply_trim_f64(planes, channels, frames);
-        if self.aux.enabled {
-            self.aux.clear(frames);
+        {
+            let sb = self.send_bus.data();
+            if sb.enabled {
+                for k in 0..MAX_MIX_SLOTS {
+                    if sb.send_active[k] {
+                        self.send_bus.data_mut().slots[k * 2][..frames].fill(0.0);
+                        self.send_bus.data_mut().slots[k * 2 + 1][..frames].fill(0.0);
+                    }
+                }
+            }
         }
         if channels == 2 {
             self.mix_secondary_f64(planes);
@@ -1024,9 +1081,7 @@ impl DspNode for MixBusNode {
         } else {
             self.mix_multichannel_f64(planes);
         }
-        self.aux
-            .return_into_f64(planes, frames, self.aux_duck_gain());
+        self.send_bus.data_mut().aux_duck_gain = self.aux_duck_gain();
         self.compute_meters_f64(planes, frames);
-        self.aux.compute_meters(frames);
     }
 }

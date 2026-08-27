@@ -896,3 +896,104 @@ fn test_engine_handle_controls_and_telemetry() {
     // 5. Verify events receiver is accessible
     assert!(handle.events().is_empty());
 }
+
+#[test]
+fn test_set_aux_insert_command_dispatches_and_publishes() {
+    // Phase 6: the aux-insert runtime toggle must flow engine command →
+    // graph control → mirrored control-bus state → PlaybackInfo telemetry
+    // (the read path the FFI exposes to hosts).
+    let ir_path = std::env::temp_dir().join(format!(
+        "cmd_aux_ir_{}_{}.wav",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let mut left = vec![0i16; 2048];
+    left[0] = i16::MAX; // impulse: the IR engine is created + observable
+    let right = vec![0i16; 2048];
+    write_i16_wav(&ir_path, 48_000, &left, &right);
+
+    let mut config = EngineConfig::default();
+    config.aux.enabled = true;
+    config.aux.return_gain = 0.5;
+    config.aux.insert_enabled = false;
+    config.aux.insert_wet_mix = 1.0;
+    config.aux.insert_ir_path = Some(ir_path.display().to_string());
+    let mut engine = AudioEngine::new(config).unwrap();
+
+    // Construction applied the config: insert engine exists, disabled.
+    assert!(
+        !engine.pipeline_mut().control_handle().aux_insert_state().0,
+        "insert starts disabled per config"
+    );
+
+    // Runtime toggle ON at 25% wet through the engine command.
+    engine.send_command(EngineCommand::SetAuxInsert {
+        enabled: true,
+        wet_mix: 0.25,
+    });
+    engine.tick();
+    let (enabled, wet) = engine.pipeline_mut().control_handle().aux_insert_state();
+    assert!(enabled, "SetAuxInsert enables the insert engine");
+    assert!(
+        (wet - 0.25).abs() < 1e-6,
+        "SetAuxInsert sets the wet mix (got {wet})"
+    );
+
+    // The 2 s telemetry cadence mirrors it into PlaybackInfo for FFI reads.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+    let mut published = false;
+    while std::time::Instant::now() < deadline {
+        engine.tick();
+        let pb = engine.playback_info();
+        if pb.aux_insert_enabled && (pb.aux_insert_wet_mix - 0.25).abs() < 1e-6 {
+            published = true;
+            break;
+        }
+    }
+    assert!(published, "aux insert state published to PlaybackInfo");
+    let _ = std::fs::remove_file(&ir_path);
+}
+
+#[test]
+fn test_endpoint_commands_update_config_without_output() {
+    // The endpoint routing commands must manage `endpoint_configs` even
+    // before any audio output exists (no device is opened, no failure).
+    let mut engine = AudioEngine::new_default().unwrap();
+    engine.send_command(EngineCommand::SetEndpoints(vec![]));
+    engine.tick();
+    assert!(engine.endpoint_configs.is_empty());
+
+    engine.send_command(EngineCommand::UpsertEndpoint(config::EndpointConfig {
+        id: "ffi-test".to_string(),
+        backend: config::AudioBackend::Auto,
+        device: None,
+        gain: 0.8,
+        enabled: true,
+        drift_correction: true,
+    }));
+    engine.tick();
+    assert_eq!(engine.endpoint_configs.len(), 1, "upsert adds the endpoint");
+    assert_eq!(engine.endpoint_configs[0].id, "ffi-test");
+    assert!((engine.endpoint_configs[0].gain - 0.8).abs() < 1e-6);
+
+    // Upserting the same id replaces, not duplicates.
+    engine.send_command(EngineCommand::UpsertEndpoint(config::EndpointConfig {
+        id: "ffi-test".to_string(),
+        backend: config::AudioBackend::Auto,
+        device: Some("other".to_string()),
+        gain: 0.5,
+        enabled: false,
+        drift_correction: false,
+    }));
+    engine.tick();
+    assert_eq!(engine.endpoint_configs.len(), 1, "upsert replaces by id");
+    assert_eq!(engine.endpoint_configs[0].device.as_deref(), Some("other"));
+    assert!(!engine.endpoint_configs[0].enabled);
+
+    engine.send_command(EngineCommand::RemoveEndpoint("ffi-test".to_string()));
+    engine.tick();
+    assert!(engine.endpoint_configs.is_empty(), "remove clears by id");
+}

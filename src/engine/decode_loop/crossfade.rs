@@ -658,14 +658,6 @@ impl AudioEngine {
             &mut self.scratch.mix_l[..n],
             &mut self.scratch.mix_r[..n],
         );
-        // Multi-endpoint fan-out: every additional endpoint gets the flushed
-        // master block (resample → its own limiter → its ring). Disjoint
-        // field borrows (extra_endpoints vs scratch) via the free function.
-        crate::engine::endpoints::fanout_block(
-            &mut self.extra_endpoints,
-            &self.scratch.mix_l[..n],
-            &self.scratch.mix_r[..n],
-        );
         let mut batch = [0.0f32; MIX_BLOCK * 2];
         for i in 0..n {
             batch[i * 2] = self.scratch.mix_l[i];

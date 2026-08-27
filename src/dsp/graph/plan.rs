@@ -98,6 +98,11 @@ impl PlanSet {
         use node_id::*;
         let stereo_chain = [
             (MIX, StepScope::AllChannels),
+            // Phase 6: the aux bus consumes the mix node's send taps and
+            // returns into the master BEFORE the post-mix chain runs (the
+            // aux return lands in the master front pair, then EQ → … →
+            // dither process it like any other mix contribution).
+            (AUX, StepScope::FrontPair),
             (EQ, StepScope::FrontPair),
             (DYNAMICS, StepScope::FrontPair),
             (CONVOLUTION, StepScope::FrontPair),

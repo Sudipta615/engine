@@ -102,12 +102,21 @@ pub struct EndpointConfig {
     pub gain: f32,
     #[serde(default = "default_endpoint_enabled")]
     pub enabled: bool,
+    /// Per-endpoint clock drift correction: a slip resampler trims the
+    /// nominal-rate stream to the device's real clock (ring-fill feedback on
+    /// the slip ratio) so independent crystals can't drift the ring full or
+    /// empty. Default true; irrelevant when the rates match.
+    #[serde(default = "default_drift_correction")]
+    pub drift_correction: bool,
 }
 
 fn default_endpoint_gain() -> f32 {
     1.0
 }
 fn default_endpoint_enabled() -> bool {
+    true
+}
+fn default_drift_correction() -> bool {
     true
 }
 

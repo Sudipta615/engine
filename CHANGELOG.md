@@ -2,6 +2,61 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.9.0] — 2026-08-27
+
+Endpoint & aux-insert control surfaces, per-endpoint clock drift correction,
+and the aux bus promoted to its own graph plan node.
+
+### Added
+
+- **C FFI endpoint routing surface** (`src/ffi.rs`): `engine_upsert_endpoint`
+  (device, backend, gain, enabled, drift correction), `engine_remove_endpoint`,
+  `engine_clear_endpoints`, `engine_endpoint_count`, `engine_endpoint_id`, and
+  `engine_endpoint_info` (rate, gain, pending frames, drift offset) so
+  C/C++ hosts can drive the multi-endpoint routing matrix.
+- **C FFI aux-insert surface**: `engine_set_aux_insert` and
+  `engine_aux_insert_state` expose the Phase 6 aux-bus convolution insert.
+  Rust side: `EngineCommand::SetAuxInsert` + `EngineHandle::set_aux_insert`;
+  `PlaybackInfo` publishes the live insert state.
+- **Per-endpoint clock drift correction** (`EndpointConfig.drift_correction`,
+  default on) for rate-mismatched endpoints. Each endpoint's FFT resampler
+  stays fixed at the nominal ratio and a rubato `Slip` (a 1:1 clutch that
+  inserts/drops single frames behind a short crossfade) trims the stream to
+  the device's actual crystal; a proportional ring-fill controller steers
+  the slip ratio (clamped ±500 ppm) and converges it onto the real clock.
+  `PlaybackInfo.endpoints[]` reports `drift_active` / `drift_ppm` per
+  endpoint.
+- **Aux bus as a first-class plan node** (`src/dsp/graph/nodes/aux_node.rs`):
+  the send accumulator, return, and optional insert move out of `MixBusNode`
+  into a standalone `AuxBusNode` that runs as its own `AUX` plan step right
+  after the mix step. The mix node and aux node share one interior-mutable
+  `AuxSendBus`; the sum loops write each slot's post-fader front-pair signal
+  there and the aux node consumes it. Disabled = bit-exact.
+- **Per-send gain automation**: each mix slot's aux send is an independent
+  ramped gain (10 ms glide on target change, snap on first engagement), so
+  a send can be automated without clicks and without disturbing other
+  slots' sends.
+- **Independent per-send metering**: `ControlHandle::aux_send_peak(slot)`
+  reports each slot's own aux-send peak (dBFS), alongside the existing
+  aggregate `aux_meters()`, published once per audio block.
+
+### Changed
+
+- **Endpoint path unified**: the superseded `EngineConfig.additional_endpoints`
+  / `EndpointTransport` fan-out (a parallel routing matrix that survived an
+  earlier merge) was removed in favor of the `output::EndpointWorker` path,
+  fixing a double-output risk on stream recovery and stale config references.
+  `EngineHandle`'s public endpoint accessors are re-pointed at the unified
+  registry. Single-endpoint behavior is unchanged.
+- **Drift correction no longer retunes the FFT resampler**: integer-Hz rate
+  changes hit rubato's fixed-sync chunk pathology at non-grid rates (e.g.
+  47 999 Hz collapses the Fast tier to ~6 800-frame chunks), so the nominal
+  ratio is now left fixed and the slip handles the trim.
+- **Master (slot 0) meter point**: the plan runner recomputes slot 0's meter
+  immediately after the AUX step — the return has landed but the post-mix
+  chain has not run — so telemetry includes the aux return (restoring
+  pre-split semantics) instead of reporting the post-EQ/dynamics level.
+
 ## [3.8.0] — 2026-08-27
 
 Phase 6 (roadmap) first cut: the aux-bus insert seam and a bit-exact SIMD

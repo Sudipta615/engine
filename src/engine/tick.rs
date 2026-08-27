@@ -391,18 +391,6 @@ impl AudioEngine {
 
             let is_bp = stats.bit_perfect;
 
-            // ── Endpoint telemetry (routing matrix) ────────────────────
-            let endpoints = self
-                .extra_endpoints
-                .iter()
-                .map(|ep| crate::playback_info::EndpointInfo {
-                    device: ep.config.device.clone(),
-                    sample_rate: ep.rate,
-                    gain: ep.gain,
-                    pending_frames: ep.pending_frames(),
-                })
-                .collect::<Vec<_>>();
-
             // ── Lane telemetry (Phase 4 S6) ────────────────────────────
             let lanes = self
                 .lanes
@@ -433,7 +421,11 @@ impl AudioEngine {
                 next.nan_count = next.nan_count.saturating_add(new_nans as u64);
                 next.engine_stats = Some(stats.clone());
                 next.lanes = lanes.clone();
-                next.endpoints = endpoints.clone();
+                // Phase 6: mirror the aux insert toggle so hosts (FFI
+                // included) can read the live state like any other telemetry.
+                let (ins_enabled, ins_wet) = self.graph.control_handle().aux_insert_state();
+                next.aux_insert_enabled = ins_enabled;
+                next.aux_insert_wet_mix = ins_wet;
                 #[cfg(feature = "audio-output")]
                 {
                     next.output_info = out_info.clone();
@@ -494,6 +486,7 @@ impl AudioEngine {
             .iter()
             .map(|endpoint| {
                 let stats = endpoint.ring().stats();
+                let (drift_active, drift_ppm) = endpoint.drift_state();
                 crate::playback_info::EndpointInfo {
                     id: endpoint.config().id.as_str().to_string(),
                     enabled: endpoint.config().enabled,
@@ -503,6 +496,8 @@ impl AudioEngine {
                     available_frames: stats.available_frames,
                     transport_error_count: 0,
                     last_error: None,
+                    drift_active,
+                    drift_ppm,
                 }
             })
             .collect::<Vec<_>>();

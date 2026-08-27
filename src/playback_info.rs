@@ -116,6 +116,10 @@ pub struct PlaybackInfo {
     /// Configured endpoint identifiers and current endpoint stats.
     #[cfg(feature = "audio-output")]
     pub endpoints: Vec<EndpointInfo>,
+    /// Phase-6 aux insert state, mirrored from the mix bus control plane on
+    /// the telemetry cadence: enabled / wet-mix of the global convolution.
+    pub aux_insert_enabled: bool,
+    pub aux_insert_wet_mix: f32,
 }
 
 /// Telemetry for one physical output endpoint.
@@ -130,6 +134,12 @@ pub struct EndpointInfo {
     pub available_frames: usize,
     pub transport_error_count: u64,
     pub last_error: Option<String>,
+    /// Whether per-endpoint clock drift correction is active (rate-mismatched
+    /// endpoints with `drift_correction` enabled).
+    pub drift_active: bool,
+    /// Current drift correction offset in ppm (positive = device clock faster
+    /// than its nominal rate).
+    pub drift_ppm: i64,
 }
 
 /// Telemetry for one playback lane (Phase 4 S6).
@@ -196,6 +206,8 @@ impl Default for PlaybackInfo {
             endpoint_dropped_frames: 0,
             #[cfg(feature = "audio-output")]
             endpoints: Vec::new(),
+            aux_insert_enabled: false,
+            aux_insert_wet_mix: 0.5,
         }
     }
 }

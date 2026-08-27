@@ -90,6 +90,13 @@ pub enum EngineCommand {
     UpsertEndpoint(config::EndpointConfig),
     #[cfg(feature = "audio-output")]
     RemoveEndpoint(String),
+    /// Runtime toggle of the Phase-6 aux insert (the global convolution on
+    /// the aux bus): `enabled` + `wet_mix` only — the impulse response stays
+    /// as configured. No-op when no IR engine exists yet.
+    SetAuxInsert {
+        enabled: bool,
+        wet_mix: f32,
+    },
     SetEqEnabled(bool),
     /// Enable or disable automatic EQ headroom. When enabled, the engine
     /// reserves the curve's own peak boost as pre-EQ attenuation and keeps it

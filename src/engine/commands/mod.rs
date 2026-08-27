@@ -421,6 +421,9 @@ impl AudioEngine {
             EngineCommand::UpsertEndpoint(endpoint) => self.handle_upsert_endpoint(endpoint),
             #[cfg(feature = "audio-output")]
             EngineCommand::RemoveEndpoint(id) => self.handle_remove_endpoint(id),
+            EngineCommand::SetAuxInsert { enabled, wet_mix } => {
+                self.graph.set_aux_insert(enabled, wet_mix);
+            }
             EngineCommand::SetSampleRatePolicy(policy) => {
                 self.handle_set_sample_rate_policy(policy)
             }

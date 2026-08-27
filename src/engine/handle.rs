@@ -379,6 +379,13 @@ impl EngineHandle {
         let _ = self.send_command(EngineCommand::SetEndpoints(endpoints));
     }
 
+    /// Runtime toggle of the Phase-6 aux insert (global convolution on the
+    /// aux bus): `enabled` + `wet_mix` in [0, 1] only — the impulse response
+    /// stays as configured. No-op when no IR engine exists yet.
+    pub fn set_aux_insert(&self, enabled: bool, wet_mix: f32) {
+        let _ = self.send_command(EngineCommand::SetAuxInsert { enabled, wet_mix });
+    }
+
     /// Replace the configured physical endpoint fan-out list.
     #[cfg(feature = "audio-output")]
     pub fn clear_endpoints(&self) {
