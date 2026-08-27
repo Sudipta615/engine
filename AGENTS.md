@@ -5,23 +5,45 @@ Guidance for AI coding agents (and humans) working in this repository.
 ## Project snapshot
 
 **Freebuff Desktop** is a headless, high-performance, bit-perfect audiophile audio
-playback & DSP engine written in 100% pure Rust. It is a Cargo workspace:
+playback & DSP engine written in 100% pure Rust. It is a Cargo workspace with a
+graph-runtime architecture: a node-based DSP graph (compiled execution plans, live
+generation swaps) is the **production hot path**, an N-input mix bus carries the
+primary stream, crossfade partner, and independent lane tracks, a standalone aux
+bus node provides per-send automation and an insert seam, and a multi-endpoint
+output matrix fans the master out to several devices, each with its own realtime
+thread and clock-drift-corrected resampler. A stable C FFI lets non-Rust hosts
+drive the whole surface.
 
 ```
 ├── Cargo.toml                  # workspace + `engine` crate (the library/bins)
 ├── crates/config/              # `config` crate — Serde-serializable engine & DSP config models
 ├── src/                        # `engine` crate
 │   ├── lib.rs                  # crate root + prelude re-exports
-│   ├── source.rs, playlist.rs, commands.rs, events.rs, playback_info.rs,
-│   │   audio_io.rs, sink.rs, ffi.rs
-│   ├── engine/                 # core state machine (tick loop, handle, stream, commands/, decode_loop/)
+│   ├── commands.rs             # `EngineCommand` — the full host-control surface
+│   ├── events.rs               # `EngineEvent` / `OutputEvent` lifecycle events
+│   ├── playback_info.rs        # lock-free telemetry snapshot (published via ArcSwap)
+│   ├── playlist.rs, source.rs, sink.rs, audio_io.rs, ffi.rs, paths.rs, dsp_utils.rs
+│   ├── buffer/                 # frames/chunks + lock-free SPSC rings + DSD bytes
+│   ├── engine/                 # core state machine
+│   │   ├── tick.rs · handle.rs · stream.rs · construction.rs · output_setup.rs
+│   │   ├── lanes.rs · track_loading.rs · crossfade.rs · recovery.rs · telemetry.rs
+│   │   ├── volume.rs · clock.rs · buffers.rs · dsd_state.rs · loudness_state.rs
+│   │   ├── commands/           # command handlers by domain (playback/dsp/eq/lanes/…)
+│   │   ├── decode_loop/        # single-stream + crossfade decode loops
+│   │   └── tests/              # engine integration tests
 │   ├── decode/                 # decoders + channel layout/mix + tags + fingerprint
-│   ├── dsp/                    # DSP primitives + `pipeline/` (production chain) + `graph/` (experimental)
-│   ├── output/                 # per-OS backends (alsa/wasapi/asio/coreaudio/cpal) + capture
-│   ├── buffer/                 # lock-free SPSC ring buffers
+│   ├── dsp/                    # DSP primitives + `resampler/` (Rubato)
+│   │   ├── pipeline/           #   reference chain (the bit-exact oracle)
+│   │   └── graph/              #   production hot path: node arena + compiled
+│   │                           #   plans split by concern (construction/plan/swap/
+│   │                           #   access/controls/lifecycle/process/limiter/report
+│   │                           #   + nodes/: mix/{mod,envelope,sum}, aux_node, …)
+│   ├── output/                 # per-OS backends (alsa/wasapi/asio/coreaudio/cpal) +
+│   │                           #   endpoint.rs (per-endpoint worker, drift correction)
+│   │                           #   + device_monitor, output_profile, rate_policy
 │   └── bin/                    # `audio-engine-cli`, `replaygain-scanner`
-├── docs/                       # ARCHITECTURE.md, SIGNAL_FLOW.md
-├── benches/                    # dsp_bench, pipeline_bench
+├── benches/                    # dsp_bench, pipeline_bench, graph_plan_bench
+├── docs/                       # ARCHITECTURE.md, SIGNAL_FLOW.md, EMBEDDING.md, ROADMAP.md
 └── tests/                      # headless + `tests/fidelity/` DSP/decoder suites
 ```
 
@@ -92,8 +114,12 @@ self-contained OS backend (`output/*_output/`), or a test file packed with cases
 The canonical precedent is **`src/dsp/pipeline/`**: the `DspPipeline` struct and
 its wiring live in `mod.rs`, while its behavior is split across concern-scoped
 impl-block files that each declare `mod x;` in `mod.rs` and open with
-`impl DspPipeline { … }`. `src/dsp/graph/` follows the same layout
-(`construction.rs`, `lifecycle.rs`, `process.rs`, `limiter.rs`, `report.rs`).
+`impl DspPipeline { … }`. **`src/dsp/graph/`** follows the same layout
+(`construction.rs`, `plan.rs`, `swap.rs`, `access.rs`, `controls.rs`,
+`lifecycle.rs`, `process.rs`, `limiter.rs`, `report.rs`), and **`src/dsp/graph/nodes/mix/`**
+splits the `MixBusNode` into `mod.rs` / `envelope.rs` / `sum.rs`, with the aux bus
+in its own plan node (`nodes/aux_node.rs`). `src/engine/commands/` splits command
+handlers by domain (playback / dsp / eq / lanes / output / playlist / …).
 
 When a struct/impl grows, prefer splitting like this:
 - `mod.rs` — module docs, wiring, `pub struct`, `mod` declarations
@@ -112,6 +138,28 @@ blocks**, never the data definitions, unless the split is purely additive.
   matches its job rather than growing a different concern file.
 - A reviewer MUST check for the signals above on every PR touching `src/`, and
   run the affected module's tests (e.g. `cargo test --lib dsp::graph`).
+
+## Realtime & concurrency rules
+
+The engine's core guarantee is **no allocation and no locks on the audio path** —
+all hot paths (decode loop, graph plan execution, endpoint workers, backend
+callbacks) must stay allocation-free and lock-free. The established concurrency
+patterns are:
+
+- **SPSC ring buffers** for audio (cache-padded) and **per-node SPSC control
+  queues** for block-boundary command application — never MPMC, never a mutex on
+  a hot path.
+- **Atomic publication** for telemetry (`ArcSwap<PlaybackInfo>`) and control
+  mirrors (sticky per-slot/aux atomics).
+- **Generation swaps** for reconfiguration: a fresh `GraphGeneration` is built on
+  the control thread and published with an atomic pointer swap; the audio thread
+  never allocates or frees. Deferred reclamation drains on the control thread.
+- **Shared audio-thread state** between graph nodes (e.g. the `AuxSendBus` shared
+  by the mix step and the aux step) uses interior mutability that is safe **by
+  contract** (both sides run on the same audio thread); document the contract
+  next to the `unsafe impl Sync`.
+- **Per-endpoint realtime threads** must never touch shared mutable state — each
+  reads only its own ring, its own resampler/slip, and the shared graph read-only.
 
 ## Completeness checklist
 
@@ -134,11 +182,11 @@ Before considering a change "complete", verify:
         README's claims.
 - [ ] **CI green**: `cargo fmt --all -- --check`, `cargo clippy --workspace
       --all-targets -- -D warnings`, and `cargo test --workspace` pass. Optional
-      feature builds (`tag-write`, `fingerprint`, `wasapi-native`, `asio-native`)
-      compile when the change touches those paths.
+      feature builds (`tag-write`, `fingerprint`, `c-ffi`, `network-streaming`,
+      `wasapi-native`, `asio-native`) compile when the change touches those paths.
 - [ ] **Docs consistent**: `README.md`, `docs/ARCHITECTURE.md`, `docs/SIGNAL_FLOW.md`,
-      and `docs/EMBEDDING.md` still describe the real layout and behavior; update the
-      module map when you add/move/remove a module.
+      `docs/EMBEDDING.md`, and `docs/ROADMAP.md` still describe the real layout and
+      behavior; update the module map when you add/move/remove a module.
 - [ ] **License file present**: `LICENSE-APACHE` exists at the repo root (do not
       remove it), the Cargo.toml `license` field is `Apache-2.0`, and the README
       declares the Apache-2.0 license — all three must stay in sync.
@@ -149,10 +197,12 @@ Before considering a change "complete", verify:
 
 ## Testing
 
-- Run unit + headless tests with `cargo test`.
+- Run unit + headless tests with `cargo test` (or `cargo test --lib dsp::graph`
+  for a module slice).
 - DSP fidelity/measurement suites live under `tests/fidelity/` and are named in
   `Cargo.toml` `[[test]]` entries (e.g. `--test limiter_correctness`,
-  `--test golden_reference_vectors`).
+  `--test golden_reference_vectors`, `--test graph_pipeline_equivalence`).
 - Realtime zero-allocation: `cargo test --test realtime_allocation`.
+- Decoder robustness/fuzzing: `cargo test --test fuzz_mutation --test decoder_robustness`.
 - Always re-run the relevant module tests after a modularization/split change
   (e.g. `cargo test --lib dsp::graph`).
