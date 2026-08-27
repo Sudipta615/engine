@@ -95,6 +95,10 @@ impl DspGraph {
         lanes: &mut [(&mut [f32], &mut [f32])],
     ) {
         self.control_tick();
+        let lane_count = lanes
+            .len()
+            .min(crate::dsp::graph::nodes::MAX_MIX_SLOTS.saturating_sub(2));
+        let lanes = &mut lanes[..lane_count];
         let n = primary.0.len().min(primary.1.len());
         if n > MAX_AUDIO_BLOCK_FRAMES {
             let mut start = 0;
@@ -161,6 +165,10 @@ impl DspGraph {
         secondaries: &mut [(&mut [f32], &mut [f32])],
     ) {
         self.control_tick();
+        let secondary_count = secondaries
+            .len()
+            .min(crate::dsp::graph::nodes::MAX_MIX_SLOTS - 1);
+        let secondaries = &mut secondaries[..secondary_count];
         let n = primary.0.len().min(primary.1.len());
         if n > MAX_AUDIO_BLOCK_FRAMES {
             let mut start = 0;

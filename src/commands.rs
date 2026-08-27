@@ -84,6 +84,12 @@ pub enum EngineCommand {
     Shutdown,
     SetOutputBackend(config::AudioBackend),
     SetOutputDevice(Option<String>),
+    #[cfg(feature = "audio-output")]
+    SetEndpoints(Vec<config::EndpointConfig>),
+    #[cfg(feature = "audio-output")]
+    UpsertEndpoint(config::EndpointConfig),
+    #[cfg(feature = "audio-output")]
+    RemoveEndpoint(String),
     SetEqEnabled(bool),
     /// Enable or disable automatic EQ headroom. When enabled, the engine
     /// reserves the curve's own peak boost as pre-EQ attenuation and keeps it

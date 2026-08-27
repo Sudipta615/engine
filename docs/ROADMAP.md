@@ -133,7 +133,7 @@ sends are automatable, and lanes are the send sources.
 
 ---
 
-## Phase 5 — Per-slot trim, lane sends, aux/master busses — **Done (v3.6.0)**
+## Phase 5 — Per-slot trim, lane sends, aux/master busses, multi-endpoint fan-out — **Done (v3.6.0)**
 
 **Intent.** Give the bus a real mixer topology: per-slot channel shaping,
 per-slot post-fader sends, and a second (aux) bus that accumulates sends and
@@ -187,6 +187,13 @@ block, O(sending slots × frames) accumulates, one return pass. No
 allocation, no locks. Every new expression is either skipped when disabled
 or an exact ×1.0, so the 27-scenario equivalence suite stays bit-exact (the
 suite never enables trims/sends/aux).
+
+### Multi-endpoint fan-out
+Configured endpoints use independent bounded rings, channel-agnostic gain,
+explicit drop accounting, lifecycle recovery, endpoint-specific telemetry,
+and public `EngineHandle` configuration controls. The primary sink and each
+secondary endpoint are independent subscribers; a short write on one never
+changes the frames offered to another.
 
 ---
 

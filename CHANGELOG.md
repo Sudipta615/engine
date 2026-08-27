@@ -114,7 +114,27 @@ without an aux tap, and the f64 path never published mix meters.
   engine `set_config` routes bus-topology changes through the glitch-free
   rebuild instead of an in-place apply.
 
-## [3.6.0] — 2026-08-26
+## [3.6.0] — 2026-08-27
+
+Phase 5 is complete: per-slot mixer controls and robust multi-endpoint
+fan-out are now public, configurable, observable, and tested.
+
+### Added
+
+- Serializable endpoint configurations with validated unique IDs, bounded
+  gain, enable/disable state, independent channel-agnostic rings, lifecycle
+  recovery, and explicit frame-drop telemetry.
+- Endpoint transport errors are surfaced through `PlaybackInfo::engine_error`
+  and `OutputEvent::EndpointError`; endpoint configuration can be replaced
+  through `EngineHandle::set_endpoints`.
+- Endpoint routing remains allocation-free in the steady-state engine path,
+  including multichannel output scaling.
+
+### Fixed
+
+- Endpoint reconfiguration now rolls back its configuration if reopening
+  fails, and endpoint telemetry is reset consistently after replacement.
+
 
 Phase 5 S1–S3 of the player → graph-runtime roadmap: the mix bus becomes a
 real mixing surface. Per-slot channel trim banks (S1) shape each slot's

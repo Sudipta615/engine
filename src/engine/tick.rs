@@ -98,6 +98,11 @@ impl AudioEngine {
         self.telemetry.tick_start = Some(now);
 
         self.process_commands();
+        #[cfg(feature = "audio-output")]
+        {
+            self.update_endpoint_telemetry();
+            self.drain_endpoint_stream_errors();
+        }
         // The engine is single-threaded: apply any queued graph control
         // commands immediately after dispatch (the graph's block-boundary
         // drain would otherwise wait for the next audio block — and there is
@@ -444,6 +449,67 @@ impl AudioEngine {
             self.telemetry.underruns_window = 0;
             self.telemetry.last_cpu_reset = now;
         }
+    }
+
+    #[cfg(feature = "audio-output")]
+    pub(crate) fn drain_endpoint_stream_errors(&self) {
+        for endpoint in &self.endpoints {
+            let batch = endpoint.output().map(|output| output.take_stream_errors());
+            let Some(batch) = batch else { continue };
+            if !batch.is_empty() {
+                let message = format!(
+                    "Endpoint '{}' transport error: {}",
+                    endpoint.config().id.as_str(),
+                    batch
+                        .events
+                        .first()
+                        .map(|e| e.message.as_str())
+                        .unwrap_or("transport error")
+                );
+                self.write_playback_info(|info| {
+                    info.engine_error = Some(message.clone());
+                    if let Some(endpoint_info) = info
+                        .endpoints
+                        .iter_mut()
+                        .find(|item| item.id == endpoint.config().id.as_str())
+                    {
+                        endpoint_info.transport_error_count = endpoint_info
+                            .transport_error_count
+                            .saturating_add(batch.events.len() as u64 + batch.dropped as u64);
+                        endpoint_info.last_error = Some(message.clone());
+                    }
+                });
+                self.emit_output_event(OutputEvent::EndpointError {
+                    endpoint: endpoint.config().id.as_str().to_string(),
+                    message: message.clone(),
+                });
+            }
+        }
+    }
+
+    #[cfg(feature = "audio-output")]
+    pub(crate) fn update_endpoint_telemetry(&self) {
+        let endpoints = self
+            .endpoints
+            .iter()
+            .map(|endpoint| {
+                let stats = endpoint.ring().stats();
+                crate::playback_info::EndpointInfo {
+                    id: endpoint.config().id.as_str().to_string(),
+                    enabled: endpoint.config().enabled,
+                    gain: endpoint.config().gain,
+                    written_frames: stats.written_frames,
+                    dropped_frames: stats.dropped_frames,
+                    available_frames: stats.available_frames,
+                    transport_error_count: 0,
+                    last_error: None,
+                }
+            })
+            .collect::<Vec<_>>();
+        self.write_playback_info(|info| {
+            info.endpoint_dropped_frames = self.endpoint_dropped_frames();
+            info.endpoints = endpoints.clone();
+        });
     }
 
     pub fn playback_info(&self) -> PlaybackInfo {

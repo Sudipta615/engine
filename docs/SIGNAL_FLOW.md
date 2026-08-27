@@ -89,8 +89,14 @@ post-mix block (f32 or f64)
            ▼
 ┌─────────────────────┐
 │ FixedFrameBuffer    │  lock-free SPSC ring, interleaved f32
-│ (output_buffer)     │
+│ (primary output)   │
 └──────────┬──────────┘
+           ▼
+┌──────────────────────────────────────────────────────────┐
+│ Independent endpoint fan-out                            │
+│ Each enabled endpoint has its own bounded ring, gain,    │
+│ lifecycle, drop counters, and transport error state.    │
+└──────────┬───────────────────────────────────────────────┘
            ▼
 ┌─────────────────────┼─────────────────────┐
 ▼                     ▼                     ▼
@@ -170,6 +176,15 @@ LoudnessScanResult { LUFS, dBTP, LRA, RG gain/peak }
 decode (offline) ──▶ mono downmix ──▶ 16-bit PCM ──▶ Chromaprint
         ──▶ compact fingerprint + duration ──▶ submit to AcoustID API
 ```
+
+### Multi-endpoint fan-out
+
+The processed output block is offered independently to every enabled configured
+endpoint. Each endpoint has its own bounded SPSC ring and gain multiplier;
+backpressure or drops on one endpoint do not alter primary-sink delivery or
+another endpoint. `PlaybackInfo::endpoints` reports per-endpoint written,
+dropped, available, and transport-error counters, while `OutputEvent::EndpointError`
+reports transport failures asynchronously.
 
 ### Telemetry
 

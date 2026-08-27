@@ -51,9 +51,10 @@ from C, C++, Python, C#, Node.js, and any language that can call C.
    │  (Symphonia + native DSD/Opus/TTA/WavPack)  (f32 or f64, multichannel)      │
    │  ──────────────────────────────────────────────▶ FixedFrameBuffer ring      │
    └────────────────────────────────────────────────────────────────────────────┘
-                             │  output thread(s)
+                             │  independent fan-out rings
                              ▼
-        ALSA ─ WASAPI Exclusive ─ ASIO ─ CoreAudio Hog ─ CPAL fallback
+        Primary DAC + configured secondary endpoints
+        (ALSA ─ WASAPI Exclusive ─ ASIO ─ CoreAudio Hog ─ CPAL fallback)
                              ▼
                       Hardware DAC
 ```
@@ -93,7 +94,7 @@ Source frames
   ├─ Seek / transition fade
   ├─ Resampler (Rubato sinc) → output domain
   └─ 4× true-peak lookahead limiter + TPDF dither
-       └─▶ FixedFrameBuffer → DAC
+       └─▶ FixedFrameBuffer → primary DAC and independent configured endpoints
 ```
 
 Two **hard bypass modes** bypass the entire graph:
@@ -261,6 +262,7 @@ Key configuration groups (all in `config`):
 - **Multichannel** — `channel_policy`, `channel_trim`, `channel_eq`, `channel_routing`,
   `lfe`, `bass_management`, `channel_mix`
 - **DSD** — `dsd_output` (Native / DoP / PCM)
+- **Phase 5 endpoints** — `endpoints: Vec<EndpointConfig>` configures stable IDs, backend/device targets, gain, and enabled state. Endpoint rings are independent subscribers; drops and transport errors are observable in telemetry.
 
 The full per-stage tunables (band counts/frequencies/Q, limiter ceiling/attack/release,
 crossfeed profiles, multiband band params, LFE crossover, …) live in
@@ -283,7 +285,7 @@ through non-blocking message passing + atomic telemetry.
 | **EQ / shaping** | `set_eq_enabled`, `set_eq_preset`, `set_eq_band`, `set_graphic_eq_layout`, `set_graphic_eq_slider`, `set_graphic_eq_enabled`, `set_stereo_width` |
 | **Spatial** | `set_crossfeed_enabled`, `set_crossfeed_profile`, `set_crossfeed_custom_params` |
 | **Multichannel** | `set_channel_mix`, `set_channel_policy`, `set_channel_trim`, `set_channel_routing`, `set_channel_eq`, `set_lfe_config`, `set_bass_management` |
-| **Output / audiophile** | `set_output_backend`, `set_output_device`, `available_devices`*, `set_sample_rate_policy`, `set_bit_perfect`, `set_dither_enabled`, `set_resampler_quality`, `set_limiter_mode`, `set_limiter_true_peak`, `open_asio_control_panel`† |
+| **Output / audiophile** | `set_output_backend`, `set_output_device`, `set_endpoints`, `set_endpoint`, `remove_endpoint`, `clear_endpoints`, `available_devices`*, `set_sample_rate_policy`, `set_bit_perfect`, `set_dither_enabled`, `set_resampler_quality`, `set_limiter_mode`, `set_limiter_true_peak`, `open_asio_control_panel`† |
 | **Capture** | `start_capture`, `stop_capture` |
 | **Telemetry** | `playback_info`, `state`, `is_playing`, `current_source`, `position_secs`, `position_secs_compensated`, `duration_secs`, `volume`, `speed`, `latency_ms`, `analyzer`, `events`, `clone_event_receiver`, `clone_output_event_receiver` |
 
@@ -299,9 +301,10 @@ overloads, deadline misses). Read it lock-free from any thread via `handle.playb
 
 **Events** (`EngineEvent`): `SourceOpened`, `PlaybackStarted/Paused/Stopped`,
 `SourceFinished`, `FormatChanged`, `SeekCompleted`, `PlaylistChanged`, `LoudnessScanComplete`,
-`CaptureStarted/Stopped`, `CaptureError`, `Error`. Device hotplug uses a separate
+`CaptureStarted/Stopped`, `CaptureError`, `Error`. Device hotplug and endpoint failures use a separate
 `OutputEvent` channel (`OutputDeviceChanged`, `DeviceListChanged`, `DeviceConnected`,
-`DeviceDisconnected`).
+`DeviceDisconnected`, `EndpointError`). Endpoint state and dropped frames are also
+available through `PlaybackInfo::endpoints` and `endpoint_dropped_frames`.
 
 ---
 

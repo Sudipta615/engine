@@ -389,6 +389,8 @@ impl AudioEngine {
                     .process_final_limiter_multichannel(&mut mc_batch[..n * out_ch], out_ch);
 
                 let frames_written = self.push_to_sink(&mc_batch[..n * out_ch], out_ch);
+                #[cfg(feature = "audio-output")]
+                self.push_to_endpoints(&mc_batch[..n * out_ch], out_ch);
                 if frames_written < n {
                     // The ring filled mid-block: preserve the already-processed
                     // leftover frames for the next tick.
@@ -527,6 +529,8 @@ impl AudioEngine {
                     batch[j * 2 + 1] = plane_r[j];
                 }
                 let frames_written = self.push_to_sink(&batch[..n * 2], 2);
+                #[cfg(feature = "audio-output")]
+                self.push_to_endpoints(&batch[..n * 2], 2);
                 if frames_written < n {
                     // Output full: keep the unwritten frames in chronological
                     // order at the FRONT of pending_output_frames.

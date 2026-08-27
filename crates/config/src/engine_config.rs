@@ -29,8 +29,6 @@ pub struct EngineConfig {
     pub volume_fade_ms: u64,
     pub seek_fade_ms: u64,
     pub eq: EqConfig,
-    /// Graphic EQ layer (§9.1). When enabled, it is the authoritative source
-    /// for the pipeline's EQ bands and preamp.
     #[serde(default)]
     pub graphic_eq: GraphicEqConfig,
     pub loudness: LoudnessConfig,
@@ -39,130 +37,54 @@ pub struct EngineConfig {
     pub limiter: LimiterConfig,
     pub multiband_compressor: MultibandCompressorConfig,
     pub convolution: ConvolutionConfig,
-    /// Playback speed mode (varispeed vs time-stretch stub).
     #[serde(default)]
     pub speed_mode: SpeedMode,
-    /// Time-stretch/pitch-shift quality tier (spec §22): maps to the WSOLA
-    /// window/hop/search parameters. Higher tiers improve transient and
-    /// sustained-tonal fidelity at higher CPU and algorithmic latency.
     #[serde(default)]
     pub timestretch_quality: TimeStretchQuality,
-    /// DSD output handling policy.
     #[serde(default)]
     pub dsd_output: DsdOutput,
-    /// Multichannel routing policy.
     #[serde(default)]
     pub channel_policy: ChannelPolicy,
-    /// Per-channel gain/delay/polarity trim for the multichannel path.
     #[serde(default)]
     pub channel_trim: ChannelTrimConfig,
-    /// Independent per-channel parametric EQ for multichannel output.
     #[serde(default)]
     pub channel_eq: ChannelEqConfig,
-    /// Source→destination routing matrix for the multichannel path.
     #[serde(default)]
     pub channel_routing: ChannelRoutingConfig,
-    /// LFE gain management.
     #[serde(default)]
     pub lfe: LfeConfig,
-    /// Main-speaker high-pass / bass-management crossover.
     #[serde(default)]
     pub bass_management: BassManagementConfig,
-    /// Explicit source-to-output upmix/downmix template.
     #[serde(default)]
     pub channel_mix: ChannelMixConfig,
-    /// Track-to-track transition mode.
     #[serde(default)]
     pub transition_mode: TransitionMode,
-    /// Number of mix-bus slots in the DSP graph (Phase 4). Slots 0/1 are the
-    /// transition pair; slots ≥ 2 are independent simultaneous streams. Must
-    /// be ≥ 2; larger values are clamped by the graph to its slot bound.
     #[serde(default = "default_mix_slots")]
     pub mix_slots: usize,
-    /// Per-slot channel trim entries (Phase 5 S1): per-channel linear
-    /// gain / polarity shaping applied on each slot's own planes before the
-    /// sum. A slot with no entries is unity (bit-exact).
     #[serde(default)]
     pub mix_trims: Vec<SlotTrimEntry>,
-    /// Per-slot send config (Phase 5 S2): the slot's master-send level and
-    /// its post-fader tap into the aux bus. A slot with no entry keeps
-    /// master 1.0 / aux 0.0 (bit-exact).
     #[serde(default)]
     pub mix_sends: Vec<SlotSendConfig>,
-    /// Aux bus config (Phase 5 S2/S3): enabled + return gain into the
-    /// master. Disabled = bit-exact.
     #[serde(default)]
     pub aux: AuxBusConfig,
-    /// Additional output endpoints (multi-endpoint routing matrix). Each
-    /// endpoint gets its own output ring, a resampler into its own rate
-    /// domain, and a final safety limiter; the master mix is fanned out from
-    /// the decode loop. Empty = the single-endpoint (primary device) mode.
     #[serde(default)]
-    pub additional_endpoints: Vec<EndpointConfig>,
+    pub endpoints: Vec<EndpointConfig>,
 }
 
-/// One additional output endpoint beyond the primary device.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct EndpointConfig {
-    /// Human-readable device name (matched like the primary device).
-    pub device: String,
-    /// Backend preference for this endpoint.
-    #[serde(default)]
-    pub backend: AudioBackend,
-    /// Whether the endpoint is active. Disabled endpoints are skipped at
-    /// start (kept in config so re-enabling is a set_config away).
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-    /// Per-endpoint level in [0, 1], applied after resampling into the
-    /// endpoint's rate domain (0.0 = muted endpoint).
-    #[serde(default = "default_endpoint_gain")]
-    pub gain: f32,
-}
-
-fn default_enabled() -> bool {
-    true
-}
-
-fn default_endpoint_gain() -> f32 {
-    1.0
-}
-
-impl Default for EndpointConfig {
-    fn default() -> Self {
-        Self {
-            device: String::new(),
-            backend: AudioBackend::Auto,
-            enabled: default_enabled(),
-            gain: default_endpoint_gain(),
-        }
-    }
-}
-
-/// Per-slot channel trim entry (Phase 5 S1).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SlotTrimEntry {
-    /// Mix-bus slot this entry applies to.
     pub slot: usize,
-    /// 0-based channel index on the slot's planes.
     pub channel: usize,
-    /// Gain in dB (0.0 = unity).
     pub gain_db: f32,
-    /// Invert polarity (flip sign).
     #[serde(default)]
     pub invert: bool,
 }
 
-/// Per-slot send config (Phase 5 S2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SlotSendConfig {
-    /// Mix-bus slot this send belongs to.
     pub slot: usize,
-    /// Linear master-send level in [0, 1] (1.0 = normal sum; 0.0 = a
-    /// "sends-only" slot that feeds only the aux bus).
     #[serde(default = "default_master_gain")]
     pub master_gain: f32,
-    /// Linear aux-send level (post-fader tap into the aux bus; 0.0 = no
-    /// send).
     #[serde(default)]
     pub aux_gain: f32,
 }
@@ -171,17 +93,28 @@ fn default_master_gain() -> f32 {
     1.0
 }
 
-/// Aux bus config (Phase 5 S2/S3): a parallel accumulator that sums the
-/// slots' post-fader sends and returns into the master, with a Phase-6
-/// insert seam: a global effect (convolution / reverb) rides between the
-/// accumulator and the return.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EndpointConfig {
+    pub id: String,
+    pub backend: AudioBackend,
+    pub device: Option<String>,
+    #[serde(default = "default_endpoint_gain")]
+    pub gain: f32,
+    #[serde(default = "default_endpoint_enabled")]
+    pub enabled: bool,
+}
+
+fn default_endpoint_gain() -> f32 {
+    1.0
+}
+fn default_endpoint_enabled() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AuxBusConfig {
-    /// Whether the aux bus is active. Disabled = bit-exact (no zeroing, no
-    /// taps, no return).
     #[serde(default)]
     pub enabled: bool,
-    /// Linear return gain from the aux accumulator into the master.
     #[serde(default = "default_master_gain")]
     pub return_gain: f32,
     /// Whether the insert convolution is active (Phase 6). Disabled = no
@@ -250,28 +183,22 @@ impl Default for EngineConfig {
             mix_trims: Vec::new(),
             mix_sends: Vec::new(),
             aux: AuxBusConfig::default(),
-            additional_endpoints: Vec::new(),
+            endpoints: Vec::new(),
         }
     }
 }
 
-/// Engine configuration presets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnginePreset {
-    /// Consumer defaults: safe settings with DSP enabled where useful.
     Consumer,
-    /// Audiophile / transparent mode: no DSP, exclusive output, f64 pipeline.
     Fidelity,
 }
 
-/// Result of validating an [`EngineConfig`]. Each entry is a human-readable
-/// description of a contradiction or unsupported combination.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConfigValidation {
     pub errors: Vec<String>,
     pub warnings: Vec<String>,
 }
-
 impl ConfigValidation {
     pub fn is_valid(&self) -> bool {
         self.errors.is_empty()
@@ -279,14 +206,8 @@ impl ConfigValidation {
 }
 
 impl EngineConfig {
-    /// Validate the configuration for contradictions or unsupported combinations.
-    /// Call this before passing the config to `AudioEngine::new()` to surface
-    /// configuration problems early (e.g. BitPerfect + DitherEnabled).
     pub fn validate(&self) -> ConfigValidation {
         let mut v = ConfigValidation::default();
-
-        // When all DSP stages are disabled and Exclusive backend is requested,
-        // the user is likely aiming for bit-perfect — dither on contradicts that.
         let all_dsp_off = !self.eq.enabled
             && !self.limiter.enabled
             && !self.crossfeed.enabled
@@ -294,77 +215,75 @@ impl EngineConfig {
             && !self.multiband_compressor.enabled
             && !self.convolution.enabled;
         if all_dsp_off && self.dither_enabled {
-            v.warnings.push(
-                "All DSP stages are disabled (potential bit-perfect setup) but dither \
-                 is enabled. Dither operates on the integer PCM sample path and will \
-                 alter sample values. Disable dither if bit-perfect output is desired."
-                    .to_string(),
-            );
+            v.warnings
+                .push("All DSP stages are disabled but dither is enabled.".to_string());
         }
-
-        // ExclusiveAsio only meaningful on Windows.
+        if self.mix_slots < 2 {
+            v.errors.push("mix_slots must be at least 2".to_string());
+        }
+        if self.mix_slots > 8 {
+            v.warnings
+                .push("mix_slots above 8 will be clamped".to_string());
+        }
+        for trim in &self.mix_trims {
+            if trim.slot >= 8 {
+                v.errors
+                    .push(format!("mix_trims slot {} is outside range", trim.slot));
+            }
+            if trim.channel >= 16 {
+                v.errors.push(format!(
+                    "mix_trims channel {} is outside range",
+                    trim.channel
+                ));
+            }
+            if !trim.gain_db.is_finite() || !(-60.0..=24.0).contains(&trim.gain_db) {
+                v.errors.push(format!("invalid trim gain {}", trim.gain_db));
+            }
+        }
+        for send in &self.mix_sends {
+            if send.slot >= 8 {
+                v.errors
+                    .push(format!("mix_sends slot {} is outside range", send.slot));
+            }
+            if !send.master_gain.is_finite() || !(0.0..=1.0).contains(&send.master_gain) {
+                v.errors
+                    .push(format!("invalid master send {}", send.master_gain));
+            }
+            if !send.aux_gain.is_finite() || !(0.0..=1.0).contains(&send.aux_gain) {
+                v.errors.push(format!("invalid aux send {}", send.aux_gain));
+            }
+        }
+        if !self.aux.return_gain.is_finite() || !(0.0..=1.0).contains(&self.aux.return_gain) {
+            v.errors
+                .push(format!("invalid aux return {}", self.aux.return_gain));
+        }
+        let mut endpoint_ids = std::collections::HashSet::new();
+        for endpoint in &self.endpoints {
+            if endpoint.id.trim().is_empty() {
+                v.errors.push("endpoint id must not be empty".to_string());
+            }
+            if !endpoint_ids.insert(endpoint.id.trim().to_string()) {
+                v.errors
+                    .push(format!("duplicate endpoint id '{}'", endpoint.id));
+            }
+            if !endpoint.gain.is_finite() || !(0.0..=4.0).contains(&endpoint.gain) {
+                v.errors
+                    .push(format!("invalid endpoint gain {}", endpoint.gain));
+            }
+        }
         if self.output_backend == AudioBackend::ExclusiveAsio && !cfg!(target_os = "windows") {
-            v.warnings.push(
-                "ExclusiveAsio backend is only available on Windows. The engine will fall back \
-                 to the default backend on this platform."
-                    .to_string(),
-            );
+            v.warnings
+                .push("ExclusiveAsio is only available on Windows.".to_string());
         }
-
-        // ASIO without the asio or asio-native feature is caught at runtime by
-        // the engine; the config crate cannot see which features the engine was
-        // built with, so we emit a warning on all platforms here.
-        if self.output_backend == AudioBackend::ExclusiveAsio {
-            v.warnings.push(
-                "ExclusiveAsio backend selected. Ensure the 'asio' or 'asio-native' \
-                 feature is enabled when compiling the engine crate."
-                    .to_string(),
-            );
-        }
-
-        // Hardware-only volume with no hardware backend available.
-        if self.volume_mode == VolumeMode::HardwareOnly {
-            v.warnings.push(
-                "VolumeMode::HardwareOnly selected. If the output device does not support \
-                 hardware volume control, the engine will report an error instead of applying \
-                 software gain. Consider HardwarePreferred if a software fallback is acceptable."
-                    .to_string(),
-            );
-        }
-
-        // Extreme limiter ceiling.
-        if self.limiter.enabled && self.limiter.ceiling_db > 0.0 {
-            v.warnings.push(format!(
-                "Limiter ceiling is {:.1} dB — values above 0 dB may cause clipping at the \
-                 DAC. Conventional practice sets the ceiling between -1.0 and 0.0 dB.",
-                self.limiter.ceiling_db
-            ));
-        }
-
-        // Quality mode without resample — emits a warning; the engine handles
-        // this at runtime by attempting to build the resampler.
-        if self.precision_mode == PrecisionMode::Quality {
-            v.warnings.push(
-                "PrecisionMode::Quality selected. For best results, ensure the 'resample' \
-                 feature is enabled when compiling the engine crate."
-                    .to_string(),
-            );
-        }
-
         v
     }
 
-    /// Build a configuration from a named preset.
     pub fn from_preset(preset: EnginePreset) -> Self {
         match preset {
             EnginePreset::Consumer => Self::default(),
             EnginePreset::Fidelity => Self {
-                // Output: request exclusive/direct hardware access
-                output_backend: AudioBackend::ExclusiveAlsa, // overridden per-platform by the engine
+                output_backend: AudioBackend::ExclusiveAlsa,
                 fallback_policy: FallbackPolicy::Strict,
-                sample_rate_policy: SampleRatePolicy::FollowTrack,
-
-                // DSP — all disabled
                 eq: EqConfig {
                     enabled: false,
                     ..Default::default()
@@ -393,18 +312,11 @@ impl EngineConfig {
                     enabled: false,
                     ..Default::default()
                 },
-
-                // Volume: hardware endpoint preferred (no software volume in signal path)
                 volume_mode: VolumeMode::HardwarePreferred,
-
-                // Format: high-precision, no dither when output is float
                 precision_mode: PrecisionMode::Quality,
                 dither_enabled: false,
                 resampler_quality: ResamplerQuality::HighQuality,
-
-                // Gapless transition by default in fidelity mode
                 transition_mode: TransitionMode::Gapless,
-
                 ..Default::default()
             },
         }

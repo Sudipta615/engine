@@ -110,25 +110,26 @@ pub struct PlaybackInfo {
     /// refreshed every engine tick from the lane registry + the mix bus's
     /// per-slot meters.
     pub lanes: Vec<LaneInfo>,
-    /// Multi-endpoint routing-matrix telemetry (roadmap Phase 5): one entry
-    /// per started additional output endpoint, refreshed every engine tick.
-    /// Empty in single-endpoint mode.
+    /// Aggregate frames dropped while fanning out to additional endpoints.
+    #[cfg(feature = "audio-output")]
+    pub endpoint_dropped_frames: u64,
+    /// Configured endpoint identifiers and current endpoint stats.
+    #[cfg(feature = "audio-output")]
     pub endpoints: Vec<EndpointInfo>,
 }
 
-/// Telemetry for one additional output endpoint.
+/// Telemetry for one physical output endpoint.
+#[cfg(feature = "audio-output")]
 #[derive(Debug, Clone)]
 pub struct EndpointInfo {
-    /// Device name from the endpoint's config.
-    pub device: String,
-    /// The endpoint's negotiated sample rate (its own rate domain).
-    pub sample_rate: u32,
-    /// Per-endpoint level in [0, 1].
+    pub id: String,
+    pub enabled: bool,
     pub gain: f32,
-    /// Frames buffered ahead of the endpoint's ring (resampler/limiter
-    /// tail not yet accepted by the device). A persistently large value
-    /// means the endpoint cannot keep up with the master mix.
-    pub pending_frames: usize,
+    pub written_frames: u64,
+    pub dropped_frames: u64,
+    pub available_frames: usize,
+    pub transport_error_count: u64,
+    pub last_error: Option<String>,
 }
 
 /// Telemetry for one playback lane (Phase 4 S6).
@@ -191,6 +192,9 @@ impl Default for PlaybackInfo {
             playlist_index: None,
             playlist_length: 0,
             lanes: Vec::new(),
+            #[cfg(feature = "audio-output")]
+            endpoint_dropped_frames: 0,
+            #[cfg(feature = "audio-output")]
             endpoints: Vec::new(),
         }
     }

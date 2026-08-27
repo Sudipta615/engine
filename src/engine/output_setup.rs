@@ -19,6 +19,28 @@ use config;
 use super::{endpoints::EndpointTransport, AudioEngine, EngineError};
 
 impl AudioEngine {
+    #[cfg(feature = "audio-output")]
+    pub(super) fn reopen_configured_endpoints(&mut self) -> Result<(), EngineError> {
+        for endpoint in &mut self.endpoints {
+            endpoint.stop();
+        }
+        self.endpoints.clear();
+        for config in self.endpoint_configs.clone() {
+            if !config.enabled {
+                continue;
+            }
+            let endpoint_config = crate::output::EndpointConfig::from_config(config);
+            self.endpoints.push(
+                crate::output::EndpointWorker::open(
+                    endpoint_config,
+                    crate::buffer::OUTPUT_BUFFER_FRAMES,
+                )
+                .map_err(|e| EngineError::Config(format!("Endpoint open: {e}")))?,
+            );
+        }
+        Ok(())
+    }
+
     pub fn start(&mut self) -> Result<(), EngineError> {
         if self.running.load(Ordering::Acquire) {
             return Err(EngineError::AlreadyRunning);
@@ -71,10 +93,12 @@ impl AudioEngine {
         self.output_sample_rate = output.sample_rate();
         output.start()?;
         self.audio_output = Some(output);
-        // Multi-endpoint routing matrix: open every enabled additional
-        // endpoint. A failing endpoint is logged and skipped — the primary
-        // device must never be taken down by a secondary one.
-        self.open_additional_endpoints();
+        if let Err(error) = self.reopen_configured_endpoints() {
+            if let Some(mut endpoint) = self.endpoints.pop() {
+                endpoint.stop();
+            }
+            return Err(error);
+        }
         // Apply the active output profile (or auto-select one) now that the
         // device name is known.
         self.refresh_output_profile();
@@ -276,6 +300,12 @@ impl AudioEngine {
 
     pub fn stop(&mut self) {
         self.running.store(false, Ordering::Release);
+        for endpoint in &mut self.endpoints {
+            endpoint.stop();
+        }
+        self.endpoints.clear();
+        #[cfg(feature = "audio-output")]
+        self.reset_endpoints();
         if let Some(mut output) = self.audio_output.take() {
             output.stop();
         }

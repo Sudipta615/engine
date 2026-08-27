@@ -415,6 +415,12 @@ impl AudioEngine {
             // ── Output ──
             EngineCommand::SetOutputBackend(backend) => self.handle_set_output_backend(backend),
             EngineCommand::SetOutputDevice(device) => self.handle_set_output_device(device),
+            #[cfg(feature = "audio-output")]
+            EngineCommand::SetEndpoints(configs) => self.handle_set_endpoints(configs),
+            #[cfg(feature = "audio-output")]
+            EngineCommand::UpsertEndpoint(endpoint) => self.handle_upsert_endpoint(endpoint),
+            #[cfg(feature = "audio-output")]
+            EngineCommand::RemoveEndpoint(id) => self.handle_remove_endpoint(id),
             EngineCommand::SetSampleRatePolicy(policy) => {
                 self.handle_set_sample_rate_policy(policy)
             }
