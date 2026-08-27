@@ -147,13 +147,14 @@ pub extern "C" fn engine_create(backend: EngineBackend) -> *mut EngineHandleFFI 
 /// Signals the background tick thread to stop, joins it (the engine's
 /// `Drop` impl stops the audio output there), and shuts down the command
 /// channel. Idempotent — the host may call it more than once.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_destroy(engine: *mut EngineHandleFFI) {
     if engine.is_null() {
         return;
     }
     unsafe {
-        let boxed = Box::from_raw(engine);
+        let mut boxed = Box::from_raw(engine);
         boxed.stop.store(true, Ordering::Relaxed);
         if let Some(thread) = boxed.tick_thread.take() {
             let _ = thread.join();
@@ -164,6 +165,7 @@ pub extern "C" fn engine_destroy(engine: *mut EngineHandleFFI) {
 
 // ── Playback control ───────────────────────────────────────────────────────
 
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_play(handle: *mut EngineHandleFFI) -> i32 {
     let h = match unsafe { handle.as_ref() } {
@@ -174,6 +176,7 @@ pub extern "C" fn engine_play(handle: *mut EngineHandleFFI) -> i32 {
     EngineStatus::Ok as i32
 }
 
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_pause(handle: *mut EngineHandleFFI) -> i32 {
     let h = match unsafe { handle.as_ref() } {
@@ -184,6 +187,7 @@ pub extern "C" fn engine_pause(handle: *mut EngineHandleFFI) -> i32 {
     EngineStatus::Ok as i32
 }
 
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_stop(handle: *mut EngineHandleFFI) -> i32 {
     let h = match unsafe { handle.as_ref() } {
@@ -194,6 +198,7 @@ pub extern "C" fn engine_stop(handle: *mut EngineHandleFFI) -> i32 {
     EngineStatus::Ok as i32
 }
 
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_seek(handle: *mut EngineHandleFFI, position_secs: f32) -> i32 {
     let h = match unsafe { handle.as_ref() } {
@@ -204,6 +209,7 @@ pub extern "C" fn engine_seek(handle: *mut EngineHandleFFI, position_secs: f32) 
     EngineStatus::Ok as i32
 }
 
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_set_volume(handle: *mut EngineHandleFFI, volume: f32) -> i32 {
     let h = match unsafe { handle.as_ref() } {
@@ -214,6 +220,7 @@ pub extern "C" fn engine_set_volume(handle: *mut EngineHandleFFI, volume: f32) -
     EngineStatus::Ok as i32
 }
 
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_set_speed(handle: *mut EngineHandleFFI, speed: f32) -> i32 {
     let h = match unsafe { handle.as_ref() } {
@@ -225,6 +232,7 @@ pub extern "C" fn engine_set_speed(handle: *mut EngineHandleFFI, speed: f32) -> 
 }
 
 /// Set volume directly in dB (see `engine_set_volume_db`).
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_set_volume_db(handle: *mut EngineHandleFFI, db: f32) -> i32 {
     let h = match unsafe { handle.as_ref() } {
@@ -238,6 +246,7 @@ pub extern "C" fn engine_set_volume_db(handle: *mut EngineHandleFFI, db: f32) ->
 // ── Source management ──────────────────────────────────────────────────────
 
 /// Open a file for playback. Returns Ok on success, Error on failure.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_open_file(handle: *mut EngineHandleFFI, path: *const c_char) -> i32 {
     let h = match unsafe { handle.as_ref() } {
@@ -257,6 +266,7 @@ pub extern "C" fn engine_open_file(handle: *mut EngineHandleFFI, path: *const c_
 }
 
 /// Open a URI for playback (`file://`, `http://`, `https://`).
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_open_uri(handle: *mut EngineHandleFFI, uri: *const c_char) -> i32 {
     let h = match unsafe { handle.as_ref() } {
@@ -276,6 +286,7 @@ pub extern "C" fn engine_open_uri(handle: *mut EngineHandleFFI, uri: *const c_ch
 }
 
 /// Add a file to the end of the playback queue (without interrupting playback).
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_enqueue_file(handle: *mut EngineHandleFFI, path: *const c_char) -> i32 {
     let h = match unsafe { handle.as_ref() } {
@@ -295,6 +306,7 @@ pub extern "C" fn engine_enqueue_file(handle: *mut EngineHandleFFI, path: *const
 }
 
 /// Skip to the next playlist entry.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_next(handle: *mut EngineHandleFFI) -> i32 {
     let h = match unsafe { handle.as_ref() } {
@@ -306,6 +318,7 @@ pub extern "C" fn engine_next(handle: *mut EngineHandleFFI) -> i32 {
 }
 
 /// Skip to the previous playlist entry.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_previous(handle: *mut EngineHandleFFI) -> i32 {
     let h = match unsafe { handle.as_ref() } {
@@ -317,6 +330,7 @@ pub extern "C" fn engine_previous(handle: *mut EngineHandleFFI) -> i32 {
 }
 
 /// Clear the playback queue. Safe to call with `NULL`.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_clear_playlist(handle: *mut EngineHandleFFI) -> i32 {
     let h = match unsafe { handle.as_ref() } {
@@ -330,6 +344,7 @@ pub extern "C" fn engine_clear_playlist(handle: *mut EngineHandleFFI) -> i32 {
 // ── Query ──────────────────────────────────────────────────────────────────
 
 /// Get the current playback position in seconds. Returns -1.0 on error.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_position_secs(handle: *mut EngineHandleFFI) -> f32 {
     let h = match unsafe { handle.as_ref() } {
@@ -340,6 +355,7 @@ pub extern "C" fn engine_position_secs(handle: *mut EngineHandleFFI) -> f32 {
 }
 
 /// Get the track duration in seconds. Returns -1.0 on error.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_duration_secs(handle: *mut EngineHandleFFI) -> f32 {
     let h = match unsafe { handle.as_ref() } {
@@ -350,6 +366,7 @@ pub extern "C" fn engine_duration_secs(handle: *mut EngineHandleFFI) -> f32 {
 }
 
 /// Get the current playback state: 0=Stopped, 1=Playing, 2=Paused.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_playback_state(handle: *mut EngineHandleFFI) -> i32 {
     let h = match unsafe { handle.as_ref() } {
@@ -365,6 +382,7 @@ pub extern "C" fn engine_playback_state(handle: *mut EngineHandleFFI) -> i32 {
 }
 
 /// Number of entries in the playback queue (0 when empty).
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_playlist_len(handle: *mut EngineHandleFFI) -> i64 {
     let h = match unsafe { handle.as_ref() } {

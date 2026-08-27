@@ -375,7 +375,7 @@ impl PerChannelTrim {
     }
 
     /// Set one channel's gain (dB, clamped) and polarity.
-    fn set_channel(&mut self, channel: usize, gain_db: f32, invert: bool) {
+    pub(crate) fn set_channel(&mut self, channel: usize, gain_db: f32, invert: bool) {
         if channel >= MAX_CHANNELS {
             return;
         }

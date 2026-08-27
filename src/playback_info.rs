@@ -110,6 +110,26 @@ pub struct PlaybackInfo {
     /// refreshed every engine tick from the lane registry + the mix bus's
     /// per-slot meters.
     pub lanes: Vec<LaneInfo>,
+    /// Aggregate frames dropped while fanning out to additional endpoints.
+    #[cfg(feature = "audio-output")]
+    pub endpoint_dropped_frames: u64,
+    /// Configured endpoint identifiers and current endpoint stats.
+    #[cfg(feature = "audio-output")]
+    pub endpoints: Vec<EndpointInfo>,
+}
+
+/// Telemetry for one physical output endpoint.
+#[cfg(feature = "audio-output")]
+#[derive(Debug, Clone)]
+pub struct EndpointInfo {
+    pub id: String,
+    pub enabled: bool,
+    pub gain: f32,
+    pub written_frames: u64,
+    pub dropped_frames: u64,
+    pub available_frames: usize,
+    pub transport_error_count: u64,
+    pub last_error: Option<String>,
 }
 
 /// Telemetry for one playback lane (Phase 4 S6).
@@ -172,6 +192,10 @@ impl Default for PlaybackInfo {
             playlist_index: None,
             playlist_length: 0,
             lanes: Vec::new(),
+            #[cfg(feature = "audio-output")]
+            endpoint_dropped_frames: 0,
+            #[cfg(feature = "audio-output")]
+            endpoints: Vec::new(),
         }
     }
 }

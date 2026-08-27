@@ -17,6 +17,44 @@ impl AudioEngine {
         }
     }
 
+    #[cfg(feature = "audio-output")]
+    pub(super) fn handle_set_endpoints(&mut self, configs: Vec<config::EndpointConfig>) {
+        let previous = std::mem::replace(&mut self.endpoint_configs, configs.clone());
+        if self.audio_output.is_some() {
+            if let Err(e) = self.reopen_configured_endpoints() {
+                self.endpoint_configs = previous;
+                error!("Failed to apply endpoint configuration: {e}");
+                return;
+            }
+        }
+        self.write_playback_info(|info| {
+            info.endpoint_dropped_frames = 0;
+            info.endpoints.clear();
+        });
+    }
+
+    #[cfg(feature = "audio-output")]
+    pub(super) fn handle_upsert_endpoint(&mut self, endpoint: config::EndpointConfig) {
+        let mut configs = self.endpoint_configs.clone();
+        if let Some(existing) = configs.iter_mut().find(|item| item.id == endpoint.id) {
+            *existing = endpoint;
+        } else {
+            configs.push(endpoint);
+        }
+        self.handle_set_endpoints(configs);
+    }
+
+    #[cfg(feature = "audio-output")]
+    pub(super) fn handle_remove_endpoint(&mut self, id: String) {
+        let configs = self
+            .endpoint_configs
+            .iter()
+            .filter(|endpoint| endpoint.id != id)
+            .cloned()
+            .collect();
+        self.handle_set_endpoints(configs);
+    }
+
     pub(super) fn handle_set_output_device(&mut self, device: Option<String>) {
         if self.config.output_device != device {
             self.config.output_device = device.clone();

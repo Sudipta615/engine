@@ -107,6 +107,28 @@ impl GraphGeneration {
         };
         gen.apply_config(config, sample_rate, layout);
 
+        // Phase 5 config replay: generation-level trim, send, and aux
+        // settings are applied before sticky user-state replay. User state
+        // remains authoritative for values changed through the live control
+        // surface.
+        {
+            let mix = gen_node!(gen, node_id::MIX, Mix);
+            for trim in &config.mix_trims {
+                if let Some(input) = mix.inputs.get_mut(trim.slot) {
+                    input
+                        .trim
+                        .set_channel(trim.channel, trim.gain_db, trim.invert);
+                }
+            }
+            for send in &config.mix_sends {
+                if let Some(input) = mix.inputs.get_mut(send.slot) {
+                    input.send.master_gain = send.master_gain.clamp(0.0, 1.0);
+                    input.send.aux_gain = send.aux_gain.clamp(0.0, 1.0);
+                }
+            }
+            mix.apply_aux(config.aux.enabled, config.aux.return_gain);
+        }
+
         // User-state replay: a fresh generation inherits the listener's
         // volume / balance / speed from the control bus (seeded with defaults
         // at construction, mirroring the Phase-1 semantics where volume is

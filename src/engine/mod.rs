@@ -131,6 +131,15 @@ pub struct AudioEngine {
     /// onto bus slots ≥ 2. Control side adds/removes; the decode loop feeds
     /// active lanes at every block boundary.
     pub(crate) lanes: Vec<lanes::LaneTrack>,
+    /// Additional physical output endpoints. Each endpoint has an independent
+    /// ring and output worker; the decoded mix is fanned out without sharing
+    /// endpoint transport state.
+    #[cfg(feature = "audio-output")]
+    pub(crate) endpoints: Vec<crate::output::EndpointWorker>,
+    #[cfg(feature = "audio-output")]
+    pub(crate) endpoint_configs: Vec<config::EndpointConfig>,
+    #[cfg(feature = "audio-output")]
+    pub(crate) endpoint_dropped_frames: std::sync::atomic::AtomicU64,
 }
 
 /// An active system-audio capture: the loopback endpoint plus the WAV file

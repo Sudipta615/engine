@@ -249,14 +249,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Spawn background output-device event listener thread.
     #[cfg(feature = "audio-output")]
     {
-        let output_event_rx = handle.clone_output_event_receiver();
-        let output_running = running.clone();
+        let _output_event_rx = handle.clone_output_event_receiver();
+        let _output_running = running.clone();
         std::thread::Builder::new()
             .name("audio-engine-output-events".into())
             .spawn(move || {
                 use engine::events::OutputEvent;
-                while output_running.load(Ordering::Relaxed) {
-                    match output_event_rx.recv_timeout(Duration::from_millis(500)) {
+                while _output_running.load(Ordering::Relaxed) {
+                    match _output_event_rx.recv_timeout(Duration::from_millis(500)) {
                         Ok(event) => match event {
                             OutputEvent::OutputDeviceChanged { device } => {
                                 println!(
@@ -274,6 +274,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 println!(
                                     "\n  \x1b[2m[Output] List changed ({} devices)\x1b[0m",
                                     devices.len()
+                                );
+                            }
+                            OutputEvent::EndpointError { endpoint, message } => {
+                                eprintln!(
+                                    "\n  \x1b[31m[Output] Endpoint '{}' error: {}\x1b[0m",
+                                    endpoint, message
                                 );
                             }
                         },
