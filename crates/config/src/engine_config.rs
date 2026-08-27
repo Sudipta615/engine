@@ -93,6 +93,49 @@ pub struct EngineConfig {
     /// master. Disabled = bit-exact.
     #[serde(default)]
     pub aux: AuxBusConfig,
+    /// Additional output endpoints (multi-endpoint routing matrix). Each
+    /// endpoint gets its own output ring, a resampler into its own rate
+    /// domain, and a final safety limiter; the master mix is fanned out from
+    /// the decode loop. Empty = the single-endpoint (primary device) mode.
+    #[serde(default)]
+    pub additional_endpoints: Vec<EndpointConfig>,
+}
+
+/// One additional output endpoint beyond the primary device.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EndpointConfig {
+    /// Human-readable device name (matched like the primary device).
+    pub device: String,
+    /// Backend preference for this endpoint.
+    #[serde(default)]
+    pub backend: AudioBackend,
+    /// Whether the endpoint is active. Disabled endpoints are skipped at
+    /// start (kept in config so re-enabling is a set_config away).
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    /// Per-endpoint level in [0, 1], applied after resampling into the
+    /// endpoint's rate domain (0.0 = muted endpoint).
+    #[serde(default = "default_endpoint_gain")]
+    pub gain: f32,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+fn default_endpoint_gain() -> f32 {
+    1.0
+}
+
+impl Default for EndpointConfig {
+    fn default() -> Self {
+        Self {
+            device: String::new(),
+            backend: AudioBackend::Auto,
+            enabled: default_enabled(),
+            gain: default_endpoint_gain(),
+        }
+    }
 }
 
 /// Per-slot channel trim entry (Phase 5 S1).
@@ -129,9 +172,9 @@ fn default_master_gain() -> f32 {
 }
 
 /// Aux bus config (Phase 5 S2/S3): a parallel accumulator that sums the
-/// slots' post-fader sends and returns into the master. The `insert` seam
-/// (Phase 6) will host a global effect between the accumulator and the
-/// return.
+/// slots' post-fader sends and returns into the master, with a Phase-6
+/// insert seam: a global effect (convolution / reverb) rides between the
+/// accumulator and the return.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AuxBusConfig {
     /// Whether the aux bus is active. Disabled = bit-exact (no zeroing, no
@@ -141,6 +184,16 @@ pub struct AuxBusConfig {
     /// Linear return gain from the aux accumulator into the master.
     #[serde(default = "default_master_gain")]
     pub return_gain: f32,
+    /// Whether the insert convolution is active (Phase 6). Disabled = no
+    /// insert processing = bit-exact.
+    #[serde(default)]
+    pub insert_enabled: bool,
+    /// Impulse-response file for the insert convolution.
+    #[serde(default)]
+    pub insert_ir_path: Option<String>,
+    /// Insert wet/dry mix in [0, 1] (1.0 = fully wet).
+    #[serde(default = "default_master_gain")]
+    pub insert_wet_mix: f32,
 }
 
 impl Default for AuxBusConfig {
@@ -148,6 +201,9 @@ impl Default for AuxBusConfig {
         Self {
             enabled: false,
             return_gain: 1.0,
+            insert_enabled: false,
+            insert_ir_path: None,
+            insert_wet_mix: 1.0,
         }
     }
 }
@@ -194,6 +250,7 @@ impl Default for EngineConfig {
             mix_trims: Vec::new(),
             mix_sends: Vec::new(),
             aux: AuxBusConfig::default(),
+            additional_endpoints: Vec::new(),
         }
     }
 }

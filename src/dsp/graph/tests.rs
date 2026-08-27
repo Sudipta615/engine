@@ -1115,3 +1115,419 @@ fn slot_trim_send_and_aux_bus_shape_the_master() {
         "aux disabled -> 0.25 peak (-12.04 dB), got {off_peak}"
     );
 }
+
+// ── Phase 5 regressions (v3.6.1) ───────────────────────────────────────────
+
+#[test]
+fn phase5_reconfigure_drains_queued_control_and_carries_duck_automation() {
+    // A command enqueued BEFORE a reconfig (e.g. SetTrackGain followed by
+    // AddTrack growing the bus) must land on the fresh generation, and a
+    // configured duck / automation track must survive the rebuild — the
+    // pre-fix code snapshotted the bus before the queue drained and carried
+    // neither duck nor automation.
+    let sr = 48000.0;
+    let cfg = EngineConfig {
+        mix_slots: 3,
+        ..EngineConfig::default()
+    };
+    let mut graph = DspGraph::from_config(&cfg, sr);
+
+    // Queue commands WITHOUT draining: the reconfig must flush them first.
+    graph.set_slot_send(2, 0.5, 0.0);
+    graph.set_duck(Some(DuckState {
+        source: 2,
+        threshold_db: -40.0,
+        depth_db: 6.0,
+        attack_frames: 0,
+        release_frames: 0,
+        targets: [2; MAX_DUCK_TARGETS],
+        target_count: 1,
+    }));
+    let pts = [
+        AutomationPoint {
+            frame: 0,
+            value: 1.0,
+        },
+        AutomationPoint {
+            frame: 512,
+            value: 0.5,
+        },
+    ];
+    graph.set_slot_automation(2, AutomationTarget::Gain, &pts);
+
+    // Growing the bus forces a rebuild.
+    let grown = EngineConfig {
+        mix_slots: 4,
+        ..cfg.clone()
+    };
+    graph.reconfigure(&grown);
+    // Swap the fresh generation in (reconfigure publishes; control_tick
+    // applies at the next block boundary).
+    let mut l = vec![0.0f32; 256];
+    let mut r = vec![0.0f32; 256];
+    graph.process_block(&mut l, &mut r);
+
+    let mix = graph.mix();
+    assert_eq!(mix.inputs.len(), 4, "bus grew to 4 slots");
+    // The queued send survived the rebuild (not reset to master 1.0/aux 0.0).
+    assert_eq!(mix.inputs[2].send.master_gain, 0.5, "queued send survived");
+    // Duck + automation carried across the generation.
+    let duck = mix.duck.expect("duck survived the rebuild");
+    assert_eq!(duck.cfg.depth_db, 6.0);
+    assert!(duck.cfg.targets[..duck.cfg.target_count].contains(&2));
+    let auto = mix.inputs[2].automation.expect("automation survived");
+    assert_eq!(auto.count, 2);
+    assert_eq!(auto.points[0].frame, 0);
+    assert_eq!(auto.points[1].value, 0.5);
+}
+
+#[test]
+fn phase5_config_mix_trims_sends_aux_wire_at_construction() {
+    // The config surface (`mix_trims` / `mix_sends` / `aux`) was declared +
+    // serialized but never applied: a host configuring them at construction
+    // got a graph that ignored them. Now they seed the generation directly.
+    let sr = 48000.0;
+    let cfg = EngineConfig {
+        mix_slots: 3,
+        mix_trims: vec![config::SlotTrimEntry {
+            slot: 1,
+            channel: 0,
+            gain_db: -6.0,
+            invert: true,
+        }],
+        mix_sends: vec![config::SlotSendConfig {
+            slot: 1,
+            master_gain: 0.5,
+            aux_gain: 0.25,
+        }],
+        aux: config::AuxBusConfig {
+            enabled: true,
+            return_gain: 0.75,
+            ..Default::default()
+        },
+        ..EngineConfig::default()
+    };
+    let graph = DspGraph::from_config(&cfg, sr);
+    let mix = graph.mix();
+
+    // Trim: -6 dB linear ≈ 0.5012, inverted.
+    let trim = mix.inputs[1].trim;
+    assert!((trim.gains[0] - 0.5012).abs() < 1e-3, "trim gain wired");
+    assert!(trim.invert[0], "trim polarity wired");
+    assert_eq!(trim.gains[1], 1.0);
+    // Send: master 0.5 / aux 0.25.
+    assert_eq!(mix.inputs[1].send.master_gain, 0.5, "master send wired");
+    assert_eq!(mix.inputs[1].send.aux_gain, 0.25, "aux send wired");
+    // Aux bus: enabled + return 0.75.
+    assert!(mix.aux.enabled, "aux enabled from config");
+    assert_eq!(mix.aux.return_gain, 0.75);
+}
+
+#[test]
+fn phase5_pair_slots_tap_aux_accumulator_and_return() {
+    // The pair slots (0/1) are the transition pair: pre-fix they were the
+    // ONLY slots without an aux tap, so a send-only pair slot silently
+    // dropped its aux contribution while every lane slot tapped fine.
+    let sr = 48000.0;
+    let cfg = EngineConfig::default(); // 2 slots
+    let mut graph = DspGraph::from_config(&cfg, sr);
+    let n = 256;
+
+    // Slot 0: sends-only (master 0, aux 1), aux return at 0 so the tap is
+    // observable on the aux meter without returning into the master.
+    graph.set_slot_send(0, 0.0, 1.0);
+    graph.set_aux(true, 0.0);
+    graph.drain_queued_control();
+
+    let mut l0 = vec![0.5f32; n];
+    let mut r0 = vec![0.25f32; n];
+    let mut l1 = vec![0.0f32; n];
+    let mut r1 = vec![0.0f32; n];
+    graph.process_block_inputs((&mut l0, &mut r0), (&mut l1, &mut r1));
+
+    // Master silent (master-send 0), aux meters the post-fader tap: L 0.5.
+    let (master_peak, _) = graph.control_handle().slot_meters(0);
+    assert!(master_peak < -60.0, "sends-only slot 0 keeps master silent");
+    let (aux_peak, _) = graph.control_handle().aux_meters();
+    assert!(
+        (aux_peak - (-6.02)).abs() < 0.2,
+        "pair slot 0 taps the aux bus (~-6 dB), got {aux_peak}"
+    );
+
+    // Now bring the return up: the aux content joins the master.
+    graph.set_aux(true, 1.0);
+    graph.drain_queued_control();
+    let mut l0 = vec![0.5f32; n];
+    let mut r0 = vec![0.25f32; n];
+    let mut l1 = vec![0.0f32; n];
+    let mut r1 = vec![0.0f32; n];
+    graph.process_block_inputs((&mut l0, &mut r0), (&mut l1, &mut r1));
+    let (master_peak, _) = graph.control_handle().slot_meters(0);
+    assert!(
+        (master_peak - (-6.02)).abs() < 0.2,
+        "aux return mixes slot 0's send back into the master (~-6 dB)"
+    );
+}
+
+#[test]
+fn phase5_duck_envelope_advances_once_per_block_with_lane_slots() {
+    // With independent slots (mix_slots >= 3), the duck envelope used to
+    // tick TWICE per block (once in mix_stereo, once in sum_extra_slots),
+    // ramping attack/release at 2x the configured rate. The duck gain is a
+    // one-pole step of `frames/attack_frames` per tick.
+    let sr = 48000.0;
+    let cfg = EngineConfig {
+        mix_slots: 3,
+        ..EngineConfig::default()
+    };
+    let mut graph = DspGraph::from_config(&cfg, sr);
+    let n = 256;
+    graph.set_duck(Some(DuckState {
+        source: 2,
+        threshold_db: -60.0,
+        depth_db: 12.0,
+        attack_frames: 480,
+        release_frames: 480,
+        targets: [2; MAX_DUCK_TARGETS],
+        target_count: 1,
+    }));
+    graph.drain_queued_control();
+
+    let mut l0 = vec![0.0f32; n];
+    let mut r0 = vec![0.0f32; n];
+    let mut lane_l = vec![1.0f32; n];
+    let mut lane_r = vec![1.0f32; n];
+    // The trigger is evaluated from the source slot's PUBLISHED meter; the
+    // initial meter is 0 dB (above the -60 dB threshold), so all four blocks
+    // are engaged and the envelope advances one one-pole step of
+    // 256/480 per tick. 4 blocks → 4 ticks.
+    let step = n as f32 / 480.0;
+    let target = 10.0f32.powf(-12.0 / 20.0);
+    let mut expected = 1.0f32;
+    for _ in 0..4 {
+        expected += (target - expected) * step;
+        l0.fill(0.0);
+        r0.fill(0.0);
+        graph.process_block_lanes((&mut l0, &mut r0), &mut [(&mut lane_l, &mut lane_r)]);
+    }
+    let cl = graph.mix().duck.as_ref().unwrap().current_linear;
+    assert!(
+        (cl - expected).abs() < 1e-4,
+        "duck advanced once per block (got {cl}, single-tick expected {expected})"
+    );
+    // Sanity: it must NOT match the 2x (double-tick) trajectory (8 ticks).
+    let mut double = 1.0f32;
+    for _ in 0..8 {
+        double += (target - double) * step;
+    }
+    assert!(
+        (cl - double).abs() > 0.01,
+        "duck must not tick twice per block (got {cl}, 2x trajectory {double})"
+    );
+}
+
+#[test]
+fn phase5_f64_path_publishes_slot_and_aux_meters() {
+    // Quality-mode (f64) blocks ran the plan but never published the mix
+    // meters, so telemetry read stale slot/aux levels after f64 processing.
+    let sr = 48000.0;
+    let cfg = EngineConfig {
+        precision_mode: config::PrecisionMode::Quality,
+        ..EngineConfig::default()
+    };
+    let mut graph = DspGraph::from_config(&cfg, sr);
+    let n = 256;
+
+    // A sends-only slot 0 with an aux send makes both the slot and the aux
+    // meter observable on the f64 path.
+    graph.set_slot_send(0, 0.0, 1.0);
+    graph.set_aux(true, 0.0);
+    graph.drain_queued_control();
+
+    let mut l = vec![0.5f64; n];
+    let mut r = vec![0.25f64; n];
+    graph.process_block_f64(&mut l, &mut r);
+
+    let (master_peak, _) = graph.control_handle().slot_meters(0);
+    assert!(master_peak < -60.0, "f64 sends-only master silent");
+    let (aux_peak, _) = graph.control_handle().aux_meters();
+    assert!(
+        (aux_peak - (-6.02)).abs() < 0.2,
+        "f64 path publishes aux meters (~-6 dB), got {aux_peak}"
+    );
+}
+
+/// Write a short 16-bit stereo WAV whose left channel is a single impulse
+/// (sample 0 = 1.0, rest silence); right channel silent. Used as an IR for
+/// the aux-insert tests (a delta IR passes the signal through unchanged,
+/// modulo the convolution engine's latency).
+fn write_impulse_wav(path: &std::path::Path, sample_rate: u32, n_frames: usize) {
+    let mut data = Vec::with_capacity(n_frames * 4);
+    for i in 0..n_frames {
+        let v = if i == 0 { 32767i16 } else { 0i16 };
+        data.extend_from_slice(&v.to_le_bytes());
+        data.extend_from_slice(&0i16.to_le_bytes());
+    }
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+    wav.extend_from_slice(b"WAVE");
+    wav.extend_from_slice(b"fmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&sample_rate.to_le_bytes());
+    wav.extend_from_slice(&(sample_rate * 4).to_le_bytes());
+    wav.extend_from_slice(&4u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    wav.extend_from_slice(&data);
+    std::fs::write(path, &wav).unwrap();
+}
+
+#[test]
+fn phase6_aux_insert_convolves_toggles_and_survives_swap() {
+    // Phase 6: the aux bus carries a global convolution insert between the
+    // accumulator and the return. With a delta IR the send content should
+    // pass through (modulo engine latency); the runtime toggle (enabled /
+    // wet only) must gate it and survive a generation swap.
+    let sr = 48000.0;
+    let ir_path = std::env::temp_dir().join(format!(
+        "phase6_aux_ir_{}_{}.wav",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    write_impulse_wav(&ir_path, 48000, 2048);
+
+    let cfg = EngineConfig {
+        aux: config::AuxBusConfig {
+            enabled: true,
+            return_gain: 0.0, // return at 0: observe the insert via meters
+            insert_enabled: true,
+            insert_wet_mix: 1.0,
+            insert_ir_path: Some(ir_path.display().to_string()),
+        },
+        ..EngineConfig::default()
+    };
+    let mut graph = DspGraph::from_config(&cfg, sr);
+    graph.set_slot_send(0, 0.0, 1.0);
+    graph.drain_queued_control();
+
+    let n = 512;
+    let run_block = |graph: &mut DspGraph| {
+        let mut l0 = vec![0.5f32; n];
+        let mut r0 = vec![0.25f32; n];
+        let mut l1 = vec![0.0f32; n];
+        let mut r1 = vec![0.0f32; n];
+        graph.process_block_inputs((&mut l0, &mut r0), (&mut l1, &mut r1));
+    };
+
+    // Insert active: the delta IR passes the send through → the aux meter
+    // sees the post-fader level (~-6 dB on the left plane).
+    run_block(&mut graph);
+    let (aux_peak, _) = graph.control_handle().aux_meters();
+    assert!(
+        (aux_peak - (-6.02)).abs() < 0.5,
+        "aux insert passes the delta IR content through (~-6 dB), got {aux_peak}"
+    );
+
+    // Runtime toggle off → insert bypassed → the accumulator still holds the
+    // send, but no IR is applied; the return is zero so the master stays
+    // silent and the METER still reads the raw send (the insert only shapes
+    // the return). Assert the insert engine is disabled via the mirrored
+    // control state.
+    graph.set_aux_insert(false, 1.0);
+    graph.drain_queued_control();
+    let (ins_enabled, ins_wet) = graph.control_handle().aux_insert_state();
+    assert!(!ins_enabled, "runtime toggle disables the insert");
+    assert_eq!(ins_wet, 1.0);
+
+    // Toggle back on, then grow the bus (reconfigure → generation swap): the
+    // live runtime toggle must survive the swap.
+    graph.set_aux_insert(true, 0.5);
+    graph.drain_queued_control();
+    let mut cfg3 = cfg.clone();
+    cfg3.mix_slots = 3;
+    graph.reconfigure(&cfg3);
+    graph.drain_queued_control();
+    let (ins_enabled, ins_wet) = graph.control_handle().aux_insert_state();
+    assert!(ins_enabled, "insert toggle survives generation swap");
+    assert!(
+        (ins_wet - 0.5).abs() < 1e-6,
+        "insert wet survives generation swap (got {ins_wet})"
+    );
+    let mix = graph.mix();
+    let engine_enabled = mix
+        .aux
+        .insert
+        .as_ref()
+        .map(|e| e.is_enabled())
+        .unwrap_or(false);
+    assert!(engine_enabled, "rebuilt generation keeps the insert engine");
+
+    // Disabled-and-reconfigured: a runtime OFF also survives (off wins over
+    // the config's enabled=true, matching the other bus state semantics).
+    graph.set_aux_insert(false, 0.5);
+    graph.drain_queued_control();
+    let mut cfg4 = cfg3.clone();
+    cfg4.mix_slots = 4;
+    graph.reconfigure(&cfg4);
+    graph.drain_queued_control();
+    assert!(
+        !graph.control_handle().aux_insert_state().0,
+        "insert disabled state survives generation swap"
+    );
+    let _ = std::fs::remove_file(&ir_path);
+}
+
+#[test]
+fn phase6_bit_exact_simd_accumulate_matches_scalar() {
+    // The SIMD aux-return accumulate must be bit-for-bit identical to the
+    // scalar `dst += src * g` (element-wise mul then add — no FMA, no
+    // reordering). This is the contract the graph-vs-pipeline equivalence
+    // suite relies on.
+    let mut rng = 0x9E37_79B9_1234_5678u64;
+    let mut next = move || {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        rng as f32 / u64::MAX as f32 * 2.0 - 1.0
+    };
+    for &len in &[0usize, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 63, 64, 65, 257] {
+        let src: Vec<f32> = (0..len).map(|_| next()).collect();
+        let mut dst_a: Vec<f32> = (0..len).map(|_| next()).collect();
+        let mut dst_b = dst_a.clone();
+        let g = next();
+        crate::dsp_utils::accumulate_scaled(&mut dst_a, &src, g, len);
+        for i in 0..len {
+            dst_b[i] += src[i] * g;
+        }
+        for i in 0..len {
+            assert_eq!(
+                dst_a[i].to_bits(),
+                dst_b[i].to_bits(),
+                "f32 accumulate diverges at {i} (len {len})"
+            );
+        }
+
+        let src64: Vec<f64> = src.iter().map(|&v| v as f64).collect();
+        let mut dst_a64: Vec<f64> = dst_a.iter().map(|&v| v as f64).collect();
+        let mut dst_b64 = dst_a64.clone();
+        let g64 = g as f64;
+        crate::dsp_utils::accumulate_scaled_f64(&mut dst_a64, &src64, g64, len);
+        for i in 0..len {
+            dst_b64[i] += src64[i] * g64;
+        }
+        for i in 0..len {
+            assert_eq!(
+                dst_a64[i].to_bits(),
+                dst_b64[i].to_bits(),
+                "f64 accumulate diverges at {i} (len {len})"
+            );
+        }
+    }
+}

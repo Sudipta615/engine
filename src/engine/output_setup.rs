@@ -16,7 +16,7 @@ use crate::{
 };
 use config;
 
-use super::{AudioEngine, EngineError};
+use super::{endpoints::EndpointTransport, AudioEngine, EngineError};
 
 impl AudioEngine {
     pub fn start(&mut self) -> Result<(), EngineError> {
@@ -71,6 +71,10 @@ impl AudioEngine {
         self.output_sample_rate = output.sample_rate();
         output.start()?;
         self.audio_output = Some(output);
+        // Multi-endpoint routing matrix: open every enabled additional
+        // endpoint. A failing endpoint is logged and skipped — the primary
+        // device must never be taken down by a secondary one.
+        self.open_additional_endpoints();
         // Apply the active output profile (or auto-select one) now that the
         // device name is known.
         self.refresh_output_profile();
@@ -203,10 +207,80 @@ impl AudioEngine {
         Ok(())
     }
 
+    /// Open + start every enabled additional endpoint from
+    /// `config.additional_endpoints`. Control path (start/recovery): each
+    /// endpoint gets its own ring, rate-matched resampler, and final
+    /// limiter; failures are logged and the endpoint skipped so the primary
+    /// device is never taken down by a secondary one. Idempotent: any
+    /// existing endpoints are stopped and replaced.
+    pub(crate) fn open_additional_endpoints(&mut self) {
+        self.extra_endpoints.clear();
+        let master_rate = self.output_sample_rate;
+        for cfg in self.config.additional_endpoints.iter() {
+            if !cfg.enabled {
+                continue;
+            }
+            // One ring, shared by the backend (drains it in its realtime
+            // callback) and the transport (feeds it from the decode loop).
+            let ring =
+                match crate::buffer::FixedFrameBuffer::new(crate::buffer::OUTPUT_BUFFER_FRAMES) {
+                    Ok(r) => Arc::new(r),
+                    Err(e) => {
+                        warn!("Endpoint '{}' ring allocation failed: {}", cfg.device, e);
+                        continue;
+                    }
+                };
+            let output = match create_output(
+                Arc::clone(&ring),
+                cfg.backend,
+                Some(cfg.device.as_str()),
+                self.config.fallback_policy,
+            ) {
+                Ok(o) => o,
+                Err(e) => {
+                    warn!("Endpoint '{}' failed to open: {}", cfg.device, e);
+                    continue;
+                }
+            };
+            let mut ep = match EndpointTransport::open(
+                cfg.clone(),
+                output,
+                ring,
+                master_rate,
+                self.config.resampler_quality,
+                self.config.precision_mode,
+                &self.config.limiter,
+            ) {
+                Ok(ep) => ep,
+                Err(e) => {
+                    warn!("Endpoint '{}' failed to initialize: {}", cfg.device, e);
+                    continue;
+                }
+            };
+            ep.gain = cfg.gain.clamp(0.0, 1.0);
+            ep.output.set_dither_enabled(self.config.dither_enabled);
+            if let Err(e) = ep.output.start() {
+                warn!("Endpoint '{}' failed to start: {}", cfg.device, e);
+                continue;
+            }
+            info!(
+                "Additional endpoint '{}' started ({} Hz, master {} Hz, resampler {})",
+                cfg.device,
+                ep.rate,
+                master_rate,
+                if ep.resampler.is_some() { "on" } else { "off" }
+            );
+            self.extra_endpoints.push(ep);
+        }
+    }
+
     pub fn stop(&mut self) {
         self.running.store(false, Ordering::Release);
         if let Some(mut output) = self.audio_output.take() {
             output.stop();
+        }
+        for mut ep in self.extra_endpoints.drain(..) {
+            ep.output.stop();
         }
         self.stream = None;
         self.scratch.crossfade_triggered = false;

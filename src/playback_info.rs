@@ -110,6 +110,25 @@ pub struct PlaybackInfo {
     /// refreshed every engine tick from the lane registry + the mix bus's
     /// per-slot meters.
     pub lanes: Vec<LaneInfo>,
+    /// Multi-endpoint routing-matrix telemetry (roadmap Phase 5): one entry
+    /// per started additional output endpoint, refreshed every engine tick.
+    /// Empty in single-endpoint mode.
+    pub endpoints: Vec<EndpointInfo>,
+}
+
+/// Telemetry for one additional output endpoint.
+#[derive(Debug, Clone)]
+pub struct EndpointInfo {
+    /// Device name from the endpoint's config.
+    pub device: String,
+    /// The endpoint's negotiated sample rate (its own rate domain).
+    pub sample_rate: u32,
+    /// Per-endpoint level in [0, 1].
+    pub gain: f32,
+    /// Frames buffered ahead of the endpoint's ring (resampler/limiter
+    /// tail not yet accepted by the device). A persistently large value
+    /// means the endpoint cannot keep up with the master mix.
+    pub pending_frames: usize,
 }
 
 /// Telemetry for one playback lane (Phase 4 S6).
@@ -172,6 +191,7 @@ impl Default for PlaybackInfo {
             playlist_index: None,
             playlist_length: 0,
             lanes: Vec::new(),
+            endpoints: Vec::new(),
         }
     }
 }

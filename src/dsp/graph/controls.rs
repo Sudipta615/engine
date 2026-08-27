@@ -65,6 +65,12 @@ pub(crate) enum NodeCmd {
         enabled: bool,
         return_gain: f32,
     },
+    /// Phase-6 aux insert: runtime toggle of the global convolution
+    /// (enabled / wet only; the IR stays as configured).
+    SetAuxInsert {
+        enabled: bool,
+        wet_mix: f32,
+    },
     /// Runtime crossfade config (Phase 3 S3): curve / enabled / duration
     /// mirror the pipeline's `TrackMixer` setters the engine calls on
     /// `handle_set_crossfade_config`.
@@ -186,6 +192,10 @@ pub(crate) struct ControlBus {
     /// mirrored like the per-slot state.
     user_aux_enabled: AtomicU8,
     user_aux_return_gain: AtomicU32,
+    /// Phase-6 aux insert: mirrored enabled / wet-mix so a generation swap
+    /// preserves a live runtime toggle (same contract as `user_aux_*`).
+    user_aux_insert_enabled: AtomicU8,
+    user_aux_insert_wet_mix: AtomicU32,
     /// Aux metering (Phase 5 S3): peak / RMS dBFS of the accumulated sends.
     user_aux_peak_db: AtomicU32,
     user_aux_rms_db: AtomicU32,
@@ -235,6 +245,8 @@ impl ControlBus {
             user_slot_trim_invert: (0..MAX_MIX_SLOTS).map(|_| AtomicU32::new(0)).collect(),
             user_aux_enabled: AtomicU8::new(0),
             user_aux_return_gain: AtomicU32::new(1.0f32.to_bits()),
+            user_aux_insert_enabled: AtomicU8::new(0),
+            user_aux_insert_wet_mix: AtomicU32::new(0.5f32.to_bits()),
             user_aux_peak_db: AtomicU32::new((-96.0f32).to_bits()),
             user_aux_rms_db: AtomicU32::new((-96.0f32).to_bits()),
         }
@@ -348,6 +360,22 @@ impl ControlBus {
             .store(return_gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
+    /// Mirror the Phase-6 aux insert state, audio side at drain.
+    pub(super) fn set_aux_insert_user_state(&self, enabled: bool, wet_mix: f32) {
+        self.user_aux_insert_enabled
+            .store(enabled as u8, Ordering::Relaxed);
+        self.user_aux_insert_wet_mix
+            .store(wet_mix.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+
+    /// Control-side read of the mirrored aux insert state.
+    pub(super) fn user_aux_insert(&self) -> (bool, f32) {
+        (
+            self.user_aux_insert_enabled.load(Ordering::Relaxed) != 0,
+            f32::from_bits(self.user_aux_insert_wet_mix.load(Ordering::Relaxed)),
+        )
+    }
+
     /// Control-side read of the mirrored aux state.
     pub(super) fn user_aux(&self) -> (bool, f32) {
         (
@@ -381,8 +409,19 @@ impl ControlBus {
             balance: self.user_balance(),
             speed: self.user_speed(),
             volume_fade_ms: self.user_fade_ms(),
+            has_live_bus_state: true,
             aux_enabled: self.user_aux_enabled.load(Ordering::Relaxed) != 0,
             aux_return_gain: f32::from_bits(self.user_aux_return_gain.load(Ordering::Relaxed)),
+            aux_insert_enabled: self.user_aux_insert_enabled.load(Ordering::Relaxed) != 0,
+            aux_insert_wet_mix: f32::from_bits(
+                self.user_aux_insert_wet_mix.load(Ordering::Relaxed),
+            ),
+            // Ducking + automation are NOT mirrored onto the bus atomics:
+            // `DspGraph::reconfigure` reads them from the live generation
+            // instead (single-threaded control access), so snapshots keep
+            // them unset.
+            duck: None,
+            slot_automation: Vec::new(),
             slots: (0..MAX_MIX_SLOTS)
                 .map(|i| {
                     let packed = self.user_slot_send[i].load(Ordering::Relaxed);
@@ -772,9 +811,22 @@ impl GraphControlHandle {
         );
     }
 
+    /// Runtime toggle of the Phase-6 aux insert (global convolution):
+    /// `enabled` + `wet_mix` only; the IR stays as configured. No-op when
+    /// no IR engine exists yet.
+    pub fn set_aux_insert(&self, enabled: bool, wet_mix: f32) {
+        self.enqueue(node_id::MIX, NodeCmd::SetAuxInsert { enabled, wet_mix });
+    }
+
     /// Control-side read of the mirrored aux state (enabled, return gain).
     pub fn aux_state(&self) -> (bool, f32) {
         self.bus.user_aux()
+    }
+
+    /// Control-side read of the mirrored Phase-6 aux insert state
+    /// (enabled, wet mix).
+    pub fn aux_insert_state(&self) -> (bool, f32) {
+        self.bus.user_aux_insert()
     }
 
     /// Control-side read of the aux meters (peak_db, rms_db), published once
@@ -940,9 +992,13 @@ impl DspGraph {
     }
 
     pub(crate) fn control_tick(&mut self) {
-        if self.bus.has_pending.swap(false, Ordering::AcqRel) {
-            self.drain_control();
-        }
+        // Swap a pending generation in BEFORE draining the command queues: a
+        // command enqueued after a generation was published must land on the
+        // NEW generation (the one it replaced is retired this block).
+        // Draining first would apply it to the outgoing generation and lose
+        // it across the swap. The sticky user-state mirror reads the
+        // post-apply state of whichever generation is now active, so
+        // snapshot seeding stays consistent.
         let pending = self
             .bus
             .pending
@@ -954,6 +1010,9 @@ impl DspGraph {
                 .retired
                 .store(Box::into_raw(prev), Ordering::Release);
             self.bus.swap_seq.fetch_add(1, Ordering::Relaxed);
+        }
+        if self.bus.has_pending.swap(false, Ordering::AcqRel) {
+            self.drain_control();
         }
     }
 
@@ -1010,6 +1069,19 @@ impl DspGraph {
                             .set_aux_user_state(mix.aux.enabled, mix.aux.return_gain);
                     }
                 }
+                // Phase 6: mirror the aux insert state post-apply (a live
+                // runtime toggle survives generation swaps, like SetAux).
+                if let NodeCmd::SetAuxInsert { .. } = cmd {
+                    if let GraphNode::Mix(mix) = &self.active.nodes[i] {
+                        let (enabled, wet) = mix
+                            .aux
+                            .insert
+                            .as_ref()
+                            .map(|e| (e.is_enabled(), e.wet_mix()))
+                            .unwrap_or((false, 0.5));
+                        self.bus.set_aux_insert_user_state(enabled, wet);
+                    }
+                }
             }
         }
     }
@@ -1049,6 +1121,9 @@ fn apply_node_cmd(node: &mut GraphNode, cmd: &NodeCmd) {
                 return_gain,
             },
         ) => n.apply_aux(*enabled, *return_gain),
+        (GraphNode::Mix(n), NodeCmd::SetAuxInsert { enabled, wet_mix }) => {
+            n.set_aux_insert(*enabled, *wet_mix)
+        }
         (GraphNode::Mix(n), NodeCmd::SetMixCurve(c)) => n.curve = (*c).into(),
         (GraphNode::Mix(n), NodeCmd::SetMixEnabled(e)) => n.crossfade_enabled = *e,
         (GraphNode::Mix(n), NodeCmd::SetMixDurationFrames(f)) => {
@@ -1377,6 +1452,11 @@ impl DspGraph {
     /// Configure the aux bus (Phase 5 S3): enabled + return gain.
     pub fn set_aux(&self, enabled: bool, return_gain: f32) {
         self.control_handle().set_aux(enabled, return_gain);
+    }
+
+    /// Runtime toggle of the Phase-6 aux insert (enabled / wet only).
+    pub fn set_aux_insert(&self, enabled: bool, wet_mix: f32) {
+        self.control_handle().set_aux_insert(enabled, wet_mix);
     }
 
     pub fn set_input_mute(&self, input: u8, mute: bool) {

@@ -8,6 +8,7 @@ mod construction;
 mod crossfade;
 mod decode_loop;
 mod dsd_state;
+pub(crate) mod endpoints;
 pub mod handle;
 pub mod helpers;
 mod lanes;
@@ -74,6 +75,11 @@ pub struct AudioEngine {
     /// The active output transport (cpal, or the native WASAPI exclusive
     /// backend on Windows with `wasapi-native`).
     audio_output: Option<Box<dyn Output>>,
+    /// Additional output endpoints (multi-endpoint routing matrix): each has
+    /// its own ring + backend and a resampler/final-limiter into its own
+    /// rate domain. The decode loop fans the master block out to every
+    /// endpoint. Empty unless `config.additional_endpoints` is non-empty.
+    pub(crate) extra_endpoints: Vec<endpoints::EndpointTransport>,
     /// The production DSP signal path (Phase 3 S4): the graph owns the
     /// signal chain end-to-end; the pipeline remains only as the frozen
     /// equivalence-test oracle.
@@ -131,6 +137,19 @@ pub struct AudioEngine {
     /// onto bus slots ≥ 2. Control side adds/removes; the decode loop feeds
     /// active lanes at every block boundary.
     pub(crate) lanes: Vec<lanes::LaneTrack>,
+}
+
+impl AudioEngine {
+    /// Number of additional output endpoints (routing-matrix size).
+    pub fn additional_endpoint_count(&self) -> usize {
+        self.extra_endpoints.len()
+    }
+
+    /// Sample rates of the additional endpoints, indexed like
+    /// `config.additional_endpoints` (only opened/started endpoints appear).
+    pub fn additional_endpoint_sample_rates(&self) -> Vec<u32> {
+        self.extra_endpoints.iter().map(|ep| ep.rate).collect()
+    }
 }
 
 /// An active system-audio capture: the loopback endpoint plus the WAV file

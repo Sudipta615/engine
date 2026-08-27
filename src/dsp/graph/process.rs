@@ -114,6 +114,40 @@ impl DspGraph {
         self.process_block_inner(primary.0, primary.1);
     }
 
+    /// Process a stereo block during a crossfade with active lanes (Phase 4
+    /// S6): the incoming stream feeds slot 1, lane `k` feeds slot `k + 2`
+    /// (the slot-addressed lane placement). Kept as a dedicated entry so the
+    /// engine never has to assemble the incoming + lanes into one contiguous
+    /// array on the hot path (the old MAX_LANES+1 assembly panicked on the
+    /// MAX_LANES-element scratch).
+    pub fn process_block_crossfade_with_lanes(
+        &mut self,
+        primary: (&mut [f32], &mut [f32]),
+        incoming: (&mut [f32], &mut [f32]),
+        lanes: &mut [(&mut [f32], &mut [f32])],
+    ) {
+        self.control_tick();
+        let n = primary.0.len().min(primary.1.len());
+        if n > MAX_AUDIO_BLOCK_FRAMES {
+            let mut start = 0;
+            while start < n {
+                let end = (start + MAX_AUDIO_BLOCK_FRAMES).min(n);
+                self.feed_secondary_slot(1, (incoming.0, incoming.1), start, end);
+                for (k, lane) in lanes.iter_mut().enumerate() {
+                    self.feed_secondary_slot(k + 2, (lane.0, lane.1), start, end);
+                }
+                self.process_block_inner(&mut primary.0[start..end], &mut primary.1[start..end]);
+                start = end;
+            }
+            return;
+        }
+        self.feed_secondary_slot(1, (incoming.0, incoming.1), 0, n);
+        for (k, lane) in lanes.iter_mut().enumerate() {
+            self.feed_secondary_slot(k + 2, (lane.0, lane.1), 0, n);
+        }
+        self.process_block_inner(primary.0, primary.1);
+    }
+
     /// Process a stereo block with one primary stream and any number of
     /// secondary mix-bus streams (Phase 3 S2 stream slots). `primary` is
     /// processed in place through the full chain; secondary `k` feeds mix-bus
@@ -331,6 +365,10 @@ impl DspGraph {
         }
         let mut planes = [left as &mut [f64], right as &mut [f64]];
         self.run_plan_f64(PlanId::Normal, &mut planes);
+        // Publish the per-slot / aux meters after the plan run, mirroring the
+        // f32 entry point (`process_block_inner`) so the public f64 path
+        // reports live metering too.
+        self.publish_mix_meters();
     }
 
     /// Process an interleaved block of `channels`-channel frames in place.

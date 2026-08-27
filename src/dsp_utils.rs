@@ -1,3 +1,96 @@
+/// Element-wise `dst[i] += src[i] * g` over `n` frames (f32).
+///
+/// SIMD-accelerated on x86_64 (SSE2 `mulps`/`addps`) and aarch64 (NEON)
+/// with a scalar fallback elsewhere. The operation is **element-wise**: each
+/// output element is the identical IEEE `f32_mul` followed by `f32_add` of
+/// the scalar form — no FMA contraction (SSE2/NEON baseline has none) and no
+/// reduction reordering — so the vectorized path is bit-for-bit identical to
+/// the scalar path. This is the contract the graph-vs-pipeline equivalence
+/// suite and the `bit_exact_simd_matches_scalar` test enforce.
+#[inline]
+pub fn accumulate_scaled(dst: &mut [f32], src: &[f32], g: f32, n: usize) {
+    let n = n.min(dst.len()).min(src.len());
+    let mut i = 0usize;
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+    {
+        use core::arch::x86_64::{
+            _mm_add_ps, _mm_loadu_ps, _mm_mul_ps, _mm_set1_ps, _mm_storeu_ps,
+        };
+        let gv = unsafe { _mm_set1_ps(g) };
+        while i + 4 <= n {
+            unsafe {
+                let a = _mm_loadu_ps(src.as_ptr().add(i));
+                let b = _mm_loadu_ps(dst.as_ptr().add(i));
+                let m = _mm_mul_ps(a, gv);
+                let s = _mm_add_ps(b, m);
+                _mm_storeu_ps(dst.as_mut_ptr().add(i), s);
+            }
+            i += 4;
+        }
+    }
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+    {
+        use core::arch::aarch64::{vaddq_f32, vld1q_f32, vmulq_n_f32, vst1q_f32};
+        while i + 4 <= n {
+            unsafe {
+                let a = vld1q_f32(src.as_ptr().add(i));
+                let b = vld1q_f32(dst.as_ptr().add(i));
+                let m = vmulq_n_f32(a, g);
+                let s = vaddq_f32(b, m);
+                vst1q_f32(dst.as_mut_ptr().add(i), s);
+            }
+            i += 4;
+        }
+    }
+    while i < n {
+        dst[i] += src[i] * g;
+        i += 1;
+    }
+}
+
+/// f64 twin of [`accumulate_scaled`] (SSE2 `mulpd`/`addpd` / NEON f64).
+/// Same element-wise bit-exactness contract.
+#[inline]
+pub fn accumulate_scaled_f64(dst: &mut [f64], src: &[f64], g: f64, n: usize) {
+    let n = n.min(dst.len()).min(src.len());
+    let mut i = 0usize;
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+    {
+        use core::arch::x86_64::{
+            _mm_add_pd, _mm_loadu_pd, _mm_mul_pd, _mm_set1_pd, _mm_storeu_pd,
+        };
+        let gv = unsafe { _mm_set1_pd(g) };
+        while i + 2 <= n {
+            unsafe {
+                let a = _mm_loadu_pd(src.as_ptr().add(i));
+                let b = _mm_loadu_pd(dst.as_ptr().add(i));
+                let m = _mm_mul_pd(a, gv);
+                let s = _mm_add_pd(b, m);
+                _mm_storeu_pd(dst.as_mut_ptr().add(i), s);
+            }
+            i += 2;
+        }
+    }
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+    {
+        use core::arch::aarch64::{vaddq_f64, vld1q_f64, vmulq_n_f64, vst1q_f64};
+        while i + 2 <= n {
+            unsafe {
+                let a = vld1q_f64(src.as_ptr().add(i));
+                let b = vld1q_f64(dst.as_ptr().add(i));
+                let m = vmulq_n_f64(a, g);
+                let s = vaddq_f64(b, m);
+                vst1q_f64(dst.as_mut_ptr().add(i), s);
+            }
+            i += 2;
+        }
+    }
+    while i < n {
+        dst[i] += src[i] * g;
+        i += 1;
+    }
+}
+
 pub const DENORMAL_OFFSET: f32 = 1e-15;
 
 #[inline(always)]

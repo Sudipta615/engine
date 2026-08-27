@@ -293,6 +293,11 @@ impl AudioEngine {
         // Re-select and re-apply the output profile for the (possibly new)
         // device — per-device profiles follow device changes.
         self.refresh_output_profile();
+        // Multi-endpoint routing matrix: reopen the additional endpoints
+        // against the (possibly new) master rate. Failures are logged and
+        // the endpoint dropped — recovery of the primary must never be
+        // blocked by a secondary device.
+        self.open_additional_endpoints();
         // Treat a DoP fallback as a rate change even if the number happens to
         // match: the source rate changed (DoP rate → PCM rate) and the
         // resampler must be rebuilt from the decoder's current info.

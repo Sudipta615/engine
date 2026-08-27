@@ -629,29 +629,42 @@ impl AudioEngine {
                 ),
             );
         } else {
-            // Active lanes (Phase 4 S6) ride after the incoming stream:
-            // secondaries[0] is the incoming (slot 1), lanes occupy slots ≥ 2.
-            let active = self.fill_lane_scratch(n);
+            // Active lanes (Phase 4 S6) ride after the incoming stream: the
+            // incoming feeds bus slot 1 and lane k feeds bus slot k + 2 via
+            // the dedicated crossfade entry (slot-addressed, matching
+            // `fill_lane_scratch`, so a lane's audio always reaches its own
+            // bus slot). No contiguous incoming+lane array is assembled on
+            // the hot path — the old MAX_LANES+1 construction pulled one too
+            // many entries from the MAX_LANES-element scratch and panicked.
+            let _active = self.fill_lane_scratch(n);
             let mut iter_l = self.scratch.lane_l.iter_mut();
             let mut iter_r = self.scratch.lane_r.iter_mut();
-            let mut secondaries: [(&mut [f32], &mut [f32]); crate::engine::lanes::MAX_LANES + 1] =
+            let mut lanes: [(&mut [f32], &mut [f32]); crate::engine::lanes::MAX_LANES] =
                 std::array::from_fn(|_| {
                     let l: &mut Vec<f32> = iter_l.next().expect("lane planes preallocated");
                     let r: &mut Vec<f32> = iter_r.next().expect("lane planes preallocated");
                     (&mut l[..n], &mut r[..n])
                 });
-            secondaries[0] = (
-                &mut self.scratch.mix_in_l[..n],
-                &mut self.scratch.mix_in_r[..n],
-            );
-            self.graph.process_block_streams(
+            self.graph.process_block_crossfade_with_lanes(
                 (&mut self.scratch.mix_l[..n], &mut self.scratch.mix_r[..n]),
-                &mut secondaries[..1 + active],
+                (
+                    &mut self.scratch.mix_in_l[..n],
+                    &mut self.scratch.mix_in_r[..n],
+                ),
+                &mut lanes,
             );
         }
         self.graph.process_final_limiter_block(
             &mut self.scratch.mix_l[..n],
             &mut self.scratch.mix_r[..n],
+        );
+        // Multi-endpoint fan-out: every additional endpoint gets the flushed
+        // master block (resample → its own limiter → its ring). Disjoint
+        // field borrows (extra_endpoints vs scratch) via the free function.
+        crate::engine::endpoints::fanout_block(
+            &mut self.extra_endpoints,
+            &self.scratch.mix_l[..n],
+            &self.scratch.mix_r[..n],
         );
         let mut batch = [0.0f32; MIX_BLOCK * 2];
         for i in 0..n {

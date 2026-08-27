@@ -190,11 +190,47 @@ suite never enables trims/sends/aux).
 
 ---
 
-## Phase 6 — Inserts & performance — **Horizon**
+## Phase 5b — Multi-endpoint routing matrix — **Done (v3.7.0)**
 
-- **Aux inserts:** land a global effect (convolution/reverb) on the Phase 5
-  S3 `AuxBus.insert` seam, with its own control queue and metering; promote
-  the aux into a standalone `AuxBusNode` in the plan once it owns an insert.
-- **Performance:** precompiled lane kernels, SIMD channel sums, decode-ahead
-  lane buffering — the meter/send/automation substrate from Phases 4–5 is the
-  exact measurement and control surface those need.
+**Intent.** Drive several output devices simultaneously, each with its own
+rate domain, chain, and backend.
+
+- `EngineConfig.additional_endpoints: Vec<EndpointConfig>` (device, backend,
+  enabled, per-endpoint gain) — the primary device config is unchanged, so
+  single-endpoint mode is bit-identical.
+- `EndpointTransport` (`src/engine/endpoints.rs`): each endpoint owns its
+  lock-free ring + backend, a resampler from the master rate into its own
+  rate domain (omitted when the rates match), and a rate-matched final
+  safety limiter (applied to resampled frames only). The decode loop fans
+  every master-domain block out to each endpoint (resample → endpoint
+  limiter → gain → ring), with partial-write preservation and a bounded
+  pending queue (a stuck endpoint drops oldest frames, never grows memory).
+- Lifecycle: `start()`/`stop()` open/close every endpoint; stream recovery
+  reopens them against the new master rate; a failing secondary endpoint is
+  logged and skipped — it can never take down the primary. Telemetry via
+  `PlaybackInfo.endpoints` (device, rate, gain, pending frames).
+- **Realtime discipline.** The fan-out runs on the decode loop (a control
+  thread), never on a backend callback; each endpoint's realtime thread
+  reads only its own ring. No allocation, no locks added to any hot path.
+- **Deferred — clock drift.** Independent devices drift; per-endpoint
+  resamplers currently correct against each endpoint's nominal clock. A
+  master-clock / drift-correction pass is a dedicated follow-up.
+
+---
+
+## Phase 6 — Inserts & performance — **First cut done (v3.8.0)**
+
+- **Aux inserts (done, v3.8.0):** the global convolution insert landed on the
+  Phase 5 S3 `AuxBus.insert` seam — `AuxBusConfig.insert_*` (generation-
+  carried), a runtime `set_aux_insert` / `aux_insert_state` control surface
+  with the same mirror/replay discipline as the rest of the bus (a live
+  toggle survives swaps; a missing IR stays bit-exact), and metering through
+  the existing aux meters.
+- **SIMD channel sums (done, v3.8.0):** the aux return accumulate is
+  SSE2/NEON SIMD with a strict element-wise (no-FMA) bit-exact contract,
+  locked by `phase6_bit_exact_simd_accumulate_matches_scalar` and the
+  graph-vs-pipeline equivalence suite.
+- **Horizon:** promote the aux into a standalone `AuxBusNode` in the plan;
+  precompiled lane kernels, decode-ahead lane buffering — the
+  meter/send/automation substrate from Phases 4–5 is the exact measurement
+  and control surface those need.

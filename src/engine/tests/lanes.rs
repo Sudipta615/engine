@@ -164,3 +164,203 @@ fn lane_mixes_onto_bus_and_tracks_gain_and_removal() {
     let _ = std::fs::remove_file(&silent);
     let _ = std::fs::remove_file(&lane_wav);
 }
+
+#[test]
+fn lane_crossfade_with_active_lanes_completes_without_panic() {
+    // Phase 5 regression: a crossfade flush while lanes are registered built
+    // the secondaries array with MAX_LANES+1 iterator pulls from a
+    // MAX_LANES-element scratch and panicked on the 7th — any crossfade with
+    // a lane present aborted the engine. The transition must run to
+    // completion with the lane staying audible.
+    let silent = std::env::temp_dir().join(format!(
+        "lane_xfade_silent_{}_{}.wav",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    write_i16_wav(
+        &silent,
+        44100,
+        &vec![0i16; 44100 * 30],
+        &vec![0i16; 44100 * 30],
+    );
+    let lane_wav = write_custom_wav_at(44100, 44100 * 30, "lane-xfade");
+
+    let config = EngineConfig {
+        mix_slots: 3,
+        crossfade: config::CrossfadeConfig {
+            enabled: true,
+            duration_ms: 200,
+            ..config::CrossfadeConfig::default()
+        },
+        transition_mode: config::TransitionMode::Crossfade,
+        ..EngineConfig::default()
+    };
+    let mut engine = AudioEngine::new(config).unwrap();
+
+    engine.load_track(&silent).expect("load silent primary");
+    engine.send_command(EngineCommand::Play);
+    assert!(
+        tick_until(&mut engine, 5.0, |e| e.playback_info().position_secs > 0.01),
+        "primary playback did not progress"
+    );
+
+    // A lane is registered + audible when the crossfade starts.
+    engine.send_command(EngineCommand::AddTrack(AudioSource::File(lane_wav.clone())));
+    assert!(
+        tick_until(&mut engine, 10.0, |e| master_peak(e) > -40.0),
+        "lane never became audible"
+    );
+
+    // Force the near-end transition with the lane still active.
+    let info = engine.playback_info();
+    let total_source_frames = (info.duration_secs * info.sample_rate as f32)
+        .round()
+        .max(1.0) as u64;
+    engine
+        .prepare_next_track(&silent)
+        .expect("prepare next silent track");
+    engine
+        .clock
+        .set_source_frames(total_source_frames.saturating_sub(13_230));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        engine.tick();
+        if matches!(
+            engine.stream,
+            Some(crate::engine::PlaybackStream::Transitioning { .. })
+        ) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "crossfade did not trigger with lanes active"
+        );
+    }
+
+    // Run the full transition (this is the flush path that used to panic).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        engine.tick();
+        if matches!(
+            engine.stream,
+            Some(crate::engine::PlaybackStream::Single { .. })
+        ) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "crossfade with lanes did not complete"
+        );
+    }
+
+    assert!(
+        engine.graph.mixer_state() != crate::dsp::crossfade::MixerState::Crossfading,
+        "transition settled after completion"
+    );
+    // The lane survived the transition and stays audible (~-6 dB).
+    assert!(
+        tick_until(&mut engine, 10.0, |e| master_peak(e) > -20.0),
+        "lane dropped out after the crossfade"
+    );
+    assert!(
+        (master_peak(&mut engine) - (-6.02)).abs() < 2.0,
+        "lane still ≈ -6 dB after transition, got {}",
+        master_peak(&mut engine)
+    );
+
+    let _ = std::fs::remove_file(&silent);
+    let _ = std::fs::remove_file(&lane_wav);
+}
+
+#[test]
+fn lane_slot_addresses_survive_removal_and_readd() {
+    // Phase 5 regression: `fill_lane_scratch` fed the graph by LANE INDEX,
+    // but every control command addresses the lane's SLOT. After a removal
+    // created a hole, a re-added lane landed on a lower slot than its index:
+    // audio and controls disagreed (a lane feeding a detached slot went
+    // silent; gains/ducks hit the wrong stream). Placement must be
+    // slot-addressed end to end.
+    let silent = std::env::temp_dir().join(format!(
+        "lane_slot_silent_{}_{}.wav",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    write_i16_wav(
+        &silent,
+        44100,
+        &vec![0i16; 44100 * 30],
+        &vec![0i16; 44100 * 30],
+    );
+    let lane_a = write_custom_wav_at(44100, 44100 * 30, "lane-slot-a");
+    let lane_b = write_custom_wav_at(44100, 44100 * 30, "lane-slot-b");
+    let lane_c = write_custom_wav_at(44100, 44100 * 30, "lane-slot-c");
+
+    let config = EngineConfig {
+        mix_slots: 4,
+        ..EngineConfig::default()
+    };
+    let mut engine = AudioEngine::new(config).unwrap();
+    engine.load_track(&silent).expect("load silent primary");
+    engine.send_command(EngineCommand::Play);
+    assert!(
+        tick_until(&mut engine, 5.0, |e| e.playback_info().position_secs > 0.01),
+        "primary playback did not progress"
+    );
+
+    // A → slot 2, B → slot 3.
+    engine.send_command(EngineCommand::AddTrack(AudioSource::File(lane_a.clone())));
+    assert!(
+        tick_until(&mut engine, 10.0, |e| master_peak(e) > -20.0),
+        "lane A never became audible"
+    );
+    engine.send_command(EngineCommand::AddTrack(AudioSource::File(lane_b.clone())));
+    assert!(
+        tick_until(&mut engine, 10.0, |e| master_peak(e) > -10.0),
+        "lane B never became audible (two lanes ≈ 0 dB)"
+    );
+
+    // Remove A (slot 2): B is now index 0 but still slot 3. It must stay
+    // audible — index-based placement would have fed it the detached slot 2.
+    engine.send_command(EngineCommand::RemoveTrack(2));
+    assert!(
+        tick_until(&mut engine, 10.0, |e| master_peak(e) > -15.0),
+        "lane B went silent after lane A was removed (slot mismatch)"
+    );
+    assert!(
+        (master_peak(&mut engine) - (-6.02)).abs() < 2.0,
+        "lane B alone ≈ -6 dB, got {}",
+        master_peak(&mut engine)
+    );
+
+    // C re-fills the freed slot 2; lanes = [B(slot 3), C(slot 2)] — C's
+    // index (1) is now ABOVE its slot. Commands on slot 2 must govern C and
+    // leave B untouched: attenuating slot 2 must NOT quiet B.
+    engine.send_command(EngineCommand::AddTrack(AudioSource::File(lane_c.clone())));
+    assert!(
+        tick_until(&mut engine, 10.0, |e| master_peak(e) > -6.5),
+        "lane C never became audible"
+    );
+    engine.send_command(EngineCommand::SetTrackGain { slot: 2, gain: 0.1 });
+    assert!(
+        tick_until(&mut engine, 10.0, |e| master_peak(e) > -15.0),
+        "slot 2 gain attenuated lane B (controls not slot-addressed)"
+    );
+
+    // And slot 3's gain governs B.
+    engine.send_command(EngineCommand::SetTrackGain { slot: 3, gain: 0.1 });
+    assert!(
+        tick_until(&mut engine, 10.0, |e| master_peak(e) < -15.0),
+        "slot 3 gain did not attenuate lane B"
+    );
+
+    let _ = std::fs::remove_file(&silent);
+    let _ = std::fs::remove_file(&lane_a);
+    let _ = std::fs::remove_file(&lane_b);
+    let _ = std::fs::remove_file(&lane_c);
+}

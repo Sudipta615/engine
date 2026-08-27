@@ -193,23 +193,39 @@ impl super::AudioEngine {
             return 0;
         }
         let precision = self.config.precision_mode;
+        // The lane scratch is SLOT-addressed: index `k` always carries bus
+        // slot `k + 2`. Each lane's audio lands on its OWN slot's planes
+        // regardless of the order lanes were added/removed — a RemoveTrack
+        // leaves a hole that a later AddTrack refills via `next_lane_slot`,
+        // and index-based placement would feed the wrong lane to the wrong
+        // slot (mismatched gain/pan/send/duck). Unused slots are zeroed so
+        // the graph's always-fed secondaries contribute silence.
+        for scratch in self
+            .scratch
+            .lane_l
+            .iter_mut()
+            .chain(self.scratch.lane_r.iter_mut())
+        {
+            scratch[..need].fill(0.0);
+        }
         let mut count = 0usize;
-        for idx in 0..self.lanes.len().min(MAX_LANES) {
-            let lane = &mut self.lanes[idx];
+        for lane in &mut self.lanes {
+            let Some(k) = lane.slot.checked_sub(2) else {
+                continue;
+            };
+            if k >= MAX_LANES {
+                continue;
+            }
             lane.fill(need, precision);
             let n_avail = lane.pending.len().min(need);
-            let scratch_l = &mut self.scratch.lane_l[idx];
-            let scratch_r = &mut self.scratch.lane_r[idx];
+            let scratch_l = &mut self.scratch.lane_l[k];
+            let scratch_r = &mut self.scratch.lane_r[k];
             for i in 0..n_avail {
                 let Some((l, r)) = lane.pending.pop_front() else {
                     break;
                 };
                 scratch_l[i] = l;
                 scratch_r[i] = r;
-            }
-            for i in n_avail..need {
-                scratch_l[i] = 0.0;
-                scratch_r[i] = 0.0;
             }
             lane.frames_played += need as u64;
             count += 1;

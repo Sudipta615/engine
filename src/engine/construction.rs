@@ -115,6 +115,7 @@ impl AudioEngine {
             recovery: RecoveryState::default(),
             scratch: EngineScratch::default(),
             lanes: Vec::new(),
+            extra_endpoints: Vec::new(),
         })
     }
 
