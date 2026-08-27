@@ -8,6 +8,7 @@
 //! boundary — the live-reconfig entry point.
 
 use super::*;
+use crate::dsp::graph::nodes::aux_node::AuxSendBus;
 use crate::dsp::graph::nodes::mix::SlotAutomation;
 use std::sync::Arc;
 
@@ -50,6 +51,9 @@ impl GraphGeneration {
         // Phase 4 S1: the bus carries `config.mix_slots` inputs (clamped by
         // the node); slots 0/1 are the transition pair, slots >= 2 are
         // independent lanes. A different slot count is a generation rebuild.
+        // Phase 6: one shared send bus links the mix node (writer of the
+        // per-slot taps) and the aux node (consumer) within the generation.
+        let send_bus = AuxSendBus::new();
         let nodes = vec![
             GraphNode::Mix(MixBusNode::with_slots(
                 config.mix_slots,
@@ -58,6 +62,7 @@ impl GraphGeneration {
                 config.crossfade.enabled,
                 config.crossfade.curve,
                 PREAMP_RAMP_DURATION_MS,
+                send_bus.clone(),
             )),
             GraphNode::Eq(EqNode::new(num_bands, sample_rate)),
             GraphNode::Dynamics(DynamicsNode::new(sample_rate)),
@@ -77,6 +82,7 @@ impl GraphGeneration {
             GraphNode::Resampler(ResamplerNode::new(sample_rate, sample_rate)),
             GraphNode::Limiter(LimiterNode::new(sample_rate)),
             GraphNode::Dither(DitherNode::new(sample_rate)),
+            GraphNode::Aux(AuxBusNode::new(send_bus, sample_rate)),
         ]; // Arena-order contract: every `node_id` slot must hold the node kind
            // its table entry claims. Debug-only; also keeps the slot constants
            // referenced so the table cannot silently drift from the arena.
@@ -100,6 +106,7 @@ impl GraphGeneration {
         debug_assert!(matches!(nodes[node_id::RESAMPLER], GraphNode::Resampler(_)));
         debug_assert!(matches!(nodes[node_id::LIMITER], GraphNode::Limiter(_)));
         debug_assert!(matches!(nodes[node_id::DITHER], GraphNode::Dither(_)));
+        debug_assert!(matches!(nodes[node_id::AUX], GraphNode::Aux(_)));
 
         let mut gen = GraphGeneration {
             node_ids: GraphGeneration::canonical_ids(nodes.len()),
@@ -124,10 +131,18 @@ impl GraphGeneration {
             for send in &config.mix_sends {
                 if let Some(input) = mix.inputs.get_mut(send.slot) {
                     input.send.master_gain = send.master_gain.clamp(0.0, 1.0);
-                    input.send.aux_gain = send.aux_gain.clamp(0.0, 1.0);
+                    let aux = send.aux_gain.clamp(0.0, 1.0);
+                    input.send.aux_gain = aux;
+                    // Phase 6: mirror the per-slot send target onto the
+                    // shared bus the aux node reads.
+                    let sb = mix.send_bus.data_mut();
+                    sb.send_targets[send.slot] = aux;
+                    sb.send_active[send.slot] = aux != 0.0;
                 }
             }
-            mix.apply_aux(config.aux.enabled, config.aux.return_gain);
+            // Phase 6: the aux config now applies to the aux bus node (the
+            // mix node's taps are gated on the shared bus's `enabled`).
+            gen_node!(gen, node_id::AUX, Aux).apply_aux(config.aux.enabled, config.aux.return_gain);
         }
 
         // User-state replay: a fresh generation inherits the listener's
@@ -167,20 +182,28 @@ impl GraphGeneration {
                 // them would silently drop `mix_trims`/`mix_sends`/`aux`.
                 if user.has_live_bus_state {
                     input.send.master_gain = slot.send_master_gain.clamp(0.0, 1.0);
-                    input.send.aux_gain = slot.send_aux_gain.clamp(0.0, 1.0);
+                    let aux = slot.send_aux_gain.clamp(0.0, 1.0);
+                    input.send.aux_gain = aux;
                     for (c, g) in input.trim.gains.iter_mut().enumerate() {
                         *g = slot.trim_gains[c];
                     }
                     input.trim.invert.copy_from_slice(&slot.trim_invert[..]);
+                    // Phase 6: sync the per-slot send target onto the shared
+                    // bus (same mirror as `MixInputCmd::SetSend`).
+                    let mix = gen_node!(gen, node_id::MIX, Mix);
+                    let sb = mix.send_bus.data_mut();
+                    sb.send_targets[i] = aux;
+                    sb.send_active[i] = aux != 0.0;
                 }
             }
             // Phase 5 S3: aux bus state survives a swap (live snapshots
-            // only; construction keeps the config-applied aux config).
+            // only; construction keeps the config-applied aux config). The
+            // aux node owns the bus now (Phase 6).
             if user.has_live_bus_state {
-                gen_node!(gen, node_id::MIX, Mix).apply_aux(user.aux_enabled, user.aux_return_gain);
+                gen_node!(gen, node_id::AUX, Aux).apply_aux(user.aux_enabled, user.aux_return_gain);
                 // Phase 6: a live runtime toggle of the aux insert survives
                 // the swap too (the config-applied IR stays loaded).
-                gen_node!(gen, node_id::MIX, Mix)
+                gen_node!(gen, node_id::AUX, Aux)
                     .set_aux_insert(user.aux_insert_enabled, user.aux_insert_wet_mix);
             }
         }
@@ -448,13 +471,19 @@ impl GraphGeneration {
             for entry in &config.mix_sends {
                 if entry.slot < mix.inputs.len() {
                     mix.inputs[entry.slot].send.master_gain = entry.master_gain.clamp(0.0, 1.0);
-                    mix.inputs[entry.slot].send.aux_gain = entry.aux_gain.clamp(0.0, 1.0);
+                    let aux = entry.aux_gain.clamp(0.0, 1.0);
+                    mix.inputs[entry.slot].send.aux_gain = aux;
+                    // Phase 6: sync the per-slot send target onto the shared
+                    // bus (mirrors `MixInputCmd::SetSend`).
+                    let sb = mix.send_bus.data_mut();
+                    sb.send_targets[entry.slot] = aux;
+                    sb.send_active[entry.slot] = aux != 0.0;
                 }
             }
-            mix.apply_aux(config.aux.enabled, config.aux.return_gain);
-            // Phase 6: the aux insert (global convolution) rides the
-            // generation like the rest of the aux config.
-            mix.apply_aux_insert(
+            // Phase 6: the aux config / insert apply to the aux bus node.
+            gen_node!(self, node_id::AUX, Aux)
+                .apply_aux(config.aux.enabled, config.aux.return_gain);
+            gen_node!(self, node_id::AUX, Aux).apply_aux_insert(
                 config.aux.insert_enabled,
                 config.aux.insert_wet_mix,
                 sample_rate,

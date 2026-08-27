@@ -43,21 +43,32 @@ impl MixBusNode {
         let (g1, bal1, mute1) = (&mut in1.gain, in1.balance, in1.mute);
         // Phase 5 S2 send levels for the pair: the master-send scales the
         // slot's contribution to the master sum; the aux-send is a post-fader
-        // tap into the aux accumulator. Both at defaults (m = 1.0, aux = 0.0)
+        // tap into the shared send bus (the aux bus node applies the send
+        // gains itself — Phase 6). Both at defaults (m = 1.0, aux inactive)
         // and/or the aux disabled → the tap branch is skipped and every
         // expression below is the original bit-exact one.
         let m0 = in0.send.master_gain;
         let m1 = in1.send.master_gain;
-        let a0 = in0.send.aux_gain;
-        let a1 = in1.send.aux_gain;
-        let tap_aux = (a0 != 0.0 || a1 != 0.0) && self.aux.enabled;
-        // The aux accumulator planes, borrowed only when a tap is active
-        // (disjoint from the `self.inputs` borrows above).
-        let (mut aux0, mut aux1) = if tap_aux {
-            let (aux0, aux1) = self.aux.planes.split_at_mut(1);
-            (Some(&mut aux0[0][..frames]), Some(&mut aux1[0][..frames]))
+        let sb = self.send_bus.data();
+        let tap0 = sb.enabled && sb.send_active[0];
+        let tap1 = sb.enabled && sb.send_active[1];
+        let tap_aux = tap0 || tap1;
+        // The send-bus planes, borrowed only when a tap is active (disjoint
+        // from the `self.inputs` borrows above). Slot 0's tap lands in slot
+        // 0's planes (`slots[0]`/`slots[1]`), slot 1's in slot 1's
+        // (`slots[2]`/`slots[3]`) — the aux node applies each slot's own
+        // send automation. The post-fader signal is written WITHOUT the send
+        // gain — the aux node applies it.
+        let (mut a0l, mut a0r, mut a1l, mut a1r) = if tap_aux {
+            let (l0, r0, l1, r1) = self.send_bus.pair_planes_mut();
+            (
+                Some(&mut l0[..frames]),
+                Some(&mut r0[..frames]),
+                Some(&mut l1[..frames]),
+                Some(&mut r1[..frames]),
+            )
         } else {
-            (None, None)
+            (None, None, None, None)
         };
         // Front-pair gains: balance, then pan. At pan = 0 the pan pair is
         // exactly (1, 1), so these products are bit-identical to the
@@ -85,11 +96,12 @@ impl MixBusNode {
                         out_l[i] = v_l * (u0 * b0l * m0);
                         out_r[i] = v_r * (u0 * b0r * m0);
                         // Post-fader aux tap (pre master-send, matching the
-                        // lane slots' tap point in `sum_extra_slots`).
-                        if tap_aux {
-                            if let (Some(al), Some(ar)) = (&mut aux0, &mut aux1) {
-                                al[i] += v_l * (u0 * b0l) * a0;
-                                ar[i] += v_r * (u0 * b0r) * a0;
+                        // lane slots' tap point in `sum_extra_slots`). The
+                        // send gain is applied by the aux bus node.
+                        if tap0 {
+                            if let (Some(al), Some(ar)) = (&mut a0l, &mut a0r) {
+                                al[i] += v_l * (u0 * b0l);
+                                ar[i] += v_r * (u0 * b0r);
                             }
                         }
                     }
@@ -101,10 +113,10 @@ impl MixBusNode {
                     } else {
                         out_l[i] = in1_l[i] * (u1 * b1l * m1);
                         out_r[i] = in1_r[i] * (u1 * b1r * m1);
-                        if tap_aux {
-                            if let (Some(al), Some(ar)) = (&mut aux0, &mut aux1) {
-                                al[i] += in1_l[i] * (u1 * b1l) * a1;
-                                ar[i] += in1_r[i] * (u1 * b1r) * a1;
+                        if tap1 {
+                            if let (Some(al), Some(ar)) = (&mut a1l, &mut a1r) {
+                                al[i] += in1_l[i] * (u1 * b1l);
+                                ar[i] += in1_r[i] * (u1 * b1r);
                             }
                         }
                     }
@@ -136,14 +148,20 @@ impl MixBusNode {
                     out_l[i] = o0l + o1l;
                     out_r[i] = o0r + o1r;
                     if tap_aux {
-                        if let (Some(al), Some(ar)) = (&mut aux0, &mut aux1) {
-                            if !mute0 {
-                                al[i] += orig_l * (u0 * b0l) * a0;
-                                ar[i] += orig_r * (u0 * b0r) * a0;
+                        if tap0 {
+                            if let (Some(al), Some(ar)) = (&mut a0l, &mut a0r) {
+                                if !mute0 {
+                                    al[i] += orig_l * (u0 * b0l);
+                                    ar[i] += orig_r * (u0 * b0r);
+                                }
                             }
-                            if !mute1 {
-                                al[i] += in1_l[i] * (u1 * b1l) * a1;
-                                ar[i] += in1_r[i] * (u1 * b1r) * a1;
+                        }
+                        if tap1 {
+                            if let (Some(al), Some(ar)) = (&mut a1l, &mut a1r) {
+                                if !mute1 {
+                                    al[i] += in1_l[i] * (u1 * b1l);
+                                    ar[i] += in1_r[i] * (u1 * b1r);
+                                }
                             }
                         }
                     }
@@ -157,11 +175,6 @@ impl MixBusNode {
 
         self.state = state;
         self.crossfade_pos = pos;
-        // Phase 5 S2: mark the aux accumulator written when the pair tapped,
-        // so the return pass actually mixes the send in.
-        if tap_aux {
-            self.aux.written = true;
-        }
 
         // Phase 3 S2 stream slots: inputs >= 2 are independent streams summed
         // after the pair envelope (the envelope governs slots 0/1 only). Only
@@ -192,7 +205,6 @@ impl MixBusNode {
         let mut auto_l = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
         let mut auto_r = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
         let mut aux_auto = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
-        let mut aux_written = false;
         for k in 2..self.inputs.len() {
             let input = &mut self.inputs[k];
             if !input.active {
@@ -200,7 +212,6 @@ impl MixBusNode {
             }
             let dk = duck_gains[k];
             let m = input.send.master_gain;
-            let a = input.send.aux_gain;
             let (b0l, b0r) = balance_gains(input.balance);
             let (p0l, p0r) = pan_gains(input.pan, input.pan_law);
             let (b0l, b0r) = (b0l * p0l, b0r * p0r);
@@ -232,11 +243,10 @@ impl MixBusNode {
             // Phase 5 S2: a slot whose master / aux sends are at defaults
             // takes the original expressions untouched (bit-exact); otherwise
             // the contribution is captured once and scaled into both
-            // destinations (post-fader tap).
-            let tap = a != 0.0 && self.aux.enabled;
-            if tap {
-                aux_written = true;
-            }
+            // destinations (post-fader tap into the shared send bus — the
+            // aux node applies the send gain itself).
+            let sb = self.send_bus.data();
+            let tap = sb.enabled && sb.send_active[k];
             if m == 1.0 && !tap {
                 if has_auto {
                     for i in 0..frames {
@@ -260,38 +270,38 @@ impl MixBusNode {
                 continue;
             }
             if tap {
-                let (aux0, aux1) = self.aux.planes.split_at_mut(1);
-                let al = &mut aux0[0][..frames];
-                let ar = &mut aux1[0][..frames];
+                let (al, ar) = self.send_bus.slot_planes_mut(k);
+                let al = &mut al[..frames];
+                let ar = &mut ar[..frames];
                 if has_auto {
                     for i in 0..frames {
                         let u = g.process_sample(1.0) * dk;
                         let s = input.planes[0][i] * (u * auto_l[i]);
                         out_l[i] += s * m;
-                        al[i] += s * (a * aux_auto[i]);
+                        al[i] += s * aux_auto[i];
                         let s = input.planes[1][i] * (u * auto_r[i]);
                         out_r[i] += s * m;
-                        ar[i] += s * (a * aux_auto[i]);
+                        ar[i] += s * aux_auto[i];
                     }
                 } else if b0l != 1.0 || b0r != 1.0 || dk != 1.0 {
                     for i in 0..frames {
                         let u = g.process_sample(1.0) * dk;
                         let s = input.planes[0][i] * (u * b0l);
                         out_l[i] += s * m;
-                        al[i] += s * a;
+                        al[i] += s;
                         let s = input.planes[1][i] * (u * b0r);
                         out_r[i] += s * m;
-                        ar[i] += s * a;
+                        ar[i] += s;
                     }
                 } else {
                     for i in 0..frames {
                         let u = g.process_sample(1.0);
                         let s = input.planes[0][i] * u;
                         out_l[i] += s * m;
-                        al[i] += s * a;
+                        al[i] += s;
                         let s = input.planes[1][i] * u;
                         out_r[i] += s * m;
-                        ar[i] += s * a;
+                        ar[i] += s;
                     }
                 }
             } else {
@@ -316,9 +326,6 @@ impl MixBusNode {
                     }
                 }
             }
-        }
-        if aux_written {
-            self.aux.written = true;
         }
     }
 
@@ -348,17 +355,27 @@ impl MixBusNode {
         let (g0, bal0, mute0) = (&mut in0.gain, in0.balance, in0.mute);
         let (g1, bal1, mute1) = (&mut in1.gain, in1.balance, in1.mute);
         // Phase 5 S2: master-send + post-fader aux tap for the pair (see the
-        // f32 twin for the disabled-exact contract).
+        // f32 twin for the disabled-exact contract). The tap is gated on the
+        // shared send bus's `send_active` and writes WITHOUT the send gain —
+        // the aux bus node (Phase 6) applies the per-send automation ramps.
         let m0 = in0.send.master_gain;
         let m1 = in1.send.master_gain;
-        let a0 = in0.send.aux_gain;
-        let a1 = in1.send.aux_gain;
-        let tap_aux = (a0 != 0.0 || a1 != 0.0) && self.aux.enabled;
-        let (mut aux0, mut aux1) = if tap_aux {
-            let (aux0, aux1) = self.aux.planes.split_at_mut(1);
-            (Some(&mut aux0[0][..frames]), Some(&mut aux1[0][..frames]))
+        let sb = self.send_bus.data();
+        let tap0 = sb.enabled && sb.send_active[0];
+        let tap1 = sb.enabled && sb.send_active[1];
+        let tap_aux = tap0 || tap1;
+        // Per-slot send-bus planes (see the f32 twin): slot 0's tap in
+        // `slots[0]`/`slots[1]`, slot 1's in `slots[2]`/`slots[3]`.
+        let (mut a0l, mut a0r, mut a1l, mut a1r) = if tap_aux {
+            let (l0, r0, l1, r1) = self.send_bus.pair_planes_mut();
+            (
+                Some(&mut l0[..frames]),
+                Some(&mut r0[..frames]),
+                Some(&mut l1[..frames]),
+                Some(&mut r1[..frames]),
+            )
         } else {
-            (None, None)
+            (None, None, None, None)
         };
         let (b0l, b0r) = balance_gains(bal0);
         let (b1l, b1r) = balance_gains(bal1);
@@ -382,10 +399,10 @@ impl MixBusNode {
                         let v_r = out_r[i];
                         out_l[i] = v_l * (u0 * b0l as f64 * m0 as f64);
                         out_r[i] = v_r * (u0 * b0r as f64 * m0 as f64);
-                        if tap_aux {
-                            if let (Some(al), Some(ar)) = (&mut aux0, &mut aux1) {
-                                al[i] += (v_l * (u0 * b0l as f64) * a0 as f64) as f32;
-                                ar[i] += (v_r * (u0 * b0r as f64) * a0 as f64) as f32;
+                        if tap0 {
+                            if let (Some(al), Some(ar)) = (&mut a0l, &mut a0r) {
+                                al[i] += (v_l * (u0 * b0l as f64)) as f32;
+                                ar[i] += (v_r * (u0 * b0r as f64)) as f32;
                             }
                         }
                     }
@@ -397,10 +414,10 @@ impl MixBusNode {
                     } else {
                         out_l[i] = in1_l[i] as f64 * (u1 * b1l as f64 * m1 as f64);
                         out_r[i] = in1_r[i] as f64 * (u1 * b1r as f64 * m1 as f64);
-                        if tap_aux {
-                            if let (Some(al), Some(ar)) = (&mut aux0, &mut aux1) {
-                                al[i] += (in1_l[i] as f64 * (u1 * b1l as f64) * a1 as f64) as f32;
-                                ar[i] += (in1_r[i] as f64 * (u1 * b1r as f64) * a1 as f64) as f32;
+                        if tap1 {
+                            if let (Some(al), Some(ar)) = (&mut a1l, &mut a1r) {
+                                al[i] += (in1_l[i] as f64 * (u1 * b1l as f64)) as f32;
+                                ar[i] += (in1_r[i] as f64 * (u1 * b1r as f64)) as f32;
                             }
                         }
                     }
@@ -436,14 +453,20 @@ impl MixBusNode {
                     out_l[i] = o0l + o1l;
                     out_r[i] = o0r + o1r;
                     if tap_aux {
-                        if let (Some(al), Some(ar)) = (&mut aux0, &mut aux1) {
-                            if !mute0 {
-                                al[i] += (orig_l * (u0 * b0l as f64) * a0 as f64) as f32;
-                                ar[i] += (orig_r * (u0 * b0r as f64) * a0 as f64) as f32;
+                        if tap0 {
+                            if let (Some(al), Some(ar)) = (&mut a0l, &mut a0r) {
+                                if !mute0 {
+                                    al[i] += (orig_l * (u0 * b0l as f64)) as f32;
+                                    ar[i] += (orig_r * (u0 * b0r as f64)) as f32;
+                                }
                             }
-                            if !mute1 {
-                                al[i] += (in1_l[i] as f64 * (u1 * b1l as f64) * a1 as f64) as f32;
-                                ar[i] += (in1_r[i] as f64 * (u1 * b1r as f64) * a1 as f64) as f32;
+                        }
+                        if tap1 {
+                            if let (Some(al), Some(ar)) = (&mut a1l, &mut a1r) {
+                                if !mute1 {
+                                    al[i] += (in1_l[i] as f64 * (u1 * b1l as f64)) as f32;
+                                    ar[i] += (in1_r[i] as f64 * (u1 * b1r as f64)) as f32;
+                                }
                             }
                         }
                     }
@@ -457,10 +480,8 @@ impl MixBusNode {
 
         self.state = state;
         self.crossfade_pos = pos;
-        // Phase 5 S2: mark the aux accumulator written when the pair tapped.
-        if tap_aux {
-            self.aux.written = true;
-        }
+        // Phase 5 S2: the pair wrote its taps into the shared send bus (the
+        // aux node sets its own `written` flag from `send_active`).
 
         if self.inputs.len() > 2 {
             self.sum_extra_slots_f64(out_l, out_r, frames);
@@ -479,7 +500,6 @@ impl MixBusNode {
         let mut auto_l = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
         let mut auto_r = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
         let mut aux_auto = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
-        let mut aux_written = false;
         for k in 2..self.inputs.len() {
             let input = &mut self.inputs[k];
             if !input.active {
@@ -487,7 +507,6 @@ impl MixBusNode {
             }
             let dk = duck_gains[k];
             let m = input.send.master_gain;
-            let a = input.send.aux_gain;
             let (b0l, b0r) = balance_gains(input.balance);
             let (p0l, p0r) = pan_gains(input.pan, input.pan_law);
             let (b0l, b0r) = (b0l * p0l, b0r * p0r);
@@ -514,10 +533,10 @@ impl MixBusNode {
                 }
                 continue;
             }
-            let tap = a != 0.0 && self.aux.enabled;
-            if tap {
-                aux_written = true;
-            }
+            // Phase 5 S2: tap gated on the shared send bus (see the f32
+            // twin); the post-fader signal lands WITHOUT the send gain — the
+            // aux node applies per-slot automation.
+            let tap = self.send_bus.data().enabled && self.send_bus.data().send_active[k];
             if m == 1.0 && !tap {
                 if has_auto {
                     for i in 0..frames {
@@ -541,38 +560,38 @@ impl MixBusNode {
                 continue;
             }
             if tap {
-                let (aux0, aux1) = self.aux.planes.split_at_mut(1);
-                let al = &mut aux0[0][..frames];
-                let ar = &mut aux1[0][..frames];
+                let (al, ar) = self.send_bus.slot_planes_mut(k);
+                let al = &mut al[..frames];
+                let ar = &mut ar[..frames];
                 if has_auto {
                     for i in 0..frames {
                         let u = g.process_sample(1.0) as f64 * dk as f64;
                         let s = input.planes[0][i] as f64 * (u * auto_l[i] as f64);
                         out_l[i] += s * m as f64;
-                        al[i] += (s * (a * aux_auto[i]) as f64) as f32;
+                        al[i] += (s * aux_auto[i] as f64) as f32;
                         let s = input.planes[1][i] as f64 * (u * auto_r[i] as f64);
                         out_r[i] += s * m as f64;
-                        ar[i] += (s * (a * aux_auto[i]) as f64) as f32;
+                        ar[i] += (s * aux_auto[i] as f64) as f32;
                     }
                 } else if b0l != 1.0 || b0r != 1.0 || dk != 1.0 {
                     for i in 0..frames {
                         let u = g.process_sample(1.0) as f64 * dk as f64;
                         let s = input.planes[0][i] as f64 * (u * b0l as f64);
                         out_l[i] += s * m as f64;
-                        al[i] += (s * a as f64) as f32;
+                        al[i] += s as f32;
                         let s = input.planes[1][i] as f64 * (u * b0r as f64);
                         out_r[i] += s * m as f64;
-                        ar[i] += (s * a as f64) as f32;
+                        ar[i] += s as f32;
                     }
                 } else {
                     for i in 0..frames {
                         let u = g.process_sample(1.0) as f64;
                         let s = input.planes[0][i] as f64 * u;
                         out_l[i] += s * m as f64;
-                        al[i] += (s * a as f64) as f32;
+                        al[i] += s as f32;
                         let s = input.planes[1][i] as f64 * u;
                         out_r[i] += s * m as f64;
-                        ar[i] += (s * a as f64) as f32;
+                        ar[i] += s as f32;
                     }
                 }
             } else {
@@ -597,9 +616,6 @@ impl MixBusNode {
                     }
                 }
             }
-        }
-        if aux_written {
-            self.aux.written = true;
         }
     }
 
@@ -632,11 +648,10 @@ impl MixBusNode {
             let (b0l, b0r) = balance_gains(input0.balance);
             let balance = input0.balance;
             let m0 = input0.send.master_gain;
-            let a0 = input0.send.aux_gain;
-            let tap_aux = a0 != 0.0 && self.aux.enabled;
+            let tap_aux = self.send_bus.data().enabled && self.send_bus.data().send_active[0];
             let (mut aux0, mut aux1) = if tap_aux {
-                let (aux0, aux1) = self.aux.planes.split_at_mut(1);
-                (Some(&mut aux0[0][..frames]), Some(&mut aux1[0][..frames]))
+                let (l0, r0, _, _) = self.send_bus.pair_planes_mut();
+                (Some(&mut l0[..frames]), Some(&mut r0[..frames]))
             } else {
                 (None, None)
             };
@@ -664,9 +679,9 @@ impl MixBusNode {
                             if let (Some(al), Some(ar)) = (&mut aux0, &mut aux1) {
                                 let bal = if ch == 0 { b0l } else { b0r };
                                 if ch == 0 {
-                                    al[i] += v * u * bal * a0;
+                                    al[i] += v * u * bal;
                                 } else {
-                                    ar[i] += v * u * bal * a0;
+                                    ar[i] += v * u * bal;
                                 }
                             }
                         }
@@ -681,9 +696,9 @@ impl MixBusNode {
                         if tap_aux && ch < 2 {
                             if let (Some(al), Some(ar)) = (&mut aux0, &mut aux1) {
                                 if ch == 0 {
-                                    al[i] += v * ug * a0;
+                                    al[i] += v * ug;
                                 } else {
-                                    ar[i] += v * ug * a0;
+                                    ar[i] += v * ug;
                                 }
                             }
                         }
@@ -701,18 +716,15 @@ impl MixBusNode {
                             if tap_aux && ch < 2 {
                                 if let (Some(al), Some(ar)) = (&mut aux0, &mut aux1) {
                                     if ch == 0 {
-                                        al[i] += v * u * a0;
+                                        al[i] += v * u;
                                     } else {
-                                        ar[i] += v * u * a0;
+                                        ar[i] += v * u;
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
-            if tap_aux {
-                self.aux.written = true;
             }
         }
         // Secondary inputs: pre-mixed on their own planes (mix_secondary_f32
@@ -725,7 +737,6 @@ impl MixBusNode {
         let mut auto_l = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
         let mut auto_r = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
         let mut aux_auto = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
-        let mut aux_written = false;
         for k in 1..self.inputs.len() {
             let input = &mut self.inputs[k];
             if !input.active || input.mute {
@@ -737,7 +748,6 @@ impl MixBusNode {
             }
             let dk = duck_gains[k];
             let m = input.send.master_gain;
-            let a = input.send.aux_gain;
             let (b0l, b0r) = balance_gains(input.balance);
             let (p0l, p0r) = pan_gains(input.pan, input.pan_law);
             let (b0l, b0r) = (b0l * p0l, b0r * p0r);
@@ -759,11 +769,9 @@ impl MixBusNode {
                 }
             }
             let g = &mut input.gain;
-            // Phase 5 S2: master-send fold + aux tap on the front pair.
-            let tap = a != 0.0 && self.aux.enabled;
-            if tap {
-                aux_written = true;
-            }
+            // Phase 5 S2: master-send fold + aux tap on the front pair,
+            // gated on the shared send bus (Phase 6: per-slot send targets).
+            let tap = self.send_bus.data().enabled && self.send_bus.data().send_active[k];
             if m == 1.0 && !tap {
                 for i in 0..frames {
                     // The gain ramp advances once per frame and the same
@@ -797,9 +805,9 @@ impl MixBusNode {
                 continue;
             }
             if tap {
-                let (aux0, aux1) = self.aux.planes.split_at_mut(1);
-                let al = &mut aux0[0][..frames];
-                let ar = &mut aux1[0][..frames];
+                let (al, ar) = self.send_bus.slot_planes_mut(k);
+                let al = &mut al[..frames];
+                let ar = &mut ar[..frames];
                 for i in 0..frames {
                     let u = g.process_sample(1.0) * dk;
                     for ch in 0..src_channels {
@@ -825,9 +833,9 @@ impl MixBusNode {
                         let s = input.planes[ch][i] * (u * bal);
                         planes[ch][i] += s * m;
                         if ch == 0 {
-                            al[i] += s * (a * aux_auto[i]);
+                            al[i] += s * aux_auto[i];
                         } else if ch == 1 {
-                            ar[i] += s * (a * aux_auto[i]);
+                            ar[i] += s * aux_auto[i];
                         }
                     }
                 }
@@ -860,9 +868,6 @@ impl MixBusNode {
                 }
             }
         }
-        if aux_written {
-            self.aux.written = true;
-        }
     }
 
     /// f64 variant of [`Self::mix_multichannel`]. The secondary sum promotes
@@ -883,11 +888,10 @@ impl MixBusNode {
             let (b0l, b0r) = balance_gains(input0.balance);
             let balance = input0.balance;
             let m0 = input0.send.master_gain;
-            let a0 = input0.send.aux_gain;
-            let tap_aux = a0 != 0.0 && self.aux.enabled;
+            let tap_aux = self.send_bus.data().enabled && self.send_bus.data().send_active[0];
             let (mut aux0, mut aux1) = if tap_aux {
-                let (aux0, aux1) = self.aux.planes.split_at_mut(1);
-                (Some(&mut aux0[0][..frames]), Some(&mut aux1[0][..frames]))
+                let (l0, r0, _, _) = self.send_bus.pair_planes_mut();
+                (Some(&mut l0[..frames]), Some(&mut r0[..frames]))
             } else {
                 (None, None)
             };
@@ -915,9 +919,9 @@ impl MixBusNode {
                             if let (Some(al), Some(ar)) = (&mut aux0, &mut aux1) {
                                 let bal = if ch == 0 { b0l as f64 } else { b0r as f64 };
                                 if ch == 0 {
-                                    al[i] += (v * (u * bal) * a0 as f64) as f32;
+                                    al[i] += (v * (u * bal)) as f32;
                                 } else {
-                                    ar[i] += (v * (u * bal) * a0 as f64) as f32;
+                                    ar[i] += (v * (u * bal)) as f32;
                                 }
                             }
                         }
@@ -932,9 +936,9 @@ impl MixBusNode {
                         if tap_aux && ch < 2 {
                             if let (Some(al), Some(ar)) = (&mut aux0, &mut aux1) {
                                 if ch == 0 {
-                                    al[i] += (v * ug * a0 as f64) as f32;
+                                    al[i] += (v * ug) as f32;
                                 } else {
-                                    ar[i] += (v * ug * a0 as f64) as f32;
+                                    ar[i] += (v * ug) as f32;
                                 }
                             }
                         }
@@ -952,9 +956,9 @@ impl MixBusNode {
                             if tap_aux && ch < 2 {
                                 if let (Some(al), Some(ar)) = (&mut aux0, &mut aux1) {
                                     if ch == 0 {
-                                        al[i] += (v * u * a0 as f64) as f32;
+                                        al[i] += (v * u) as f32;
                                     } else {
-                                        ar[i] += (v * u * a0 as f64) as f32;
+                                        ar[i] += (v * u) as f32;
                                     }
                                 }
                             }
@@ -962,16 +966,12 @@ impl MixBusNode {
                     }
                 }
             }
-            if tap_aux {
-                self.aux.written = true;
-            }
         }
         let duck_gains: [f32; MAX_MIX_SLOTS] = std::array::from_fn(|k| self.duck_gain_for(k));
         self.duck_tick(frames);
         let mut auto_l = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
         let mut auto_r = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
         let mut aux_auto = [1.0f32; MAX_AUDIO_BLOCK_FRAMES];
-        let mut aux_written = false;
         for k in 1..self.inputs.len() {
             let input = &mut self.inputs[k];
             if !input.active || input.mute {
@@ -979,7 +979,6 @@ impl MixBusNode {
             }
             let dk = duck_gains[k];
             let m = input.send.master_gain;
-            let a = input.send.aux_gain;
             let src_channels = input.channels.min(channels);
             if src_channels == 0 {
                 continue;
@@ -1005,10 +1004,7 @@ impl MixBusNode {
                 }
             }
             let g = &mut input.gain;
-            let tap = a != 0.0 && self.aux.enabled;
-            if tap {
-                aux_written = true;
-            }
+            let tap = self.send_bus.data().enabled && self.send_bus.data().send_active[k];
             if m == 1.0 && !tap {
                 for i in 0..frames {
                     let u = g.process_sample(1.0) as f64 * dk as f64;
@@ -1038,9 +1034,9 @@ impl MixBusNode {
                 continue;
             }
             if tap {
-                let (aux0, aux1) = self.aux.planes.split_at_mut(1);
-                let al = &mut aux0[0][..frames];
-                let ar = &mut aux1[0][..frames];
+                let (al, ar) = self.send_bus.slot_planes_mut(k);
+                let al = &mut al[..frames];
+                let ar = &mut ar[..frames];
                 for i in 0..frames {
                     let u = g.process_sample(1.0) as f64 * dk as f64;
                     for ch in 0..src_channels {
@@ -1066,9 +1062,9 @@ impl MixBusNode {
                         let s = input.planes[ch][i] as f64 * (u * bal as f64);
                         planes[ch][i] += s * m as f64;
                         if ch == 0 {
-                            al[i] += (s * (a * aux_auto[i]) as f64) as f32;
+                            al[i] += (s * aux_auto[i] as f64) as f32;
                         } else if ch == 1 {
-                            ar[i] += (s * (a * aux_auto[i]) as f64) as f32;
+                            ar[i] += (s * aux_auto[i] as f64) as f32;
                         }
                     }
                 }
@@ -1100,9 +1096,6 @@ impl MixBusNode {
                     }
                 }
             }
-        }
-        if aux_written {
-            self.aux.written = true;
         }
     }
 

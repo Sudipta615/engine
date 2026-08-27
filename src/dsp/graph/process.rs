@@ -28,6 +28,23 @@ impl DspGraph {
                     node.process_block_f32(&mut pair);
                 }
             }
+            // Phase 6: the aux bus node runs right after the mix node, so
+            // the mix step's end-of-step metering misses the aux return.
+            // Recompute the master (slot 0) meter HERE — the return has just
+            // landed in the front pair, but the post-mix chain hasn't run —
+            // restoring the pre-split semantics (pre-chain metering that
+            // includes the return). Gated on the aux node having written
+            // this block: an idle/disabled aux leaves the planes untouched,
+            // so the mix step's own meters are already exact.
+            if step.node.0 == node_id::AUX {
+                if let GraphNode::Aux(aux) = &self.active.nodes[node_id::AUX] {
+                    if aux.written {
+                        if let GraphNode::Mix(mix) = &mut self.active.nodes[node_id::MIX] {
+                            mix.meter_master_f32(planes, planes[0].len());
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -44,6 +61,17 @@ impl DspGraph {
                     let (r, _) = rest.split_at_mut(1);
                     let mut pair = [&mut l[0][..], &mut r[0][..]];
                     node.process_block_f64(&mut pair);
+                }
+            }
+            // Phase 6: see [`Self::run_plan`] — same post-aux master-meter
+            // recompute for the f64 chain.
+            if step.node.0 == node_id::AUX {
+                if let GraphNode::Aux(aux) = &self.active.nodes[node_id::AUX] {
+                    if aux.written {
+                        if let GraphNode::Mix(mix) = &mut self.active.nodes[node_id::MIX] {
+                            mix.meter_master_f64(planes, planes[0].len());
+                        }
+                    }
                 }
             }
         }
@@ -331,6 +359,9 @@ impl DspGraph {
                 self.scratch.scratch_f64_r = r64;
             }
         }
+        // The post-aux master-meter recompute ran inside `run_plan` (see
+        // there) — this call moves the per-slot / aux meters onto the
+        // control bus.
         self.publish_mix_meters();
     }
 
@@ -344,10 +375,16 @@ impl DspGraph {
                 self.bus
                     .publish_slot_meters(i, input.meters.peak_db, input.meters.rms_db);
             }
-            // Phase 5 S3: publish the aux bus meters (post-return, once per
-            // block) so telemetry can read the aux level from any thread.
+        }
+        // Phase 5 S3 / Phase 6: publish the aux bus meters (computed by the
+        // aux node after the return, once per block) so telemetry can read
+        // the aux level from any thread. The aux bus is its own plan node.
+        if let GraphNode::Aux(aux) = &self.active.nodes[node_id::AUX] {
             self.bus
-                .publish_aux_meters(mix.aux.meters.peak_db, mix.aux.meters.rms_db);
+                .publish_aux_meters(aux.meters.peak_db, aux.meters.rms_db);
+            // Phase 6: independent per-send metering (each slot's own aux
+            // peak), read via `ControlHandle::aux_send_peak`.
+            self.bus.publish_aux_send_peaks(&aux.send_peak_db);
         }
     }
 
@@ -494,6 +531,8 @@ impl DspGraph {
             &mut iter.next().unwrap()[..n],
             &mut iter.next().unwrap()[..n],
         ];
+        // The post-aux master-meter recompute ran inside `run_plan` (the
+        // `NormalMc` plan includes the AUX step; see there).
         self.run_plan(PlanId::NormalMc, &mut plane_views[..channels]);
 
         // Re-interleave

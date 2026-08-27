@@ -114,8 +114,12 @@ mod node_id {
     pub const RESAMPLER: usize = 11;
     pub const LIMITER: usize = 12;
     pub const DITHER: usize = 13;
+    /// Phase 6: the aux bus as its own plan node, consuming the mix node's
+    /// send taps and returning into the master. Runs right after the mix
+    /// step in the plan (see [`plan::PlanSet::compile`]).
+    pub const AUX: usize = 14;
     /// Number of canonical node slots (also the first non-node `NodeId`).
-    pub const NODE_COUNT: usize = 14;
+    pub const NODE_COUNT: usize = 15;
 }
 
 /// Uniform node storage for the arena. The enum enables monomorphized (match)
@@ -143,6 +147,7 @@ pub(super) enum GraphNode {
     Resampler(ResamplerNode),
     Limiter(LimiterNode),
     Dither(DitherNode),
+    Aux(AuxBusNode),
 }
 
 const VOLUME_RAMP_DURATION_MS: f32 = 10.0;

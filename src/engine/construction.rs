@@ -173,34 +173,18 @@ impl AudioEngine {
     /// Deliver one processed block independently to every enabled endpoint.
     /// Endpoint backpressure is local: a short write increments only that
     /// endpoint's drop counter and never changes primary-sink delivery.
-    pub(crate) fn push_to_endpoints(&self, samples: &[f32], channels: usize) {
-        for endpoint in &self.endpoints {
+    pub(crate) fn push_to_endpoints(&mut self, samples: &[f32], channels: usize) {
+        let frames = samples.len() / channels.max(1);
+        for endpoint in &mut self.endpoints {
             if !endpoint.config().enabled {
                 continue;
             }
-            let gain = endpoint.config().gain;
-            if (gain - 1.0).abs() <= f32::EPSILON {
-                let accepted = endpoint.ring().push_interleaved(samples, channels);
-                self.endpoint_dropped_frames.fetch_add(
-                    (samples.len() / channels.max(1)).saturating_sub(accepted) as u64,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-                continue;
-            }
-            let frames = samples.len() / channels.max(1);
-            if frames > crate::engine::MIX_BLOCK_FRAMES {
-                continue;
-            }
-            let mut scaled =
-                [0.0f32; crate::engine::MIX_BLOCK_FRAMES * crate::buffer::MAX_CHANNELS];
-            for (dst, src) in scaled[..samples.len()].iter_mut().zip(samples) {
-                *dst = *src * gain;
-            }
-            let accepted = endpoint
-                .ring()
-                .push_interleaved(&scaled[..samples.len()], channels);
+            // Each worker applies its own gain and (for rate-mismatched
+            // endpoints) resamples the master block into its rate domain,
+            // with optional clock-drift correction of the ratio.
+            let accepted = endpoint.push_interleaved(samples, channels);
             self.endpoint_dropped_frames.fetch_add(
-                (frames.saturating_sub(accepted)) as u64,
+                frames.saturating_sub(accepted) as u64,
                 std::sync::atomic::Ordering::Relaxed,
             );
         }

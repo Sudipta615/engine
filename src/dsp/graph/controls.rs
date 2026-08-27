@@ -199,6 +199,9 @@ pub(crate) struct ControlBus {
     /// Aux metering (Phase 5 S3): peak / RMS dBFS of the accumulated sends.
     user_aux_peak_db: AtomicU32,
     user_aux_rms_db: AtomicU32,
+    /// Phase 6: per-send aux peaks (dBFS), one per mix slot — independent
+    /// metering for the aux bus's per-slot automation.
+    user_aux_send_peak_db: [AtomicU32; MAX_MIX_SLOTS],
 }
 
 impl ControlBus {
@@ -249,6 +252,7 @@ impl ControlBus {
             user_aux_insert_wet_mix: AtomicU32::new(0.5f32.to_bits()),
             user_aux_peak_db: AtomicU32::new((-96.0f32).to_bits()),
             user_aux_rms_db: AtomicU32::new((-96.0f32).to_bits()),
+            user_aux_send_peak_db: [const { AtomicU32::new((-96.0f32).to_bits()) }; MAX_MIX_SLOTS],
         }
     }
 
@@ -397,6 +401,20 @@ impl ControlBus {
         (
             f32::from_bits(self.user_aux_peak_db.load(Ordering::Relaxed)),
             f32::from_bits(self.user_aux_rms_db.load(Ordering::Relaxed)),
+        )
+    }
+
+    /// Publish the per-send aux peaks (Phase 6), audio side once per block.
+    pub(super) fn publish_aux_send_peaks(&self, peaks: &[f32; MAX_MIX_SLOTS]) {
+        for (slot, cell) in self.user_aux_send_peak_db.iter().enumerate() {
+            cell.store(peaks[slot].to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// Control-side read of one slot's aux-send peak (dBFS).
+    pub(super) fn aux_send_peak(&self, slot: usize) -> f32 {
+        f32::from_bits(
+            self.user_aux_send_peak_db[slot.min(MAX_MIX_SLOTS - 1)].load(Ordering::Relaxed),
         )
     }
 
@@ -800,10 +818,12 @@ impl GraphControlHandle {
 
     /// Configure the aux bus (Phase 5 S2/S3): `enabled` routes the aux
     /// return into the master before the post-mix chain; `return_gain` in
-    /// [0, 1] scales the return. Disabled = bit-exact.
+    /// [0, 1] scales the return. Disabled = bit-exact. Phase 6: applied to
+    /// the aux bus node, whose send taps the mix node gates on the shared
+    /// bus's `enabled`.
     pub fn set_aux(&self, enabled: bool, return_gain: f32) {
         self.enqueue(
-            node_id::MIX,
+            node_id::AUX,
             NodeCmd::SetAux {
                 enabled,
                 return_gain,
@@ -815,7 +835,7 @@ impl GraphControlHandle {
     /// `enabled` + `wet_mix` only; the IR stays as configured. No-op when
     /// no IR engine exists yet.
     pub fn set_aux_insert(&self, enabled: bool, wet_mix: f32) {
-        self.enqueue(node_id::MIX, NodeCmd::SetAuxInsert { enabled, wet_mix });
+        self.enqueue(node_id::AUX, NodeCmd::SetAuxInsert { enabled, wet_mix });
     }
 
     /// Control-side read of the mirrored aux state (enabled, return gain).
@@ -833,6 +853,12 @@ impl GraphControlHandle {
     /// per audio block (Phase 5 S3).
     pub fn aux_meters(&self) -> (f32, f32) {
         self.bus.aux_meters()
+    }
+
+    /// Control-side read of one mix slot's aux-send peak (dBFS) — the
+    /// independent per-send metering of the aux bus node (Phase 6).
+    pub fn aux_send_peak(&self, slot: usize) -> f32 {
+        self.bus.aux_send_peak(slot)
     }
 
     pub fn set_input_mute(&self, input: u8, mute: bool) {
@@ -1062,23 +1088,19 @@ impl DspGraph {
                     }
                 }
                 // Phase 5 S3: mirror the aux bus state post-apply so a
-                // generation swap preserves enabled / return gain.
+                // generation swap preserves enabled / return gain. Phase 6:
+                // the aux bus is its own plan node now.
                 if let NodeCmd::SetAux { .. } = cmd {
-                    if let GraphNode::Mix(mix) = &self.active.nodes[i] {
+                    if let GraphNode::Aux(aux) = &self.active.nodes[i] {
                         self.bus
-                            .set_aux_user_state(mix.aux.enabled, mix.aux.return_gain);
+                            .set_aux_user_state(aux.enabled(), aux.return_gain());
                     }
                 }
                 // Phase 6: mirror the aux insert state post-apply (a live
                 // runtime toggle survives generation swaps, like SetAux).
                 if let NodeCmd::SetAuxInsert { .. } = cmd {
-                    if let GraphNode::Mix(mix) = &self.active.nodes[i] {
-                        let (enabled, wet) = mix
-                            .aux
-                            .insert
-                            .as_ref()
-                            .map(|e| (e.is_enabled(), e.wet_mix()))
-                            .unwrap_or((false, 0.5));
+                    if let GraphNode::Aux(aux) = &self.active.nodes[i] {
+                        let (enabled, wet) = aux.insert_state();
                         self.bus.set_aux_insert_user_state(enabled, wet);
                     }
                 }
@@ -1115,13 +1137,13 @@ fn apply_node_cmd(node: &mut GraphNode, cmd: &NodeCmd) {
         (GraphNode::Mix(n), NodeCmd::MixTransition(cmd)) => n.apply_transition(*cmd),
         (GraphNode::Mix(n), NodeCmd::SetDuck(cfg)) => n.apply_duck(*cfg),
         (
-            GraphNode::Mix(n),
+            GraphNode::Aux(n),
             NodeCmd::SetAux {
                 enabled,
                 return_gain,
             },
         ) => n.apply_aux(*enabled, *return_gain),
-        (GraphNode::Mix(n), NodeCmd::SetAuxInsert { enabled, wet_mix }) => {
+        (GraphNode::Aux(n), NodeCmd::SetAuxInsert { enabled, wet_mix }) => {
             n.set_aux_insert(*enabled, *wet_mix)
         }
         (GraphNode::Mix(n), NodeCmd::SetMixCurve(c)) => n.curve = (*c).into(),

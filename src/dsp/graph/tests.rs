@@ -1218,9 +1218,9 @@ fn phase5_config_mix_trims_sends_aux_wire_at_construction() {
     // Send: master 0.5 / aux 0.25.
     assert_eq!(mix.inputs[1].send.master_gain, 0.5, "master send wired");
     assert_eq!(mix.inputs[1].send.aux_gain, 0.25, "aux send wired");
-    // Aux bus: enabled + return 0.75.
-    assert!(mix.aux.enabled, "aux enabled from config");
-    assert_eq!(mix.aux.return_gain, 0.75);
+    // Aux bus: enabled + return 0.75 (Phase 6: the aux bus is its own node).
+    assert!(graph.aux().enabled(), "aux enabled from config");
+    assert_eq!(graph.aux().return_gain(), 0.75);
 }
 
 #[test]
@@ -1460,13 +1460,7 @@ fn phase6_aux_insert_convolves_toggles_and_survives_swap() {
         (ins_wet - 0.5).abs() < 1e-6,
         "insert wet survives generation swap (got {ins_wet})"
     );
-    let mix = graph.mix();
-    let engine_enabled = mix
-        .aux
-        .insert
-        .as_ref()
-        .map(|e| e.is_enabled())
-        .unwrap_or(false);
+    let (engine_enabled, _) = graph.aux().insert_state();
     assert!(engine_enabled, "rebuilt generation keeps the insert engine");
 
     // Disabled-and-reconfigured: a runtime OFF also survives (off wins over
@@ -1530,4 +1524,112 @@ fn phase6_bit_exact_simd_accumulate_matches_scalar() {
             );
         }
     }
+}
+
+#[test]
+fn phase6_aux_bus_node_per_send_automation_and_independent_metering() {
+    // Phase 6: the aux bus is its own plan node. Each mix slot's send
+    // ramps independently (per-send automation) and meters independently
+    // (per-send peaks published to the control bus).
+    let sr = 48000.0;
+    let cfg = EngineConfig {
+        mix_slots: 4,
+        ..EngineConfig::default()
+    };
+    let mut graph = DspGraph::from_config(&cfg, sr);
+    let n = 256;
+    let h = graph.control_handle();
+
+    // Return at 0 so the master stays silent and the per-send taps are
+    // observable purely through the aux meters.
+    graph.set_aux(true, 0.0);
+    // Lane A (slot 2): L 0.5 / R 0.25, aux-send 1.0 → peak 0.5 (-6.02 dB).
+    // Lane B (slot 3): L 0.25 / R 0.5, aux-send 0.5 → peak 0.25 (-12.04 dB).
+    graph.set_slot_send(2, 0.0, 1.0);
+    graph.set_slot_send(3, 0.0, 0.5);
+    graph.drain_queued_control();
+
+    let mut l0 = vec![0.0f32; n];
+    let mut r0 = vec![0.0f32; n];
+    let mut la = vec![0.5f32; n];
+    let mut ra = vec![0.25f32; n];
+    let mut lb = vec![0.25f32; n];
+    let mut rb = vec![0.5f32; n];
+    graph.process_block_lanes(
+        (&mut l0, &mut r0),
+        &mut [(&mut la, &mut ra), (&mut lb, &mut rb)],
+    );
+
+    // The aux meters are POST per-send-gain: slot 2 taps 0.5 * 1.0, slot 3
+    // taps 0.25 * 0.5 = 0.125; L accumulates 0.625 -> -4.08 dB.
+    let (peak_a, _) = h.aux_meters();
+    assert!(
+        (peak_a - (-4.08)).abs() < 0.2,
+        "aux bus meters the post-gain sends (0.5 + 0.125 = 0.625 -> -4.08 dB), got {peak_a}"
+    );
+    let s2 = h.aux_send_peak(2);
+    let s3 = h.aux_send_peak(3);
+    assert!(
+        (s2 - (-6.02)).abs() < 0.2,
+        "slot 2 send (1.0 * 0.5 peak) meters at -6.02 dB, got {s2}"
+    );
+    assert!(
+        (s3 - (-12.04)).abs() < 0.2,
+        "slot 3 send peaks on R (0.5 tap * 0.5 gain = 0.25 -> -12.04 dB), got {s3}"
+    );
+    assert!(
+        (s2 - s3).abs() > 1.0,
+        "per-send meters must be independent (slot2 {s2} vs slot3 {s3})"
+    );
+
+    // Per-send automation: glide slot 2's send 1.0 -> 0.25 while slot 3
+    // stays at 0.5. One block in, the ramp must be mid-flight (strictly
+    // between the old and new converged peaks); slot 3 must not move.
+    graph.set_slot_send(2, 0.0, 0.25);
+    graph.drain_queued_control();
+    l0.fill(0.0);
+    r0.fill(0.0);
+    graph.process_block_lanes(
+        (&mut l0, &mut r0),
+        &mut [(&mut la, &mut ra), (&mut lb, &mut rb)],
+    );
+    // A peak meter over the ramp block reads the ramp's first sample, where
+    // the gain still holds the previous value — the peak must NOT jump
+    // (no click / overshoot): it stays at the pre-ramp level while the
+    // glide is in flight.
+    let mid = h.aux_send_peak(2);
+    assert!(
+        (mid - (-6.02)).abs() < 0.2,
+        "slot 2 send peak unchanged on the ramp's first block (no click), got {mid}"
+    );
+    let s3_mid = h.aux_send_peak(3);
+    assert!(
+        (s3_mid - (-12.04)).abs() < 0.2,
+        "slot 3 send unaffected by slot 2's ramp (got {s3_mid})"
+    );
+
+    // Converge: the 10 ms ramp @48 kHz = 480 samples; 60 blocks of 256
+    // frames is many times that.
+    for _ in 0..60 {
+        l0.fill(0.0);
+        r0.fill(0.0);
+        graph.process_block_lanes(
+            (&mut l0, &mut r0),
+            &mut [(&mut la, &mut ra), (&mut lb, &mut rb)],
+        );
+    }
+    let s2_end = h.aux_send_peak(2);
+    assert!(
+        (s2_end - (-18.06)).abs() < 0.2,
+        "slot 2 send converged to 0.25 * 0.5 peak = -18.06 dB, got {s2_end}"
+    );
+    let s3_end = h.aux_send_peak(3);
+    assert!(
+        (s3_end - (-12.04)).abs() < 0.2,
+        "slot 3 send still at -12.04 dB, got {s3_end}"
+    );
+    assert!(
+        (s2_end - s3_end).abs() > 1.0,
+        "converged per-send meters remain independent (slot2 {s2_end} vs slot3 {s3_end})"
+    );
 }

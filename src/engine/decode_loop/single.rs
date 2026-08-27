@@ -521,9 +521,6 @@ impl AudioEngine {
                 //     before it is interleaved and flushed.
                 self.graph
                     .process_final_limiter_block(&mut plane_l[..n], &mut plane_r[..n]);
-                // Multi-endpoint fan-out: every additional endpoint gets the
-                // master-domain block (resampler + its own limiter inside).
-                self.fanout_endpoint_block(&plane_l[..n], &plane_r[..n]);
                 for j in 0..n {
                     batch[j * 2] = plane_l[j];
                     batch[j * 2 + 1] = plane_r[j];
@@ -556,8 +553,6 @@ impl AudioEngine {
                         // output-domain (resampled) samples.
                         let (l, r) = self.graph.process_final_limiter(out_l, out_r);
                         self.push_pending_back((l, r));
-                        // Multi-endpoint fan-out (per-frame resampled path).
-                        self.fanout_endpoint_frame(l, r);
                     }
                 }
 
@@ -588,9 +583,6 @@ impl AudioEngine {
                         break;
                     }
                 }
-                // Multi-endpoint fan-out: flush the per-frame endpoint
-                // chains to their rings alongside the master drain.
-                self.drain_endpoints();
             }
 
             // Count the whole block of source frames as consumed.
@@ -638,7 +630,6 @@ impl AudioEngine {
                         break;
                     }
                 }
-                self.drain_endpoints();
             }
         }
 

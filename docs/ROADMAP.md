@@ -202,26 +202,32 @@ changes the frames offered to another.
 **Intent.** Drive several output devices simultaneously, each with its own
 rate domain, chain, and backend.
 
-- `EngineConfig.additional_endpoints: Vec<EndpointConfig>` (device, backend,
-  enabled, per-endpoint gain) — the primary device config is unchanged, so
-  single-endpoint mode is bit-identical.
-- `EndpointTransport` (`src/engine/endpoints.rs`): each endpoint owns its
+- `EngineConfig.endpoints: Vec<EndpointConfig>` (device, backend, enabled,
+  per-endpoint gain, per-endpoint drift correction) — the primary device
+  config is unchanged, so single-endpoint mode is bit-identical.
+- `EndpointWorker` (`src/output/endpoint.rs`): each endpoint owns its
   lock-free ring + backend, a resampler from the master rate into its own
   rate domain (omitted when the rates match), and a rate-matched final
   safety limiter (applied to resampled frames only). The decode loop fans
-  every master-domain block out to each endpoint (resample → endpoint
-  limiter → gain → ring), with partial-write preservation and a bounded
-  pending queue (a stuck endpoint drops oldest frames, never grows memory).
+  every master-domain block out to each endpoint (resample → drift trim →
+  gain → ring), with partial-write preservation and a bounded pending
+  queue (a stuck endpoint drops oldest frames, never grows memory).
 - Lifecycle: `start()`/`stop()` open/close every endpoint; stream recovery
   reopens them against the new master rate; a failing secondary endpoint is
   logged and skipped — it can never take down the primary. Telemetry via
-  `PlaybackInfo.endpoints` (device, rate, gain, pending frames).
+  `PlaybackInfo.endpoints` (device, rate, gain, pending frames, drift
+  state).
 - **Realtime discipline.** The fan-out runs on the decode loop (a control
   thread), never on a backend callback; each endpoint's realtime thread
   reads only its own ring. No allocation, no locks added to any hot path.
-- **Deferred — clock drift.** Independent devices drift; per-endpoint
-  resamplers currently correct against each endpoint's nominal clock. A
-  master-clock / drift-correction pass is a dedicated follow-up.
+- **Clock drift (done, v3.9.0).** Independent devices drift; each endpoint's
+  FFT resampler stays fixed at the nominal ratio (retuning it would hit
+  rubato's fixed-sync chunk pathology at non-grid rates) and a rubato
+  `Slip` — a 1:1 clutch that inserts/drops single frames behind a short
+  crossfade — trims the stream to the device's actual clock. A
+  proportional ring-fill controller steers the slip ratio (clamped ±500
+  ppm) and converges it onto the real crystal; telemetry reports the ppm
+  offset per endpoint.
 
 ---
 
@@ -237,7 +243,13 @@ rate domain, chain, and backend.
   SSE2/NEON SIMD with a strict element-wise (no-FMA) bit-exact contract,
   locked by `phase6_bit_exact_simd_accumulate_matches_scalar` and the
   graph-vs-pipeline equivalence suite.
-- **Horizon:** promote the aux into a standalone `AuxBusNode` in the plan;
-  precompiled lane kernels, decode-ahead lane buffering — the
-  meter/send/automation substrate from Phases 4–5 is the exact measurement
+- **Aux as a plan node (done, v3.10.0):** promoted the aux out of `MixBusNode`
+  into a standalone `AuxBusNode` running as its own `AUX` plan step with a
+  shared interior-mutable `AuxSendBus`. Each mix slot's send is now an
+  independent ramped gain (click-free per-send automation) with its own
+  per-send peak meter (`aux_send_peak(slot)`); the master meter is measured
+  at the post-aux / pre-post-mix-chain point so telemetry includes the aux
+  return exactly as the pre-split layout did.
+- **Horizon:** precompiled lane kernels, decode-ahead lane buffering — the
+  meter/send/automation substrate from Phases 4–6 is the exact measurement
   and control surface those need.

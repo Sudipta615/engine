@@ -146,15 +146,18 @@ per endpoint: SPSC ring (decode loop pushes, backend drains)
 endpoint backend's realtime callback ──▶ device
 ```
 
-Each `EngineConfig.additional_endpoints` entry drives one extra output
-device independently: its own lock-free ring, its own rate domain, its own
-final limiter sized for that rate, and its own level. A stuck endpoint
-buffers at most `MAX_ENDPOINT_PENDING_FRAMES` ahead of its ring (oldest
-frames dropped first) and can never take down the primary device. Clock
-drift between independent devices is deliberately not corrected — each
-endpoint resamples against its own nominal clock (drift correction is a
-documented follow-up). Same-rate endpoints reuse the master's already-
-limited block untouched.
+Each `EngineConfig.endpoints` entry drives one extra output device
+independently: its own lock-free ring, its own rate domain, its own final
+limiter sized for that rate, and its own level. A stuck endpoint buffers at
+most `MAX_ENDPOINT_PENDING_FRAMES` ahead of its ring (oldest frames dropped
+first) and can never take down the primary device. The per-endpoint FFT
+resampler runs at the fixed nominal ratio; when drift correction is enabled
+it is followed by a rubato `Slip` (a 1:1 clutch that occasionally
+inserts/drops a single frame behind a short crossfade) whose ratio is
+steered by a proportional ring-fill controller, so the stream tracks the
+device's actual crystal (offset reported in ppm) instead of its nominal
+clock. Same-rate endpoints reuse the master's already-limited block
+untouched.
 
 ### Loudness analysis
 
