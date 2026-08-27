@@ -30,6 +30,34 @@ use engine::dsp::graph::DspGraph;
 use engine::dsp::loudness::LoudnessMetadata;
 use engine::dsp::pipeline::DspPipeline;
 
+/// Write a short 16-bit stereo WAV whose left channel is a single impulse
+/// (sample 0 = 1.0, rest silence); right channel silent. Used as the aux
+/// insert's IR file in [`run_graph_plan_no_alloc`].
+fn write_impulse_wav(path: &std::path::Path, sample_rate: u32, n_frames: usize) {
+    let mut data = Vec::with_capacity(n_frames * 4);
+    for i in 0..n_frames {
+        let v = if i == 0 { 32767i16 } else { 0i16 };
+        data.extend_from_slice(&v.to_le_bytes());
+        data.extend_from_slice(&0i16.to_le_bytes());
+    }
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+    wav.extend_from_slice(b"WAVE");
+    wav.extend_from_slice(b"fmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&sample_rate.to_le_bytes());
+    wav.extend_from_slice(&(sample_rate * 4).to_le_bytes());
+    wav.extend_from_slice(&4u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    wav.extend_from_slice(&data);
+    std::fs::write(path, &wav).unwrap();
+}
+
 thread_local! {
     /// Heap allocations performed on THIS thread while the measurement
     /// window is armed.
@@ -203,6 +231,27 @@ fn run_graph_plan_no_alloc(mode: config::PrecisionMode) {
     let mut cfg = full_chain_config();
     cfg.precision_mode = mode;
 
+    // Phase 5/6: the aux bus with per-slot sends and the global convolution
+    // insert must also be allocation-free on the audio path (aux taps in the
+    // sum, the SIMD `accumulate_scaled` return, and the insert's in-place
+    // convolution all run on preallocated planes). The IR is loaded from a
+    // file exactly like a host would configure it (control path — before the
+    // measurement window).
+    let ir_path = std::env::temp_dir().join(format!(
+        "rt_aux_ir_{}_{}.wav",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    write_impulse_wav(&ir_path, 48_000, 2048);
+    cfg.aux.enabled = true;
+    cfg.aux.return_gain = 0.5;
+    cfg.aux.insert_enabled = true;
+    cfg.aux.insert_wet_mix = 0.3;
+    cfg.aux.insert_ir_path = Some(ir_path.display().to_string());
+
     let mut graph = DspGraph::from_config(&cfg, 48_000.0);
 
     // Same synthetic IR as the pipeline path.
@@ -219,6 +268,11 @@ fn run_graph_plan_no_alloc(mode: config::PrecisionMode) {
         .load_ir_from_samples(&ir)
         .expect("synthetic IR must load");
     graph.convolution_mut().engine.set_wet_mix(0.3);
+
+    // Per-slot sends into the aux bus (post-fader taps in the sum loops).
+    graph.set_slot_send(0, 1.0, 0.5);
+    graph.set_slot_send(1, 1.0, 0.5);
+    graph.drain_queued_control();
 
     let meta = LoudnessMetadata {
         ebu_r128_loudness: Some(-20.0),
@@ -251,6 +305,7 @@ fn run_graph_plan_no_alloc(mode: config::PrecisionMode) {
     }
 
     ARMED.store(false, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&ir_path);
     let allocations = THREAD_ALLOCS.with(|c| c.get());
 
     assert_eq!(

@@ -66,6 +66,16 @@ impl Default for SlotState {
     }
 }
 
+/// Immutable snapshot of a slot's automation track, carried across a
+/// generation rebuild (Phase 5 S4). `Copy` data; the audio-side cursor
+/// (`SlotAutomation::pos`/`cursor`) starts fresh at 0 on the new generation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SlotAutomationData {
+    pub target: AutomationTarget,
+    pub points: [AutomationPoint; MAX_AUTOMATION_POINTS],
+    pub count: usize,
+}
+
 /// Immutable snapshot of the listener-facing user state that a fresh
 /// generation inherits: volume / balance / speed targets, the volume-ramp
 /// duration, and per-slot mix-bus state. The audio thread mirrors these onto
@@ -85,10 +95,27 @@ pub struct UserState {
     /// generation's slot count is fine (remaining slots keep defaults);
     /// entries beyond the generation's slots are ignored.
     pub slots: Vec<SlotState>,
+    /// Whether `slots`/aux carry LIVE bus state (a [`ControlBus`] snapshot)
+    /// as opposed to pristine defaults. False at construction, so the
+    /// config-applied trims/sends/aux (Phase 5 S1/S2/S3) are authoritative;
+    /// true on a reconfig, so live commands applied since the last rebuild
+    /// win over the config.
+    pub has_live_bus_state: bool,
     /// Aux bus enabled (Phase 5 S2/S3).
     pub aux_enabled: bool,
     /// Aux return gain in [0, 1] (Phase 5 S2/S3).
     pub aux_return_gain: f32,
+    /// Phase-6 aux insert: enabled / wet-mix, carried across a rebuild so a
+    /// live runtime toggle survives a generation swap.
+    pub aux_insert_enabled: bool,
+    pub aux_insert_wet_mix: f32,
+    /// Program-gated ducking config (Phase 4 S4), carried across a rebuild
+    /// so a reconfig never drops a configured duck. `None` = disabled.
+    pub duck: Option<DuckState>,
+    /// Per-slot automation tracks, indexed by mix-bus slot (Phase 5 S4).
+    /// Shorter than the generation's slot count is fine (missing entries
+    /// keep no track); entries beyond the generation's slots are ignored.
+    pub slot_automation: Vec<Option<SlotAutomationData>>,
 }
 
 impl Default for UserState {
@@ -99,8 +126,13 @@ impl Default for UserState {
             speed: 1.0,
             volume_fade_ms: 10.0,
             slots: Vec::new(),
+            has_live_bus_state: false,
             aux_enabled: false,
             aux_return_gain: 1.0,
+            aux_insert_enabled: false,
+            aux_insert_wet_mix: 0.5,
+            duck: None,
+            slot_automation: Vec::new(),
         }
     }
 }

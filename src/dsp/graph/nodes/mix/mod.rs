@@ -834,6 +834,26 @@ impl MixBusNode {
         self.aux.return_gain = return_gain.clamp(0.0, 1.0);
     }
 
+    /// Apply the Phase-6 aux insert (a global convolution between the
+    /// accumulator and the return). Control path; the IR file load happens
+    /// here. `ir_path: None` keeps the loaded IR (enabled/wet change only).
+    pub fn apply_aux_insert(
+        &mut self,
+        enabled: bool,
+        wet_mix: f32,
+        sample_rate: f32,
+        ir_path: Option<&str>,
+    ) {
+        self.aux
+            .apply_insert(enabled, wet_mix, sample_rate, ir_path);
+    }
+
+    /// Runtime toggle of the Phase-6 aux insert (enabled / wet only — the
+    /// IR stays as configured). Control path (queued command).
+    pub fn set_aux_insert(&mut self, enabled: bool, wet_mix: f32) {
+        self.aux.set_insert(enabled, wet_mix);
+    }
+
     /// Advance the duck envelope once per block (Phase 4 S4). `source_peak_db`
     /// is the trigger slot's peak from this block's metering; the trigger is
     /// evaluated block-synchronously and the gain ramps toward the depth
@@ -911,10 +931,17 @@ impl DspNode for MixBusNode {
     fn is_active(&self) -> bool {
         self.crossfade_enabled
             || self.state != MixerState::PlayingCurrent
-            || self
-                .inputs
-                .iter()
-                .any(|i| i.preamp.is_active() || i.loudness.is_active())
+            || self.duck.is_some()
+            || self.aux.enabled
+            || self.aux.insert_active()
+            || self.inputs.iter().any(|i| {
+                i.preamp.is_active()
+                    || i.loudness.is_active()
+                    || i.automation.is_some()
+                    || i.trim.is_active()
+                    || i.send.master_gain != 1.0
+                    || i.send.aux_gain != 0.0
+            })
     }
 
     fn reset(&mut self) {

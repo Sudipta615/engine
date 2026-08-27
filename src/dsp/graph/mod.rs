@@ -80,7 +80,7 @@ pub use nodes::*;
 pub use swap::GraphGeneration;
 
 pub(super) use controls::{ControlBus, NodeCmd};
-pub(super) use swap::{NodeId, UserState};
+pub(super) use swap::{NodeId, SlotAutomationData, UserState};
 
 // ── Node arena ───────────────────────────────────────────────────────────────
 

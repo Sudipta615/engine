@@ -2,6 +2,118 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.8.0] — 2026-08-27
+
+Phase 6 (roadmap) first cut: the aux-bus insert seam and a bit-exact SIMD
+pass on the mix bus. The aux bus (Phase 5) gains an optional global insert —
+a convolution (reverb / cabinet) between the send accumulator and the return
+into the master — configured via `AuxBusConfig` (`insert_enabled` /
+`insert_wet_mix` / `insert_ir_path`), toggleable at runtime with a control
+surface that mirrors the other bus state (a live toggle survives generation
+swaps, off always wins over config, and an unloaded/missing IR leaves the
+bus bit-exact). The aux return accumulate is now SIMD-accelerated
+(SSE2/NEON with a scalar fallback) with a strict element-wise contract:
+mul-then-add, no FMA, no reordering — bit-for-bit identical to the scalar
+path, enforced by a dedicated bit-exactness test and the existing
+graph-vs-pipeline equivalence suite. The f64 (quality) return keeps its
+allocation-free scalar loop.
+
+### Added
+
+- `AuxBusConfig.insert_enabled` / `insert_wet_mix` / `insert_ir_path` and the
+  `mix.apply_aux_insert(...)` wiring in graph construction (generation-
+  carried; a missing IR logs a warning and stays bit-exact).
+- `DspGraph::set_aux_insert(enabled, wet_mix)` / `GraphControlHandle`
+  `set_aux_insert` + `aux_insert_state()` runtime control surface; the
+  toggled state is mirrored on the control bus and replayed across
+  generation rebuilds (live snapshots only, matching `set_aux` semantics).
+- `dsp_utils::accumulate_scaled` / `accumulate_scaled_f64`: element-wise
+  SIMD `dst += src * g` (SSE2 / NEON, scalar fallback) used by the aux
+  return; `phase6_bit_exact_simd_accumulate_matches_scalar` locks the
+  bit-exact contract across odd lengths and tails.
+
+### Fixed
+
+- The aux return on the f32 hot path now uses the SIMD accumulate; the
+  quality (f64) path is unchanged (still allocation-free).
+
+## [3.7.0] — 2026-08-27
+
+Multi-endpoint routing matrix (roadmap Phase 5): the engine can now drive
+several output devices simultaneously. The master mix (already output-domain
+at the primary rate) is fanned out from the decode loop to every additional
+endpoint; each endpoint owns its lock-free ring, a resampler into its own
+rate domain, a rate-matched final safety limiter, and a per-endpoint level.
+The primary-device path is untouched (single-endpoint mode is bit-identical),
+and a failing secondary endpoint is logged and skipped — it can never take
+down the primary. Clock drift between independent devices is deliberately
+not corrected (each endpoint resamples against its own nominal clock);
+drift correction is a documented follow-up.
+
+### Added
+
+- `EngineConfig.additional_endpoints: Vec<EndpointConfig>` (device, backend,
+  enabled, per-endpoint gain), re-exported from the `config` crate.
+- `EndpointTransport` (`src/engine/endpoints.rs`): per-endpoint ring +
+  backend, resampler (master → endpoint rate, `None` when they match),
+  endpoint-rate final limiter (applied to resampled frames only), bounded
+  pending queue (a stuck endpoint drops oldest frames, never grows memory).
+- Fan-out in the decode loop (single-stream bypass, resampled, and
+  crossfade flush paths) with partial-write preservation per endpoint.
+- Lifecycle: `start()`/`stop()` open/close every endpoint; stream recovery
+  reopens them against the new master rate; `set_config` applies changes at
+  the next start.
+- Telemetry: `PlaybackInfo.endpoints: Vec<EndpointInfo>` (device, rate,
+  gain, pending frames) refreshed on the telemetry cadence; engine accessors
+  `additional_endpoint_count()` / `additional_endpoint_sample_rates()`.
+- Unit tests (resample pitch/peak/finiteness, gain passthrough, partial
+  writes, bounded pending) and end-to-end decode-loop fan-out tests with a
+  fake 48 kHz endpoint beside a 44.1 kHz master.
+
+## [3.6.1] — 2026-08-27
+
+Phase 5 hardening: the v3.6.0 mix-bus surface had real defects that could
+panic the engine or silently misroute audio. The crossfade flush built its
+lane array with one iterator pull too many and panicked whenever a
+crossfade ran with lanes registered; lane audio was fed to the graph by
+*lane index* while every control command addressed the lane's *slot*, so a
+removal-then-readd left audio and controls disagreeing (a lane feeding a
+detached slot went silent, gains/ducks hit the wrong stream). The duck
+envelope advanced twice per block whenever the bus carried independent
+slots (attack/release ran at 2× the configured rate), the `mix_trims` /
+`mix_sends` / `aux` config surface was declared but never applied (and its
+entry types were not nameable by Rust hosts), commands enqueued before a
+reconfig were lost on the fresh generation, and ducking + automation did
+not survive generation swaps. The pair slots (0/1) were the only slots
+without an aux tap, and the f64 path never published mix meters.
+
+### Fixed
+
+- Crossfade-with-lanes panic: a dedicated `process_block_crossfade_with_lanes`
+  entry feeds the incoming stream and lane slots without assembling a
+  contiguous array on the hot path.
+- Lane placement is slot-addressed end to end: `fill_lane_scratch` fills the
+  slot's planes (index `k` ↔ bus slot `k + 2`), and unused slots are zeroed,
+  so a lane's audio always reaches its own bus slot after removals/re-adds.
+- Duck envelope advances exactly once per block on every path (the
+  independent-slot tail no longer ticks it a second time).
+- `EngineConfig.mix_trims` / `mix_sends` / `aux` are applied at graph
+  construction and `apply_config`; the config crate now re-exports
+  `SlotTrimEntry`, `SlotSendConfig`, and `AuxBusConfig` so hosts can name
+  them. Construction keeps the config values authoritative (pristine user
+  state no longer clobbers them); live reconfigs keep the sticky
+  command-applied values.
+- `DspGraph::reconfigure` drains queued control commands before snapshotting
+  so commands followed by a bus-growing reconfig survive, and carries duck +
+  automation tracks across the rebuild.
+- The pair slots (0/1) now tap the aux accumulator like every other slot
+  (post-fader, pre master-send); slot 0's tap was also missing on the
+  multichannel path.
+- The public f64 processing path publishes per-slot and aux meters.
+- `MixBusNode::is_active` reflects trim/send/automation/aux/duck state, and
+  engine `set_config` routes bus-topology changes through the glitch-free
+  rebuild instead of an in-place apply.
+
 ## [3.6.0] — 2026-08-27
 
 Phase 5 is complete: per-slot mixer controls and robust multi-endpoint

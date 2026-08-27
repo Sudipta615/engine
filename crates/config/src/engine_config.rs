@@ -117,6 +117,16 @@ pub struct AuxBusConfig {
     pub enabled: bool,
     #[serde(default = "default_master_gain")]
     pub return_gain: f32,
+    /// Whether the insert convolution is active (Phase 6). Disabled = no
+    /// insert processing = bit-exact.
+    #[serde(default)]
+    pub insert_enabled: bool,
+    /// Impulse-response file for the insert convolution.
+    #[serde(default)]
+    pub insert_ir_path: Option<String>,
+    /// Insert wet/dry mix in [0, 1] (1.0 = fully wet).
+    #[serde(default = "default_master_gain")]
+    pub insert_wet_mix: f32,
 }
 
 impl Default for AuxBusConfig {
@@ -124,6 +134,9 @@ impl Default for AuxBusConfig {
         Self {
             enabled: false,
             return_gain: 1.0,
+            insert_enabled: false,
+            insert_ir_path: None,
+            insert_wet_mix: 1.0,
         }
     }
 }

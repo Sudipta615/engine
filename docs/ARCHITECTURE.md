@@ -40,6 +40,10 @@ src/
 │   ├── lanes.rs              # Multi-track lane registry (Phase 4 S6): an
 │   │                         #   independent decoder+resampler per bus slot
 │   │                         #   ≥ 2, fed as secondaries each block
+│   ├── endpoints.rs          # Multi-endpoint routing matrix (Phase 5b): one
+│   │                         #   ring + resampler + final limiter per
+│   │                         #   additional output device, fanned out from
+│   │                         #   the decode loop
 │   └── commands/             # Command handlers, organized by concern
 │       ├── mod.rs            # Dispatch table
 │       ├── playback.rs       # play / pause / stop / seek / speed / pitch

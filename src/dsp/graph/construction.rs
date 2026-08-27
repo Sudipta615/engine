@@ -8,6 +8,7 @@
 //! boundary — the live-reconfig entry point.
 
 use super::*;
+use crate::dsp::graph::nodes::mix::SlotAutomation;
 use std::sync::Arc;
 
 /// Access a typed node inside a generation being configured.
@@ -160,15 +161,49 @@ impl GraphGeneration {
                 }
                 // Phase 5 S1/S2: trims and sends are user state that survives
                 // a generation swap (mirrored onto the bus atomics at drain).
-                input.send.master_gain = slot.send_master_gain.clamp(0.0, 1.0);
-                input.send.aux_gain = slot.send_aux_gain.clamp(0.0, 1.0);
-                for (c, g) in input.trim.gains.iter_mut().enumerate() {
-                    *g = slot.trim_gains[c];
+                // Gated on `has_live_bus_state`: at construction the snapshot
+                // is pristine and the config-applied values (from
+                // `apply_config`) are authoritative — replaying defaults over
+                // them would silently drop `mix_trims`/`mix_sends`/`aux`.
+                if user.has_live_bus_state {
+                    input.send.master_gain = slot.send_master_gain.clamp(0.0, 1.0);
+                    input.send.aux_gain = slot.send_aux_gain.clamp(0.0, 1.0);
+                    for (c, g) in input.trim.gains.iter_mut().enumerate() {
+                        *g = slot.trim_gains[c];
+                    }
+                    input.trim.invert.copy_from_slice(&slot.trim_invert[..]);
                 }
-                input.trim.invert.copy_from_slice(&slot.trim_invert[..]);
             }
-            // Phase 5 S3: aux bus state survives a swap.
-            gen_node!(gen, node_id::MIX, Mix).apply_aux(user.aux_enabled, user.aux_return_gain);
+            // Phase 5 S3: aux bus state survives a swap (live snapshots
+            // only; construction keeps the config-applied aux config).
+            if user.has_live_bus_state {
+                gen_node!(gen, node_id::MIX, Mix).apply_aux(user.aux_enabled, user.aux_return_gain);
+                // Phase 6: a live runtime toggle of the aux insert survives
+                // the swap too (the config-applied IR stays loaded).
+                gen_node!(gen, node_id::MIX, Mix)
+                    .set_aux_insert(user.aux_insert_enabled, user.aux_insert_wet_mix);
+            }
+        }
+
+        // Phase 5 S4: duck + automation tracks survive a rebuild (seeded by
+        // `DspGraph::reconfigure` from the live generation; `from_config`
+        // passes `None`/empty).
+        {
+            let mix = gen_node!(gen, node_id::MIX, Mix);
+            if let Some(duck) = user.duck {
+                mix.apply_duck(Some(duck));
+            }
+            for (i, input) in mix.inputs.iter_mut().enumerate() {
+                if let Some(auto) = user.slot_automation.get(i).copied().flatten() {
+                    input.automation = Some(SlotAutomation {
+                        target: auto.target,
+                        points: auto.points,
+                        count: auto.count,
+                        pos: 0,
+                        cursor: 0,
+                    });
+                }
+            }
         }
 
         Box::new(gen)
@@ -392,6 +427,41 @@ impl GraphGeneration {
             routing.trimmer.set_lfe_channels(lfe_channels);
         }
 
+        // Phase 5 S1/S2/S3 config surface: per-slot channel trims, sends,
+        // and the aux bus are applied from `EngineConfig` here so a host
+        // that configures them (construction, config-file load) gets them
+        // wired. On the generation path the sticky user-state replay (in
+        // `build_with_state`) runs AFTER this and wins for live state; on
+        // the in-place `apply_config` path (engine `set_config` without a
+        // bus-size change) these are the authoritative values.
+        {
+            let mix = gen_node!(self, node_id::MIX, Mix);
+            for entry in &config.mix_trims {
+                if entry.slot < mix.inputs.len() {
+                    mix.inputs[entry.slot].trim.set_channel(
+                        entry.channel,
+                        entry.gain_db,
+                        entry.invert,
+                    );
+                }
+            }
+            for entry in &config.mix_sends {
+                if entry.slot < mix.inputs.len() {
+                    mix.inputs[entry.slot].send.master_gain = entry.master_gain.clamp(0.0, 1.0);
+                    mix.inputs[entry.slot].send.aux_gain = entry.aux_gain.clamp(0.0, 1.0);
+                }
+            }
+            mix.apply_aux(config.aux.enabled, config.aux.return_gain);
+            // Phase 6: the aux insert (global convolution) rides the
+            // generation like the rest of the aux config.
+            mix.apply_aux_insert(
+                config.aux.insert_enabled,
+                config.aux.insert_wet_mix,
+                sample_rate,
+                config.aux.insert_ir_path.as_deref(),
+            );
+        }
+
         // Low-power mode disables the expensive nodes (folded in from the
         // former `apply_performance_mode`).
         if config.performance_mode == PerformanceMode::LowPower {
@@ -454,10 +524,36 @@ impl DspGraph {
     /// [`GraphControlHandle::publish_generation`]; here it also syncs the
     /// shell-level mode fields.
     pub fn reconfigure(&mut self, config: &EngineConfig) {
+        // Flush queued control commands into the ACTIVE generation first so
+        // their effects are mirrored onto the sticky user state BEFORE the
+        // snapshot below is taken: a command enqueued before this call (e.g.
+        // SetTrackGain followed by AddTrack growing the bus) must survive
+        // into the fresh generation. Safe under the same contract as
+        // `drain_queued_control` — no other thread may be processing audio.
+        self.drain_queued_control();
         let sample_rate = self.sample_rate;
         let layout = self.multichannel_layout.clone();
-        let gen =
-            GraphGeneration::build_with_state(config, sample_rate, &layout, self.bus.snapshot());
+        let mut user = self.bus.snapshot();
+        // Phase 5 S4: ducking and automation tracks are generation state
+        // too — carry them over from the live generation so a reconfig never
+        // drops a configured duck or a lane's automation track. (The
+        // cross-thread `publish_generation` path does not carry them; hosts
+        // re-apply.)
+        if let GraphNode::Mix(mix) = &self.active.nodes[node_id::MIX] {
+            user.duck = mix.duck.map(|d| d.cfg);
+            user.slot_automation = mix
+                .inputs
+                .iter()
+                .map(|input| {
+                    input.automation.map(|a| SlotAutomationData {
+                        target: a.target,
+                        points: a.points,
+                        count: a.count,
+                    })
+                })
+                .collect();
+        }
+        let gen = GraphGeneration::build_with_state(config, sample_rate, &layout, user);
         self.precision_mode = config.precision_mode;
         self.performance_mode = config.performance_mode;
         self.volume_fade_ms = config.volume_fade_ms as f32;

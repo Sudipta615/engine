@@ -391,6 +391,18 @@ impl AudioEngine {
 
             let is_bp = stats.bit_perfect;
 
+            // ── Endpoint telemetry (routing matrix) ────────────────────
+            let endpoints = self
+                .extra_endpoints
+                .iter()
+                .map(|ep| crate::playback_info::EndpointInfo {
+                    device: ep.config.device.clone(),
+                    sample_rate: ep.rate,
+                    gain: ep.gain,
+                    pending_frames: ep.pending_frames(),
+                })
+                .collect::<Vec<_>>();
+
             // ── Lane telemetry (Phase 4 S6) ────────────────────────────
             let lanes = self
                 .lanes
@@ -421,6 +433,7 @@ impl AudioEngine {
                 next.nan_count = next.nan_count.saturating_add(new_nans as u64);
                 next.engine_stats = Some(stats.clone());
                 next.lanes = lanes.clone();
+                next.endpoints = endpoints.clone();
                 #[cfg(feature = "audio-output")]
                 {
                     next.output_info = out_info.clone();
@@ -519,7 +532,20 @@ impl AudioEngine {
     }
 
     pub fn set_config(&mut self, config: config::EngineConfig) {
-        self.graph.apply_config(&config);
+        // Phase 5: bus-topology config (slot count, per-slot trims/sends,
+        // aux) cannot be applied in place — the slot count sizes the
+        // generation's bus and the trims/sends/aux ride the generation. Route
+        // those through the glitch-free rebuild; everything else applies in
+        // place as before.
+        let bus_changed = config.mix_slots != self.config.mix_slots
+            || config.mix_trims != self.config.mix_trims
+            || config.mix_sends != self.config.mix_sends
+            || config.aux != self.config.aux;
+        if bus_changed {
+            self.graph.reconfigure(&config);
+        } else {
+            self.graph.apply_config(&config);
+        }
 
         // Graphic EQ layer (§9.1): when enabled in config it is the
         // authoritative source for the pipeline's EQ bands and preamp (see

@@ -132,6 +132,30 @@ loopback thread ──▶ capture ring (FixedFrameBuffer)
 Capture is independent of playback state — you can record system audio while
 the engine is idle or playing through a different endpoint.
 
+### Additional endpoints (multi-endpoint routing matrix, v3.7.0)
+
+```
+master stereo block (output domain, primary rate)
+        │  fan-out on the decode loop, once per flushed block
+        ▼
+per endpoint: SPSC ring (decode loop pushes, backend drains)
+        │  resampler master → endpoint rate (None when rates match)
+        │  endpoint-rate final limiter (resampled frames only)
+        │  per-endpoint gain
+        ▼
+endpoint backend's realtime callback ──▶ device
+```
+
+Each `EngineConfig.additional_endpoints` entry drives one extra output
+device independently: its own lock-free ring, its own rate domain, its own
+final limiter sized for that rate, and its own level. A stuck endpoint
+buffers at most `MAX_ENDPOINT_PENDING_FRAMES` ahead of its ring (oldest
+frames dropped first) and can never take down the primary device. Clock
+drift between independent devices is deliberately not corrected — each
+endpoint resamples against its own nominal clock (drift correction is a
+documented follow-up). Same-rate endpoints reuse the master's already-
+limited block untouched.
+
 ### Loudness analysis
 
 ```
