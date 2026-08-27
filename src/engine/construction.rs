@@ -67,6 +67,7 @@ impl AudioEngine {
         #[cfg(feature = "audio-output")]
         let (output_event_tx, output_event_rx) = channel::bounded(64);
         let output_sample_rate = DEFAULT_SAMPLE_RATE;
+        let configured_endpoints = config.endpoints.clone();
         let graph = DspGraph::from_config(&config, output_sample_rate as f32);
         let graphic_eq = GraphicEq::from_config(&config.graphic_eq);
         let info = PlaybackInfo {
@@ -115,6 +116,12 @@ impl AudioEngine {
             recovery: RecoveryState::default(),
             scratch: EngineScratch::default(),
             lanes: Vec::new(),
+            #[cfg(feature = "audio-output")]
+            endpoints: Vec::new(),
+            #[cfg(feature = "audio-output")]
+            endpoint_configs: configured_endpoints,
+            #[cfg(feature = "audio-output")]
+            endpoint_dropped_frames: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -151,6 +158,59 @@ impl AudioEngine {
     pub(crate) fn push_to_sink(&self, samples: &[f32], channels: usize) -> usize {
         self.analyzer.update(samples, channels);
         self.sample_sink.push_interleaved(samples, channels)
+    }
+
+    #[cfg(feature = "audio-output")]
+    pub fn endpoint_dropped_frames(&self) -> u64 {
+        self.endpoint_dropped_frames
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Fan out a processed block to all configured physical endpoint workers.
+    /// Each endpoint receives its own copy and applies its own gain/enabled
+    /// policy before its private output ring is written.
+    #[cfg(feature = "audio-output")]
+    /// Deliver one processed block independently to every enabled endpoint.
+    /// Endpoint backpressure is local: a short write increments only that
+    /// endpoint's drop counter and never changes primary-sink delivery.
+    pub(crate) fn push_to_endpoints(&self, samples: &[f32], channels: usize) {
+        for endpoint in &self.endpoints {
+            if !endpoint.config().enabled {
+                continue;
+            }
+            let gain = endpoint.config().gain;
+            if (gain - 1.0).abs() <= f32::EPSILON {
+                let accepted = endpoint.ring().push_interleaved(samples, channels);
+                self.endpoint_dropped_frames.fetch_add(
+                    (samples.len() / channels.max(1)).saturating_sub(accepted) as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                continue;
+            }
+            let frames = samples.len() / channels.max(1);
+            if frames > crate::engine::MIX_BLOCK_FRAMES {
+                continue;
+            }
+            let mut scaled =
+                [0.0f32; crate::engine::MIX_BLOCK_FRAMES * crate::buffer::MAX_CHANNELS];
+            for (dst, src) in scaled[..samples.len()].iter_mut().zip(samples) {
+                *dst = *src * gain;
+            }
+            let accepted = endpoint
+                .ring()
+                .push_interleaved(&scaled[..samples.len()], channels);
+            self.endpoint_dropped_frames.fetch_add(
+                (frames.saturating_sub(accepted)) as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+    }
+
+    #[cfg(feature = "audio-output")]
+    pub(crate) fn reset_endpoints(&self) {
+        for endpoint in &self.endpoints {
+            endpoint.reset();
+        }
     }
 
     /// Access the shared real-time analyzer (levels + spectrum).

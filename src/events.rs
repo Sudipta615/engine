@@ -127,4 +127,6 @@ pub enum OutputEvent {
         /// Name of the disconnected audio device.
         device: String,
     },
+    /// A configured secondary endpoint reported a transport failure.
+    EndpointError { endpoint: String, message: String },
 }

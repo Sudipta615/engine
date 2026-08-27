@@ -364,10 +364,10 @@ mod network {
                 self.fully_downloaded = true;
                 self.accepts_ranges = false;
             } else {
-                return Err(io::Error::new(
-                    ErrorKind::Other,
-                    format!("unexpected HTTP status {} for Range request", status),
-                ));
+                return Err(io::Error::other(format!(
+                    "unexpected HTTP status {} for Range request",
+                    status
+                )));
             }
 
             Ok(())

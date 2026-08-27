@@ -373,6 +373,30 @@ impl EngineHandle {
         let _ = self.send_command(EngineCommand::SetOutputBackend(backend));
     }
 
+    /// Configure additional physical output endpoints.
+    #[cfg(feature = "audio-output")]
+    pub fn set_endpoints(&self, endpoints: Vec<config::EndpointConfig>) {
+        let _ = self.send_command(EngineCommand::SetEndpoints(endpoints));
+    }
+
+    /// Replace the configured physical endpoint fan-out list.
+    #[cfg(feature = "audio-output")]
+    pub fn clear_endpoints(&self) {
+        self.set_endpoints(Vec::new());
+    }
+
+    /// Replace or add one endpoint while preserving all other configured endpoints.
+    #[cfg(feature = "audio-output")]
+    pub fn set_endpoint(&self, endpoint: config::EndpointConfig) {
+        let _ = self.send_command(EngineCommand::UpsertEndpoint(endpoint));
+    }
+
+    /// Remove one configured endpoint by its stable identifier.
+    #[cfg(feature = "audio-output")]
+    pub fn remove_endpoint(&self, id: impl Into<String>) {
+        let _ = self.send_command(EngineCommand::RemoveEndpoint(id.into()));
+    }
+
     /// Select output device by name (or `None` for default).
     pub fn set_output_device(&self, device_name: Option<String>) {
         let _ = self.send_command(EngineCommand::SetOutputDevice(device_name));

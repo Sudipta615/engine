@@ -39,7 +39,7 @@ impl AsioRenderContext {
     ) -> Self {
         Self {
             ring_buffer,
-            num_channels: num_channels.max(1).min(MAX_CHANNELS),
+            num_channels: num_channels.clamp(1, MAX_CHANNELS),
             sample_type,
             buffer_size_frames,
             dither_enabled: AtomicBool::new(false),
@@ -74,7 +74,7 @@ impl AsioRenderContext {
 
         // Thread-local scratch buffer for interleaved f32 frames
         thread_local! {
-            static SCRATCH: std::cell::RefCell<Vec<f32>> = std::cell::RefCell::new(Vec::new());
+            static SCRATCH: std::cell::RefCell<Vec<f32>> = const { std::cell::RefCell::new(Vec::new()) };
         }
 
         SCRATCH.with(|cell| {
@@ -224,7 +224,7 @@ impl AsioRenderContext {
         let want_bytes = frames * self.dsd_frame_width;
 
         thread_local! {
-            static DSD_SCRATCH: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(Vec::new());
+            static DSD_SCRATCH: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
         }
 
         DSD_SCRATCH.with(|cell| {
