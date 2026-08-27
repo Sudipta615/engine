@@ -100,8 +100,10 @@ src/
 │                             #   by concern into construction / access /
 │                             #   controls / lifecycle / process / limiter /
 │                             #   report / plan / swap / nodes/mix/
-│                             #   (MixBusNode split into mod/envelope/sum:
-│                             #   N-slot + N-channel bus; Phase 2: per-node
+│                             #   (MixBusNode split into mod/envelope/sum/
+│                             #   sends: N-slot + N-channel bus + aux-bus
+│                             #   accumulator with post-fader lane sends;
+│                             #   Phase 2: per-node
 │                             #   SPSC control queues + publish/swap/retire
 │                             #   live generation swap; Phase 3: engine
 │                             #   drives the graph end-to-end; Phase 4 S1+S2:
@@ -110,7 +112,11 @@ src/
 │                             #   S3: pan laws + slot level meters; S4:
 │                             #   program-gated ducking; S5: automation
 │                             #   tracks; S6: engine lane registry feeding
-│                             #   slots ≥ 2 via process_block_lanes)
+│                             #   slots ≥ 2 via process_block_lanes;
+│                             #   Phase 5: per-slot PerChannelTrim banks,
+│                             #   post-fader SlotSend taps, and the AuxBus
+│                             #   (sends.rs) with aux metering/ducking and
+│                             #   a Phase-6 insert seam)
 │
 ├── output/                   # ── Output backends ──
 │   ├── mod.rs                # Module wiring + re-exports
