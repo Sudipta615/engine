@@ -47,6 +47,8 @@
 //! lock-free, and the renderer's per-path state is preallocated flat at
 //! `prepare`.
 
+use super::math::Vec3;
+
 /// Default head radius (m) — the classic 8.75 cm half-head-width.
 pub const DEFAULT_HEAD_RADIUS: f32 = 0.0875;
 
@@ -389,6 +391,142 @@ pub struct HrtfDataset {
     taps: usize,
 }
 
+/// A single measured head-related impulse response: the (unit) direction of
+/// the source in the layer's coordinate system (`+X` right, `+Y` front,
+/// `+Z` up) and the left / right ear impulse responses at the corpus's
+/// recorded sample rate. Directions and IRs are 3D/audio vectors in the
+/// layer's purely-cartesian convention — this is the data model a `.sofa`
+/// HDF5 export is reduced to before loading (SOFA's `SourcePosition` grid +
+/// `Data.IR` / `Data.SamplingRate`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HrtfMeasurement {
+    /// Unit source direction `[x, y, z]` (`+X` right, `+Y` front, `+Z` up).
+    pub direction: [f32; 3],
+    /// Left-ear impulse response, time-ordered, at
+    /// [`HrtfCorpus::sample_rate`].
+    pub left: Vec<f32>,
+    /// Right-ear impulse response, time-ordered, at
+    /// [`HrtfCorpus::sample_rate`].
+    pub right: Vec<f32>,
+}
+
+/// A measured HRTF corpus (SOFA-style): the set of measurement directions
+/// with their paired impulse responses plus the recording rate and optional
+/// provenance. Hosts build this from a measured corpus (or load it from the
+/// simple JSON form via [`load_hrtf_corpus_json`]) and hand it to
+/// [`HrtfDataset::from_corpus`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct HrtfCorpus {
+    /// Sample rate the IRs were recorded at (e.g. 44.1 / 48 kHz).
+    pub sample_rate: u32,
+    /// Optional provenance / corpus name (CIPIC, TU-Berlin, KEMAR, …).
+    pub source: Option<String>,
+    /// The measurements.
+    pub measurements: Vec<HrtfMeasurement>,
+}
+
+/// Optional normalization applied to each (left, right) ear pair when
+/// loading a corpus —— many raw measured HRTFs are unnormalized; a single
+/// peak normalization is the standard first step.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HrtfNormalize {
+    /// No normalization — keep the raw sample amplitudes.
+    #[default]
+    None,
+    /// Divide every ear pair by its overall peak magnitude (unity peak).
+    Peak,
+}
+
+/// Controls [`HrtfDataset::from_corpus`]: tap length, target sample rate
+/// (resamples the corpus if it differs), and optional normalization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HrtfLoadOptions {
+    /// Impulse-response length in taps (≤ [`MAX_HRTF_TAPS`]); shorter IRs
+    /// are zero-padded, longer ones truncated.
+    pub taps: usize,
+    /// Sample rate to render at; IRs are resampled to this rate if
+    /// `corpus.sample_rate` differs.
+    pub target_sample_rate: u32,
+    /// Optional peak normalization.
+    pub normalize: HrtfNormalize,
+}
+
+impl Default for HrtfLoadOptions {
+    fn default() -> Self {
+        Self {
+            taps: 64,
+            target_sample_rate: 48_000,
+            normalize: HrtfNormalize::None,
+        }
+    }
+}
+
+/// Errors from loading a measured HRTF corpus (spec §62 seam). Every failure
+/// is a typed error — an invalid corpus must never reach the audio thread.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HrtfLoadError {
+    /// The corpus has no measurements (or no grid after projection).
+    Empty,
+    /// The impulse-response length is outside the supported range.
+    Taps { got: usize, max: usize },
+    /// A measurement direction is not a finite unit vector.
+    DirectionNonFinite,
+    /// The measurement directions do not form a regular `azimuth × elevation`
+    /// full Cartesian product (the mesh is irregular), so bilinear
+    /// interpolation would be ill-defined — refuse rather than interpolate
+    /// wrongly.
+    IrregularMesh,
+    /// A raw IR contains a non-finite sample.
+    NonFiniteIr,
+    /// Corpus JSON I/O or parsing failed.
+    Json(String),
+}
+
+impl std::fmt::Display for HrtfLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HrtfLoadError::Empty => write!(f, "hrtf corpus: no measurements"),
+            HrtfLoadError::Taps { got, max } => {
+                write!(f, "hrtf corpus: taps {got} out of range (max {max})")
+            }
+            HrtfLoadError::DirectionNonFinite => {
+                write!(f, "hrtf corpus: non-finite or zero measurement direction")
+            }
+            HrtfLoadError::IrregularMesh => write!(
+                f,
+                "hrtf corpus: measurement directions are not a regular azimuth × elevation grid",
+            ),
+            HrtfLoadError::NonFiniteIr => write!(f, "hrtf corpus: non-finite IR sample"),
+            HrtfLoadError::Json(e) => write!(f, "hrtf corpus json: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for HrtfLoadError {}
+
+/// Resample a mono impulse response from `src_rate` to `dst_rate` by
+/// piecewise-linear interpolation of the samples (adequate for impulse
+/// responses; the renderer'll re-convolve them at block rate). `dst_rate`
+/// and `src_rate` are ≥ 1. Allocation-free per sample; returns a new vector
+/// of length `ceil(len(src)·dst/src)`.
+pub(crate) fn resample_impulse(src: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32> {
+    let (sr, dr) = (src_rate.max(1) as f64, dst_rate.max(1) as f64);
+    if (sr - dr).abs() < 1e-9 {
+        return src.to_vec();
+    }
+    let out_len = ((src.len() as f64) * dr / sr).ceil().max(1.0) as usize;
+    let mut out = Vec::with_capacity(out_len);
+    for n in 0..out_len {
+        let t = n as f64 * sr / dr;
+        let i = t.floor() as usize;
+        let frac = (t - i as f64) as f32;
+        let a = src.get(i).copied().unwrap_or(0.0);
+        let b = src.get(i + 1).copied().unwrap_or(0.0);
+        out.push(a + frac * (b - a));
+    }
+    out
+}
+
 impl HrtfDataset {
     /// Build a dataset from explicit grids and IRs (flat `az × el × 2 ×
     /// taps`). Control path. `Err` on non-monotonic grids, out-of-range
@@ -499,6 +637,164 @@ impl HrtfDataset {
         }
     }
 
+    /// Build a dataset from a **measured corpus** (SOFA-style): a set of
+    /// measurement directions each carrying a left/right impulse response at
+    /// `corpus.sample_rate`. This is the seam hosts use to feed real
+    /// head-related impulse responses (e.g. from a CIPIC / TU-Berlin / KEMAR
+    /// corpus exported out of a `.sofa` HDF5 file into the simple
+    /// [`HrtfCorpus`] data model) into the renderer, replacing the synthetic
+    /// generator.
+    ///
+    /// On the control path it: validates every measurement (finite unit
+    /// direction, finite non-empty IRs), resamples each IR to
+    /// `options.target_sample_rate` if the corpus was recorded at a different
+    /// rate (piecewise-linear, allocation-free per call), trims/pads each to
+    /// `options.taps` (≤ [`MAX_HRTF_TAPS`]), optionally peak-normalizes each
+    /// ear pair, then groups the directions into the regular
+    /// `azimuths × elevations` grid the renderer interpolates. The measurement
+    /// directions must form a **full Cartesian product** of the distinct
+    /// azimuths and elevations present (the common regular SOFA/corpus mesh);
+    /// an irregular mesh returns [`HrtfLoadError::IrregularMesh`] with the
+    /// offending detail rather than quietly interpolating a wrong grid.
+    pub fn from_corpus(
+        corpus: &HrtfCorpus,
+        options: &HrtfLoadOptions,
+    ) -> Result<Self, HrtfLoadError> {
+        if corpus.measurements.is_empty() {
+            return Err(HrtfLoadError::Empty);
+        }
+        let taps = options.taps;
+        if taps == 0 || taps > MAX_HRTF_TAPS {
+            return Err(HrtfLoadError::Taps {
+                got: taps,
+                max: MAX_HRTF_TAPS,
+            });
+        }
+        let target_rate = options.target_sample_rate.max(1);
+        let src_rate = corpus.sample_rate.max(1);
+        let need_resample = src_rate != target_rate;
+
+        // Collect the distinct azimuth/elevation grid values (snap float
+        // forms of the direction to degrees in the renderer convention).
+        let mut azimuths: Vec<f32> = Vec::new();
+        let mut elevations: Vec<f32> = Vec::new();
+        for m in &corpus.measurements {
+            let d = Vec3::new(m.direction[0], m.direction[1], m.direction[2]);
+            let dn = d.normalized().ok_or(HrtfLoadError::DirectionNonFinite)?;
+            let az = dn.azimuth_rad().to_degrees().rem_euclid(360.0);
+            let el = dn.elevation_rad().to_degrees();
+            if !az.is_finite() || !el.is_finite() {
+                return Err(HrtfLoadError::DirectionNonFinite);
+            }
+            if let Some(a) = azimuths.iter().find(|&&x| (x - az).abs() < 1e-3) {
+                let _ = a;
+            } else {
+                azimuths.push(az);
+            }
+            if !elevations.iter().any(|&x| (x - el).abs() < 1e-3) {
+                elevations.push(el);
+            }
+        }
+        azimuths.sort_by(|a, b| a.total_cmp(b));
+        elevations.sort_by(|a, b| a.total_cmp(b));
+        if azimuths.is_empty() || elevations.is_empty() {
+            return Err(HrtfLoadError::Empty);
+        }
+        // Verify a full Cartesian product (regular mesh) so bilinear
+        // interpolation is exact: each (az, el) pair must appear exactly once.
+        let mut seen = std::collections::HashSet::with_capacity(corpus.measurements.len());
+        let mut slabs: Vec<Vec<(Vec<f32>, Vec<f32>)>> = Vec::new();
+        for m in &corpus.measurements {
+            let d = Vec3::new(m.direction[0], m.direction[1], m.direction[2]);
+            let dn = d.normalized().ok_or(HrtfLoadError::DirectionNonFinite)?;
+            let az = dn.azimuth_rad().to_degrees().rem_euclid(360.0);
+            let el = dn.elevation_rad().to_degrees();
+            let ia = azimuths
+                .iter()
+                .position(|&x| (x - az).abs() < 1e-3)
+                .ok_or(HrtfLoadError::IrregularMesh)?;
+            let ie = elevations
+                .iter()
+                .position(|&x| (x - el).abs() < 1e-3)
+                .ok_or(HrtfLoadError::IrregularMesh)?;
+            let key = ia * elevations.len() + ie;
+            if !seen.insert(key) {
+                return Err(HrtfLoadError::IrregularMesh);
+            }
+            while slabs.len() <= ia {
+                slabs.push(Vec::new());
+            }
+            while slabs[ia].len() <= ie {
+                slabs[ia].push((Vec::new(), Vec::new()));
+            }
+            let (left, right) = if need_resample {
+                (
+                    resample_impulse(&m.left, src_rate, target_rate),
+                    resample_impulse(&m.right, src_rate, target_rate),
+                )
+            } else {
+                (m.left.clone(), m.right.clone())
+            };
+            slabs[ia][ie] = (left, right);
+        }
+        drop(seen);
+        if slabs.iter().any(|col| col.len() != elevations.len()) {
+            return Err(HrtfLoadError::IrregularMesh);
+        }
+
+        // Normalize (optional) then trim/pad to `taps` and emit flat storage.
+        let mut irs: Vec<f32> =
+            Vec::with_capacity(azimuths.len() * elevations.len() * Ear::COUNT * taps);
+        for &az in &azimuths {
+            let ia = azimuths
+                .iter()
+                .position(|&x| (x - az).abs() < 1e-3)
+                .unwrap();
+            for &el in &elevations {
+                let ie = elevations
+                    .iter()
+                    .position(|&x| (x - el).abs() < 1e-3)
+                    .unwrap();
+                let (l, r) = slabs[ia][ie].clone();
+                let (mut left, mut right) = (l, r);
+                if left.len() > taps {
+                    left.truncate(taps);
+                } else {
+                    left.resize(taps, 0.0);
+                }
+                if right.len() > taps {
+                    right.truncate(taps);
+                } else {
+                    right.resize(taps, 0.0);
+                }
+                if matches!(options.normalize, HrtfNormalize::Peak) {
+                    let peak = left
+                        .iter()
+                        .chain(right.iter())
+                        .fold(0.0f32, |m, v| m.max(v.abs()))
+                        .max(1e-12);
+                    for v in left.iter_mut() {
+                        *v /= peak;
+                    }
+                    for v in right.iter_mut() {
+                        *v /= peak;
+                    }
+                }
+                if left.iter().any(|v| !v.is_finite()) || right.iter().any(|v| !v.is_finite()) {
+                    return Err(HrtfLoadError::NonFiniteIr);
+                }
+                irs.extend_from_slice(&left);
+                irs.extend_from_slice(&right);
+            }
+        }
+        Ok(HrtfDataset {
+            azimuths,
+            elevations,
+            irs,
+            taps,
+        })
+    }
+
     pub fn azimuths(&self) -> &[f32] {
         &self.azimuths
     }
@@ -579,6 +875,96 @@ impl HrtfDataset {
             out[k] = lo + fe * (hi - lo);
         }
     }
+}
+
+/// Save a measured HRTF corpus to a compact JSON file — the portable,
+/// pure-Rust interchange form of a `.sofa` HDF5 export (positions + IR
+/// grids + rate). Hosts use [`load_hrtf_corpus_json`] to read it back. The
+/// engine deliberately avoids HDF5 bindings (not pure Rust); the JSON model
+/// carries the same data SOFA's `SourcePosition` / `Data.IR` /
+/// `Data.SamplingRate` do.
+pub fn save_hrtf_corpus_json(
+    path: &std::path::Path,
+    corpus: &HrtfCorpus,
+) -> Result<(), HrtfLoadError> {
+    use serde_json::{json, Value};
+    let measurements: Vec<Value> = corpus
+        .measurements
+        .iter()
+        .map(|m| {
+            let left: Vec<f64> = m.left.iter().map(|&v| v as f64).collect();
+            let right: Vec<f64> = m.right.iter().map(|&v| v as f64).collect();
+            json!({ "direction": m.direction, "left": left, "right": right })
+        })
+        .collect();
+    let root = json!({ "sample_rate": corpus.sample_rate, "source": corpus.source, "measurements": measurements });
+    let bytes = serde_json::to_vec_pretty(&root).map_err(|e| HrtfLoadError::Json(e.to_string()))?;
+    std::fs::write(path, bytes).map_err(|e| HrtfLoadError::Json(e.to_string()))
+}
+
+/// Load a measured HRTF corpus from a JSON file written by
+/// [`save_hrtf_corpus_json`] (or produced by a `.sofa` → JSON exporter). The
+/// corpus is only data; run it through [`HrtfDataset::from_corpus`] to
+/// validate and build the renderable grid.
+pub fn load_hrtf_corpus_json(path: &std::path::Path) -> Result<HrtfCorpus, HrtfLoadError> {
+    use serde_json::Value;
+    let text = std::fs::read_to_string(path).map_err(|e| HrtfLoadError::Json(e.to_string()))?;
+    let root: Value =
+        serde_json::from_str(&text).map_err(|e| HrtfLoadError::Json(e.to_string()))?;
+    let sample_rate = root
+        .get("sample_rate")
+        .and_then(Value::as_u64)
+        .map(|r| r as u32)
+        .ok_or_else(|| HrtfLoadError::Json("missing sample_rate".into()))?;
+    let source = root
+        .get("source")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
+    let ms = root
+        .get("measurements")
+        .and_then(Value::as_array)
+        .ok_or_else(|| HrtfLoadError::Json("missing measurements array".into()))?;
+    let mut measurements = Vec::with_capacity(ms.len());
+    for (i, m) in ms.iter().enumerate() {
+        let dir = m
+            .get("direction")
+            .and_then(Value::as_array)
+            .ok_or_else(|| HrtfLoadError::Json(format!("measurement {i}: missing direction")))?;
+        if dir.len() != 3 {
+            return Err(HrtfLoadError::Json(format!(
+                "measurement {i}: direction not 3D"
+            )));
+        }
+        let direction = [
+            dir[0].as_f64().unwrap_or(0.0) as f32,
+            dir[1].as_f64().unwrap_or(0.0) as f32,
+            dir[2].as_f64().unwrap_or(0.0) as f32,
+        ];
+        let left = m
+            .get("left")
+            .and_then(Value::as_array)
+            .ok_or_else(|| HrtfLoadError::Json(format!("measurement {i}: missing left")))?
+            .iter()
+            .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+            .collect();
+        let right = m
+            .get("right")
+            .and_then(Value::as_array)
+            .ok_or_else(|| HrtfLoadError::Json(format!("measurement {i}: missing right")))?
+            .iter()
+            .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+            .collect();
+        measurements.push(HrtfMeasurement {
+            direction,
+            left,
+            right,
+        });
+    }
+    Ok(HrtfCorpus {
+        sample_rate,
+        source,
+        measurements,
+    })
 }
 
 #[cfg(test)]
@@ -999,5 +1385,189 @@ mod tests {
         assert!(
             HrtfDataset::from_planes(vec![0.0, 15.0], vec![0.0, 15.0], 16, vec![0.0; 128]).is_ok()
         );
+    }
+
+    /// Unit direction for `(azimuth, elevation)` in the layer's convention:
+    /// `+Y` front, `+X` right, `+Z` up.
+    fn unit(az_deg: f32, el_deg: f32) -> [f32; 3] {
+        let az = az_deg.to_radians();
+        let el = el_deg.to_radians();
+        let horiz = el.cos();
+        [az.sin() * horiz, az.cos() * horiz, el.sin()]
+    }
+
+    fn meas(az: f32, el: f32, taps: usize, seed: f32) -> HrtfMeasurement {
+        let lower = (seed * 0.01 + 1.0).abs().max(1e-3);
+        HrtfMeasurement {
+            direction: unit(az, el),
+            left: (0..taps).map(|i| lower + i as f32 * 0.001).collect(),
+            right: (0..taps).map(|i| lower + i as f32 * 0.0015 + 0.1).collect(),
+        }
+    }
+
+    #[test]
+    fn from_corpus_builds_grid_and_resamples() {
+        // az {0, 90} × el {0, 45} — a full regular product at 96 kHz.
+        let corpus = HrtfCorpus {
+            sample_rate: 96_000,
+            source: Some("test-corpus".into()),
+            measurements: vec![
+                meas(0.0, 0.0, 128, 1.0),
+                meas(90.0, 0.0, 128, 2.0),
+                meas(0.0, 45.0, 128, 3.0),
+                meas(90.0, 45.0, 128, 4.0),
+            ],
+        };
+        let ds = HrtfDataset::from_corpus(
+            &corpus,
+            &HrtfLoadOptions {
+                taps: 32,
+                target_sample_rate: 48_000,
+                normalize: HrtfNormalize::None,
+            },
+        )
+        .expect("regular corpus loads");
+        assert_eq!(ds.azimuths().len(), 2);
+        assert_eq!(ds.elevations().len(), 2);
+        assert_eq!(ds.taps(), 32);
+        // The resampled rate halves the tap count; taps are then trimmed to 32.
+        assert!((ds.azimuths()[0].abs()) < 1e-3);
+        assert!((ds.azimuths()[1] - 90.0).abs() < 1e-3);
+        assert!((ds.elevations()[0].abs()) < 1e-3);
+        assert!((ds.elevations()[1] - 45.0).abs() < 1e-3);
+        // Every IR is exactly `taps` long and finite.
+        for ia in 0..2 {
+            for ie in 0..2 {
+                for ear in [Ear::Left, Ear::Right] {
+                    assert_eq!(ds.ir(ia, ie, ear).len(), 32);
+                    assert!(ds.ir(ia, ie, ear).iter().all(|v| v.is_finite()));
+                }
+            }
+        }
+        // The loaded dataset interpolates exactly at its grid points.
+        let mut out = [0.0f32; 32];
+        ds.bilinear_interpolate(90.0, 45.0, Ear::Left, &mut out);
+        let expect = ds.ir(1, 1, Ear::Left);
+        for (o, e) in out.iter().zip(expect) {
+            assert!((o - e).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn from_corpus_peak_normalizes() {
+        let corpus = HrtfCorpus {
+            sample_rate: 48_000,
+            source: None,
+            measurements: vec![
+                meas(0.0, 0.0, 16, 4.0),
+                meas(90.0, 0.0, 16, 5.0),
+                meas(0.0, 45.0, 16, 6.0),
+                meas(90.0, 45.0, 16, 7.0),
+            ],
+        };
+        let ds = HrtfDataset::from_corpus(
+            &corpus,
+            &HrtfLoadOptions {
+                taps: 16,
+                target_sample_rate: 48_000,
+                normalize: HrtfNormalize::Peak,
+            },
+        )
+        .expect("loads");
+        let mut peak = 0.0f32;
+        for ia in 0..2 {
+            for ie in 0..2 {
+                for ear in [Ear::Left, Ear::Right] {
+                    for &v in ds.ir(ia, ie, ear) {
+                        peak = peak.max(v.abs());
+                    }
+                }
+            }
+        }
+        assert!((peak - 1.0).abs() < 1e-3, "unity peak, got {peak}");
+    }
+
+    #[test]
+    fn from_corpus_rejects_irregular_mesh() {
+        // Three of the four product points, plus a lone measurement at an az
+        // (180°, i.e. direction [-1, 0, 0]) that breaks the product.
+        let mut corpus = HrtfCorpus {
+            sample_rate: 48_000,
+            source: None,
+            measurements: vec![
+                meas(0.0, 0.0, 16, 1.0),
+                meas(90.0, 0.0, 16, 2.0),
+                meas(0.0, 45.0, 16, 3.0),
+                meas(180.0, 0.0, 16, 4.0),
+            ],
+        };
+        assert!(matches!(
+            HrtfDataset::from_corpus(&corpus, &HrtfLoadOptions::default()),
+            Err(HrtfLoadError::IrregularMesh)
+        ));
+        // Missing a product point is also irregular.
+        corpus.measurements.truncate(3);
+        assert!(matches!(
+            HrtfDataset::from_corpus(&corpus, &HrtfLoadOptions::default()),
+            Err(HrtfLoadError::IrregularMesh)
+        ));
+    }
+
+    #[test]
+    fn from_corpus_rejects_empty_and_bad_taps() {
+        let empty = HrtfCorpus {
+            sample_rate: 48_000,
+            source: None,
+            measurements: vec![],
+        };
+        assert!(matches!(
+            HrtfDataset::from_corpus(&empty, &HrtfLoadOptions::default()),
+            Err(HrtfLoadError::Empty)
+        ));
+        let bad_taps = HrtfCorpus {
+            sample_rate: 48_000,
+            source: None,
+            measurements: vec![meas(0.0, 0.0, 16, 1.0)],
+        };
+        let opts = HrtfLoadOptions {
+            taps: 0,
+            ..HrtfLoadOptions::default()
+        };
+        assert!(matches!(
+            HrtfDataset::from_corpus(&bad_taps, &opts),
+            Err(HrtfLoadError::Taps { .. })
+        ));
+    }
+
+    #[test]
+    fn corpus_json_round_trip() {
+        let corpus = HrtfCorpus {
+            sample_rate: 48_000,
+            source: Some("json-corpus".into()),
+            measurements: vec![
+                meas(0.0, 0.0, 8, 1.0),
+                meas(90.0, 0.0, 8, 2.0),
+                meas(0.0, 45.0, 8, 3.0),
+                meas(90.0, 45.0, 8, 5.0),
+            ],
+        };
+        let dir = std::env::temp_dir().join("freebuff_hrtf_corpus_test.json");
+        save_hrtf_corpus_json(&dir, &corpus).expect("saves");
+        let loaded = load_hrtf_corpus_json(&dir).expect("loads");
+        let _ = std::fs::remove_file(&dir);
+        assert_eq!(loaded.sample_rate, corpus.sample_rate);
+        assert_eq!(loaded.source, corpus.source);
+        assert_eq!(loaded.measurements.len(), 4);
+        assert_eq!(
+            loaded.measurements[0].direction,
+            corpus.measurements[0].direction
+        );
+        assert_eq!(loaded.measurements[0].left, corpus.measurements[0].left);
+        assert_eq!(loaded.measurements[3].right, corpus.measurements[3].right);
+        // The loaded corpus feeds from_corpus the same way the original does.
+        let a = HrtfDataset::from_corpus(&corpus, &HrtfLoadOptions::default()).expect("orig");
+        let b = HrtfDataset::from_corpus(&loaded, &HrtfLoadOptions::default()).expect("loaded");
+        assert_eq!(a.azimuths(), b.azimuths());
+        assert_eq!(a.elevations(), b.elevations());
     }
 }

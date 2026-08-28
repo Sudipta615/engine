@@ -317,3 +317,112 @@ fn synthetic_dataset_ir_structure_is_physically_sane() {
     let m60 = dft_magnitude_at(ds.ir(az0, el60, Ear::Right), f, SR as f32);
     assert!(m60 < m0 * 0.6, "notch at 60°: {m60} vs {m0}");
 }
+
+/// A measured-style corpus (the data model a `.sofa` export reduces to)
+/// replaces the synthetic grid: `from_corpus` validates the regular mesh,
+/// resamples to the target rate, peak-normalizes, and the renderer
+/// reproduces the loaded IR exactly at grid points (spec §62 seam).
+#[test]
+fn measured_corpus_replaces_the_synthetic_grid_and_renders_exactly() {
+    use engine::spatial::{HrtfCorpus, HrtfLoadOptions, HrtfMeasurement, HrtfNormalize};
+
+    // A deliberate, memory-heavy IR: a chirp-like ramp with a distinct
+    // left/right signature, recorded at 96 kHz and measured at a regular
+    // 2×2 product of azimuth {0°, 90°} × elevation {0°, 45°}.
+    let irl = |seed: f32| -> Vec<f32> {
+        (0..64)
+            .map(|i| {
+                let t = i as f32 / 64.0;
+                (seed + 0.5) * (t * std::f32::consts::TAU * 4.0).sin() * (1.0 - t) * 0.5
+            })
+            .collect()
+    };
+    let measurements = [(0.0f32, 0.0f32), (90.0, 0.0), (0.0, 45.0), (90.0, 45.0)]
+        .iter()
+        .enumerate()
+        .map(|(i, &(az, el))| {
+            let s = i as f32 + 1.0;
+            let d = unit_vec(az, el);
+            HrtfMeasurement {
+                direction: [d.x, d.y, d.z],
+                left: irl(s),
+                right: irl(s + 0.25),
+            }
+        })
+        .collect::<Vec<_>>();
+    let corpus = HrtfCorpus {
+        sample_rate: 96_000,
+        source: Some("acceptance-corpus".into()),
+        measurements,
+    };
+    let ds = HrtfDataset::from_corpus(
+        &corpus,
+        &HrtfLoadOptions {
+            taps: 32,
+            target_sample_rate: SR,
+            normalize: HrtfNormalize::Peak,
+        },
+    )
+    .expect("regular corpus loads");
+    assert_eq!(ds.taps(), 32);
+    assert_eq!(ds.azimuths().len(), 2);
+    assert_eq!(ds.elevations().len(), 2);
+
+    // Build a binaural renderer around the loaded corpus (the seam a host
+    // would use: corpus → dataset → renderer) and verify the rendered
+    // impulse at a grid point equals the loaded IR (minus the renderer's
+    // path gain, which is 1.0 at zero distance with the Linear model).
+    let mut scene = SpatialScene::new(SR);
+    let layout = SpeakerLayout::stereo();
+    let mut r = BinauralRenderer::new(0.0);
+    r.use_dataset(Some(Arc::new(ds.clone())));
+    r.prepare(&layout, SR).unwrap();
+    let mut input = vec![0.0f32; 256];
+    input[0] = 1.0;
+    let refs = [input.as_slice()];
+    let inputs = HybridBlockInputs {
+        objects: &refs,
+        beds: &[],
+        fields: &[],
+    };
+    let mut out = vec![0.0f32; 256 * 2];
+    let id = scene.create_audio_object(unit_vec(90.0, 45.0)).unwrap();
+    scene.object_mut(id).unwrap().distance_model = engine::spatial::DistanceModel::Linear;
+    r.process_hybrid_block(&scene, &inputs, 256, &mut out)
+        .unwrap();
+
+    // The dataset's (az=90, el=45) grid entry — right ear (the source is
+    // to the right). Compare against the renderer output at the earliest
+    // strong tap.
+    let ia = ds
+        .azimuths()
+        .iter()
+        .position(|a| (*a - 90.0).abs() < 1e-3)
+        .unwrap();
+    let ie = ds
+        .elevations()
+        .iter()
+        .position(|e| (*e - 45.0).abs() < 1e-3)
+        .unwrap();
+    let expect = ds.ir(ia, ie, Ear::Right);
+    // The renderer's right channel is interleaved output, channel 1. The
+    // FIR path has no added latency, so the rendered impulse must equal the
+    // loaded IR sample-for-sample (the existing front-center test proves the
+    // exactness for az 0; this pins the same contract for a raised,
+    // off-front corpus grid point).
+    let right: Vec<f32> = (1..out.len()).step_by(2).map(|i| out[i]).collect();
+    for k in 0..32 {
+        assert!(
+            (right[k] - expect[k]).abs() < 2e-2,
+            "tap {k}: rendered {} vs loaded {}",
+            right[k],
+            expect[k]
+        );
+    }
+}
+
+fn unit_vec(az_deg: f32, el_deg: f32) -> Vec3 {
+    let (az, el) = (az_deg.to_radians(), el_deg.to_radians());
+    let horiz = el.cos();
+    Vec3::new(az.sin() * horiz, az.cos() * horiz, el.sin())
+}

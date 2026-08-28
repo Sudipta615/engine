@@ -190,7 +190,10 @@ src/
 │   │                         #   notch biquad, exact passthrough at 0°),
 │   │                         #   HrtfDataset (Phase 18: azimuth × elevation
 │   │                         #   IR grid + bilinear interpolation with 360°
-│   │                         #   wrap + synthetic generator for testing)
+│   │                         #   wrap + synthetic generator for testing;
+│   │                         #   Phase 20: from_corpus loads measured
+│   │                         #   SOFA-style corpora — resample, normalize,
+│   │                         #   JSON I/O)
 │   ├── binaural.rs           # BinauralRenderer — the whole hybrid scene
 │   │                         #   through the head model: objects (per-ear
 │   │                         #   ITD + shadow, spread blurs cues; FIR

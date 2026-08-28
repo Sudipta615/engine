@@ -2,6 +2,35 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.21.0] — 2026-08-29
+
+Measured HRTF corpus loading: the binaural path can now render real
+recorded head-related impulse responses, not just the synthetic grid.
+
+### Added
+
+- `HrtfCorpus` / `HrtfMeasurement` — the SOFA data model (measurement
+  directions + per-ear IRs + recorded rate) reduced to pure Rust; the
+  exact reduction of a `.sofa` HDF5 export, so hosts can load real
+  corpora (CIPIC, TU-Berlin, KEMAR, …) without HDF5 bindings.
+- `HrtfDataset::from_corpus` — control-path corpus loading: validates
+  finite unit directions and non-finite IRs, resamples every IR to the
+  target rate (piecewise-linear), optional peak normalization,
+  trims/pads to the FIR tap count, and requires a regular
+  azimuth × elevation mesh (full Cartesian product) so bilinear
+  interpolation stays exact; irregular meshes are typed errors.
+- `save_hrtf_corpus_json` / `load_hrtf_corpus_json` — portable pure-Rust
+  JSON interchange of the SOFA data model.
+- `HrtfLoadOptions`, `HrtfNormalize`, `HrtfLoadError` — typed load
+  controls and errors (empty corpus, bad taps, non-finite direction/IR,
+  irregular mesh, JSON failures).
+
+### Fixed
+
+- Clippy `needless_range_loop` / constant-assertion warnings in the
+  order-3 ambisonic test suites (`--workspace --all-targets` is now
+  warning-free).
+
 ## [3.20.0] — 2026-08-28
 
 The ambisonic layer extends from order 2 to **order 3** (Third-Order

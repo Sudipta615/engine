@@ -192,7 +192,7 @@ AmbisonicRenderer (order ≤ 3): per-frame listener rotation (exact
         ▼
 interleaved multichannel PCM
 
-Binaural path (opt-in, v3.17.0 → spectral HRTFs in v3.19.0)
+Binaural path (opt-in, v3.17.0 → spectral HRTFs in v3.19.0 → measured corpus loading in v3.21.0)
         │  full hybrid scene (objects + beds + fields + room)
         ▼
 BinauralRenderer (stereo/headphone layout, exactly 2 ears)

@@ -156,9 +156,10 @@ pub use binaural::{BinauralRenderer, VIRTUAL_RING_SPEAKERS};
 pub use directivity::{CustomDirectivity, Directivity};
 pub use field::{FieldId, SpatialField, SpatialFieldStore, MAX_FIELDS};
 pub use hrtf::{
-    ear_delay_sec, elevation_notch_depth_db, elevation_notch_hz, head_shadow_alpha, max_itd_sec,
-    woodworth_itd_sec, Ear, ElevationNotch, HeadShadow, HrtfDataset, DEFAULT_HEAD_RADIUS,
-    DEFAULT_SPEED_OF_SOUND, MAX_HRTF_TAPS,
+    ear_delay_sec, elevation_notch_depth_db, elevation_notch_hz, head_shadow_alpha,
+    load_hrtf_corpus_json, max_itd_sec, save_hrtf_corpus_json, woodworth_itd_sec, Ear,
+    ElevationNotch, HeadShadow, HrtfCorpus, HrtfDataset, HrtfLoadError, HrtfLoadOptions,
+    HrtfMeasurement, HrtfNormalize, DEFAULT_HEAD_RADIUS, DEFAULT_SPEED_OF_SOUND, MAX_HRTF_TAPS,
 };
 pub use level::{AirAbsorption, DistanceModel};
 pub use math::{Quat, Vec3};

@@ -44,7 +44,8 @@ fn order2_sn3d_acn_conventions_are_pinned() {
     sh_n(2, Vec3::Z, &mut y);
     assert!((y[6] - s5h * 2.0).abs() < EPS, "Y₂⁰(+Z) = +√5");
     assert_eq!(channel_count(2), 9);
-    assert!(MAX_AMBISONIC_ORDER >= 3, "order-3 supported");
+    // Order 3 is supported: its basis is verified separately below.
+    assert_eq!(channel_count(MAX_AMBISONIC_ORDER), 16);
 }
 
 #[test]

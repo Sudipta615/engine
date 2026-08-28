@@ -1317,9 +1317,9 @@ mod tests {
         // ACN11 = √(21/8)·(5z²−1)y = −√(21/8); all others vanish.
         assert!((y[15] - s358).abs() < 1e-4, "Y₃³(+Y) = √(35/8)");
         assert!((y[11] + s218).abs() < 1e-4, "Y₃⁻¹(+Y) = −√(21/8)");
-        for k in 9..16 {
+        for (k, &v) in y.iter().enumerate().skip(9) {
             if k != 15 && k != 11 {
-                assert!(y[k].abs() < 1e-4, "ACN {k} vanishes at +Y: {}", y[k]);
+                assert!(v.abs() < 1e-4, "ACN {k} vanishes at +Y: {v}");
             }
         }
         // At +Z up: ACN12 = (√7/2)(5−3)=√7; all others vanish.
@@ -1384,16 +1384,16 @@ mod tests {
             }
         }
         let weight = std::f64::consts::PI / (4.0 * (STEPS as f64) * (STEPS as f64));
-        for k in 9..16 {
-            let norm_sq = sums[k] * weight;
+        for (k, &s) in sums.iter().enumerate().skip(9) {
+            let norm_sq = s * weight;
             assert!(
                 norm_sq - 1.0 < 0.02,
                 "order-3 channel {k} norm² = {norm_sq}"
             );
         }
-        for a in 0..7 {
-            for b in (a + 1)..7 {
-                let ip = cross[a][b] * weight;
+        for (a, row) in cross.iter().enumerate() {
+            for (b, &v) in row.iter().enumerate().skip(a + 1) {
+                let ip = v * weight;
                 assert!(ip.abs() < 0.02, "<{}|{}> = {:.4}", 9 + a, 9 + b, ip);
             }
         }

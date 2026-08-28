@@ -952,9 +952,8 @@ mirrors), elevation notches in both paths, determinism. Unit suites in
 `hrtf.rs` / `binaural.rs`. New `realtime_allocation` test: dataset path +
 worst-case order-2 room, 0 allocs.
 
-**Unblocks (Horizon).** Measured corpus loading (SOFA-style files →
-`from_planes`), and optional minimum-phase conversion of the IRs to shrink
-the FIR length.
+**Unblocks (Horizon).** Measured corpus loading (done — Phase 20), and
+optional minimum-phase conversion of the IRs to shrink the FIR length.
 
 ## Phase 19 — Scene file format (v3.19.0) — **Implemented**
 
@@ -986,4 +985,38 @@ array; and the listener quaternion survives exactly.
 
 **Unblocks (Horizon).** Versioned file headers, binary scene archives, and
 host tooling (scene editors) on top of the model.
+
+## Phase 20 — Measured HRTF corpus loading (v3.21.0) — **Implemented**
+
+**Intent.** Replace the synthetic grid with measured data: load a real
+HRTF corpus (SOFA-style) into `HrtfDataset` so the binaural path renders
+true recorded head-related impulse responses.
+
+### Key mechanisms
+
+- **`HrtfCorpus` / `HrtfMeasurement`** — the SOFA data model reduced to
+  pure Rust: measurement directions (unit `[x, y, z]` in the layer
+  convention) each paired with left/right IRs plus the recorded sample
+  rate and optional provenance. This is exactly what a `.sofa` HDF5
+  export (`SourcePosition` + `Data.IR` + `Data.SamplingRate`) reduces to;
+  the engine deliberately avoids HDF5 bindings (not pure Rust).
+- **`HrtfDataset::from_corpus`** — validates the corpus (finite unit
+  directions, non-finite IRs rejected, tap range), resamples every IR to
+  the target rate by piecewise-linear interpolation, peak-normalizes
+  (optional), trims/pads to the FIR tap count, and requires a **regular**
+  azimuth × elevation mesh (a full Cartesian product of the present
+  values) so the renderer's bilinear interpolation stays exact; an
+  irregular mesh is a typed error, never a silently-wrong grid.
+- **JSON corpus I/O** — `save_hrtf_corpus_json` / `load_hrtf_corpus_json`:
+  a portable, pure-Rust interchange form of the SOFA data model, so hosts
+  and converters can feed measured corpora without binary assets.
+
+**Acceptance (spec-first).** `tests/fidelity/spatial_hrtf_ir.rs` — a
+measured-style 96 kHz corpus (resampled, peak-normalized, 2×2 grid)
+renders through the binaural FIR path sample-for-sample equal to the
+loaded IR at grid points. Unit suites in `hrtf.rs` cover resampling,
+peak normalization, irregular-mesh rejection, and the JSON round-trip.
+
+**Unblocks (Horizon).** Optional minimum-phase conversion of the IRs to
+shrink the FIR length, and per-corpus tap budgeting on `use_dataset`.
 
