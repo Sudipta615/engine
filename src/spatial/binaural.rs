@@ -58,8 +58,8 @@ use super::bed::MAX_BEDS;
 use super::directivity::listener_angle_rad;
 use super::field::AmbisonicFieldMixer;
 use super::hrtf::{
-    ear_delay_sec, head_shadow_alpha, max_itd_sec, read_delayed, Ear, HeadShadow,
-    DEFAULT_HEAD_RADIUS, DEFAULT_SPEED_OF_SOUND,
+    ear_delay_sec, head_shadow_alpha, max_itd_sec, read_delayed, Ear, ElevationNotch, HeadShadow,
+    HrtfDataset, DEFAULT_HEAD_RADIUS, DEFAULT_SPEED_OF_SOUND,
 };
 use super::math::Vec3;
 use super::occlusion::OcclusionState;
@@ -143,16 +143,36 @@ pub struct BinauralRenderer {
     obj_itd: Vec<f32>,
     /// Per-(object, direction, ear) head-shadow shelf.
     obj_shelf: Vec<HeadShadow>,
+    /// Per-(object, direction, ear) pinna notch (Phase 18: the analytic
+    /// elevation cue; zero-depth at 0° elevation = passthrough).
+    obj_notch: Vec<ElevationNotch>,
     /// ITD ring length (from the head parameters and sample rate).
     itd_len: usize,
     /// Global ring write cursor (every ring is written each frame).
     itd_pos: usize,
+
+    /// Phase 18: loaded measured/synthetic spectral HRTFs. `None` = the
+    /// analytic head model (ITD ring + shelf + notch) serves the direct
+    /// object paths.
+    dataset: Option<std::sync::Arc<HrtfDataset>>,
+    /// Per-object FIR input ring (`MAX_OBJECTS × fir_len`) — the direct
+    /// object paths convolve against this when a dataset is loaded.
+    obj_fir_ring: Vec<f32>,
+    /// Interpolated per-(object, direction, ear) IRs (`MAX_OBJECTS ×
+    /// MAX_DIRS × 2 × taps`), recomputed at block rate.
+    obj_ir: Vec<f32>,
+    /// FIR ring length (`dataset.taps + 2`).
+    fir_len: usize,
+    /// FIR ring write cursor.
+    fir_pos: usize,
 
     /// Room early reflections (per-object room rings + send plane).
     room_er: EarlyReflections,
     room_late: RoomLateField,
     /// Per-(object, image, ear) reflection shadow shelf + smoothed tap gain.
     ref_shelf: Vec<HeadShadow>,
+    /// Per-(object, image, ear) reflection pinna notch (Phase 18).
+    ref_notch: Vec<ElevationNotch>,
     ref_gain: Vec<f32>,
     late_scratch: Vec<f32>,
 
@@ -187,11 +207,18 @@ impl BinauralRenderer {
             occ: vec![OcclusionState::default(); MAX_SPATIAL_OBJECTS],
             obj_itd: Vec::new(),
             obj_shelf: vec![HeadShadow::new(); MAX_SPATIAL_OBJECTS * MAX_DIRS * Ear::COUNT],
+            obj_notch: vec![ElevationNotch::new(); MAX_SPATIAL_OBJECTS * MAX_DIRS * Ear::COUNT],
             itd_len: 1,
             itd_pos: 0,
+            dataset: None,
+            obj_fir_ring: Vec::new(),
+            obj_ir: Vec::new(),
+            fir_len: 1,
+            fir_pos: 0,
             room_er: EarlyReflections::new(),
             room_late: RoomLateField::new(),
             ref_shelf: vec![HeadShadow::new(); MAX_SPATIAL_OBJECTS * MAX_IMAGES * Ear::COUNT],
+            ref_notch: vec![ElevationNotch::new(); MAX_SPATIAL_OBJECTS * MAX_IMAGES * Ear::COUNT],
             ref_gain: vec![0.0; MAX_SPATIAL_OBJECTS * MAX_IMAGES * Ear::COUNT],
             late_scratch: vec![0.0; MAX_AUDIO_BLOCK_FRAMES],
             bed_itd: Vec::new(),
@@ -210,6 +237,23 @@ impl BinauralRenderer {
         self.head_radius = radius;
         self.speed_of_sound = speed;
         self
+    }
+
+    /// Load (or clear) a spectral HRTF dataset (Phase 18). Control path,
+    /// must be set before `prepare`. When loaded, the direct object paths
+    /// replace the analytic ITD ring + shelf + notch with FIR convolution
+    /// of the bilinearly interpolated impulse response (which carries the
+    /// ITD and the elevation-dependent spectral cues). Reflections, beds
+    /// and the diffuse ring keep the analytic model — documented: the
+    /// spectral upgrade targets direct sources.
+    pub fn use_dataset(&mut self, dataset: Option<std::sync::Arc<HrtfDataset>>) -> &mut Self {
+        self.dataset = dataset;
+        self
+    }
+
+    /// Whether a spectral dataset is currently loaded (mirror for tests).
+    pub fn has_dataset(&self) -> bool {
+        self.dataset.is_some()
     }
 
     /// Expose the current ITD ring length (samples) — used by tests to size
@@ -249,11 +293,32 @@ impl BinauralRenderer {
         self.bed_itd = vec![0.0; MAX_BEDS * MAX_BED_CHANNELS * self.itd_len];
         self.vs_itd = vec![0.0; VIRTUAL_RING_SPEAKERS * self.itd_len];
 
+        // Phase 18: size the FIR path from the loaded dataset (per-object
+        // ring shared by all (direction, ear) convolutions + per-path IR
+        // scratch).
+        if let Some(ds) = &self.dataset {
+            let taps = ds.taps();
+            self.fir_len = taps + 2;
+            self.fir_pos = 0;
+            self.obj_fir_ring = vec![0.0; MAX_SPATIAL_OBJECTS * self.fir_len];
+            self.obj_ir = vec![0.0; MAX_SPATIAL_OBJECTS * MAX_DIRS * Ear::COUNT * taps];
+        } else {
+            self.fir_len = 1;
+            self.obj_fir_ring.clear();
+            self.obj_ir.clear();
+        }
+
         for s in self.obj_shelf.iter_mut() {
             s.prepare(self.sample_rate, self.head_radius, self.speed_of_sound);
         }
+        for n in self.obj_notch.iter_mut() {
+            n.prepare(self.sample_rate);
+        }
         for s in self.ref_shelf.iter_mut() {
             s.prepare(self.sample_rate, self.head_radius, self.speed_of_sound);
+        }
+        for n in self.ref_notch.iter_mut() {
+            n.prepare(self.sample_rate);
         }
         for s in self.bed_shelf.iter_mut() {
             s.prepare(self.sample_rate, self.head_radius, self.speed_of_sound);
@@ -350,13 +415,40 @@ impl BinauralRenderer {
                 }
             }
 
-            // Per-block head-shadow targets for each (direction, ear).
+            // Per-block head-shadow + pinna-notch targets for each
+            // (direction, ear). With a dataset loaded the direct paths use
+            // FIR convolution instead (the interpolated IR carries both the
+            // shadow and the elevation notch); the targets are harmless.
             for (d, &(dir, _)) in dirs.iter().take(n_dirs).enumerate() {
                 let az = dir.azimuth_rad();
                 for ear in 0..Ear::COUNT {
                     let e = Ear::from_index(ear);
                     let idx = obj_idx * (MAX_DIRS * Ear::COUNT) + d * Ear::COUNT + ear;
                     self.obj_shelf[idx].set_target(head_shadow_alpha(az, e), self.smooth);
+                    self.obj_notch[idx].set_target(dir.elevation_rad(), self.smooth);
+                }
+            }
+
+            // Phase 18: hoist the per-(direction, ear) IR interpolation
+            // (bilinear in azimuth/elevation) once per block when a
+            // dataset is loaded.
+            if let Some(ds) = &self.dataset {
+                let taps = ds.taps();
+                for (d, &(dir, _)) in dirs.iter().take(n_dirs).enumerate() {
+                    let az_deg = dir.azimuth_rad().to_degrees();
+                    let el_deg = dir.elevation_rad().to_degrees();
+                    for ear in 0..Ear::COUNT {
+                        let e = Ear::from_index(ear);
+                        let base = obj_idx * (MAX_DIRS * Ear::COUNT * taps)
+                            + d * Ear::COUNT * taps
+                            + ear * taps;
+                        ds.bilinear_interpolate(
+                            az_deg,
+                            el_deg,
+                            e,
+                            &mut self.obj_ir[base..base + taps],
+                        );
+                    }
                 }
             }
 
@@ -381,6 +473,7 @@ impl BinauralRenderer {
                         let idx = obj_idx * (MAX_IMAGES * Ear::COUNT) + i * Ear::COUNT + ear;
                         let e = Ear::from_index(ear);
                         self.ref_shelf[idx].set_target(head_shadow_alpha(az, e), self.smooth);
+                        self.ref_notch[idx].set_target(ldir.elevation_rad(), self.smooth);
                         let prev = self.ref_gain[idx];
                         self.ref_gain[idx] = if self.smooth >= 1.0 {
                             target
@@ -397,6 +490,9 @@ impl BinauralRenderer {
             }
             let row = obj_idx * self.itd_len;
             let rl = self.itd_len;
+            let use_fir = self.dataset.is_some();
+            let fir_len = self.fir_len;
+            let taps = self.dataset.as_ref().map(|d| d.taps()).unwrap_or(0);
             for frame in 0..frames {
                 let mut s = input[frame];
                 // Occlusion low-passes before the head model (spec §43); the
@@ -406,23 +502,46 @@ impl BinauralRenderer {
                     s = self.occ[obj_idx].process(s, &c);
                 }
                 let cursor = (self.itd_pos + frame) % rl;
-                self.obj_itd[row + cursor] = s;
+                let fcur = (self.fir_pos + frame) % fir_len;
+                if use_fir {
+                    // FIR path: one ring per object, convolved with each
+                    // (direction, ear)'s interpolated IR.
+                    self.obj_fir_ring[obj_idx * fir_len + fcur] = s;
+                } else {
+                    self.obj_itd[row + cursor] = s;
+                }
 
-                // Direct paths: each (direction, ear) reads its own ITD
-                // delay and applies its own shadow shelf.
+                // Direct paths: either FIR convolution of the interpolated
+                // spectral HRTF (dataset loaded — carries ITD + spectral
+                // cues) or the analytic chain (fractional ITD delay + head-
+                // shadow shelf + elevation pinna notch).
                 for (d, &(dir, w)) in dirs.iter().take(n_dirs).enumerate() {
                     let az = dir.azimuth_rad();
                     for ear in 0..Ear::COUNT {
                         let e = Ear::from_index(ear);
-                        let delay = ear_delay_sec(az, e, self.head_radius, self.speed_of_sound)
-                            * self.sample_rate;
-                        let vd = read_delayed(&self.obj_itd[row..], cursor, delay, rl);
-                        let y = self.obj_shelf
-                            [obj_idx * (MAX_DIRS * Ear::COUNT) + d * Ear::COUNT + ear]
-                            .process(vd);
-                        let g = y * w * obj_gain * self.out_trim[ear];
-                        if g != 0.0 {
-                            out[frame * 2 + ear] += g;
+                        let idx = obj_idx * (MAX_DIRS * Ear::COUNT) + d * Ear::COUNT + ear;
+                        if use_fir {
+                            let ir_base = idx * taps;
+                            let mut acc = 0.0f32;
+                            for k in 0..taps {
+                                acc += self.obj_ir[ir_base + k]
+                                    * self.obj_fir_ring
+                                        [obj_idx * fir_len + (fcur + fir_len - k) % fir_len];
+                            }
+                            let g = acc * w * obj_gain * self.out_trim[ear];
+                            if g != 0.0 {
+                                out[frame * 2 + ear] += g;
+                            }
+                        } else {
+                            let delay = ear_delay_sec(az, e, self.head_radius, self.speed_of_sound)
+                                * self.sample_rate;
+                            let vd = read_delayed(&self.obj_itd[row..], cursor, delay, rl);
+                            let y = self.obj_shelf[idx].process(vd);
+                            let y = self.obj_notch[idx].process(y);
+                            let g = y * w * obj_gain * self.out_trim[ear];
+                            if g != 0.0 {
+                                out[frame * 2 + ear] += g;
+                            }
                         }
                     }
                 }
@@ -450,7 +569,7 @@ impl BinauralRenderer {
                                     * self.sample_rate;
                             let vd = self.room_er.read_delayed(obj_idx, rcursor, delay);
                             let idx = obj_idx * (MAX_IMAGES * Ear::COUNT) + i * Ear::COUNT + ear;
-                            let y = self.ref_shelf[idx].process(vd);
+                            let y = self.ref_notch[idx].process(self.ref_shelf[idx].process(vd));
                             let g = self.ref_gain[idx] * self.out_trim[ear];
                             if g != 0.0 {
                                 out[frame * 2 + ear] += y * g;
@@ -634,6 +753,9 @@ impl SpatialRenderer for BinauralRenderer {
         }
 
         self.itd_pos = (self.itd_pos + frames) % self.itd_len;
+        if self.dataset.is_some() {
+            self.fir_pos = (self.fir_pos + frames) % self.fir_len;
+        }
         Ok(())
     }
 }
@@ -652,6 +774,128 @@ mod tests {
         let mut sc = SpatialScene::new(48_000);
         let id = sc.create_audio_object(pos).unwrap();
         (sc, id.0)
+    }
+
+    /// DFT magnitude at one frequency (test helper).
+    fn dft_magnitude_at(ir: &[f32], freq_hz: f32, fs: f32) -> f32 {
+        let w = std::f32::consts::TAU * freq_hz / fs;
+        let (mut re, mut im) = (0.0f32, 0.0f32);
+        for (k, &v) in ir.iter().enumerate() {
+            let phase = w * k as f32;
+            re += v * phase.cos();
+            im -= v * phase.sin();
+        }
+        (re * re + im * im).sqrt()
+    }
+
+    /// Render one impulse through an object at `pos` (world), returning the
+    /// left-ear plane.
+    fn impulse_left_ear(r: &mut BinauralRenderer, scene: &SpatialScene, pos: V) -> Vec<f32> {
+        use crate::spatial::level::DistanceModel;
+        let mut sc = scene.clone();
+        let id = sc.create_audio_object(pos).unwrap();
+        sc.object_mut(id).unwrap().distance_model = DistanceModel::Linear;
+        let frames = 256;
+        let mut input = vec![0.0f32; frames];
+        input[0] = 1.0;
+        let refs = [input.as_slice()];
+        let inputs = HybridBlockInputs {
+            objects: &refs,
+            beds: &[],
+            fields: &[],
+        };
+        let mut out = vec![0.0f32; 2 * frames];
+        r.process_hybrid_block(&sc, &inputs, frames, &mut out)
+            .unwrap();
+        (0..frames).map(|f| out[f * 2]).collect()
+    }
+
+    #[test]
+    fn dataset_path_convolves_the_interpolated_ir() {
+        use std::sync::Arc;
+        let ds = HrtfDataset::synthetic(48_000, 64, 15.0, 15.0);
+        let mut r = BinauralRenderer::new(0.0);
+        r.use_dataset(Some(Arc::new(ds.clone())));
+        r.prepare(&SpeakerLayout::stereo(), 48_000).unwrap();
+        let scene = SpatialScene::new(48_000);
+        let left = impulse_left_ear(&mut r, &scene, V::new(0.0, 2.0, 0.0)); // az 0, el 0
+                                                                            // The front-center object reproduces the dataset IR exactly (both
+                                                                            // ears identical: az 0, el 0).
+        let el0 = ds.elevations().iter().position(|e| e.abs() < 1e-3).unwrap();
+        let expected = ds.ir(0, el0, Ear::Left);
+        for k in 0..64 {
+            assert!(
+                (left[k] - expected[k]).abs() < 1e-4,
+                "tap {k}: {} vs {}",
+                left[k],
+                expected[k]
+            );
+        }
+    }
+
+    #[test]
+    fn dataset_elevation_changes_the_spectrum() {
+        use std::sync::Arc;
+        let ds = HrtfDataset::synthetic(48_000, 64, 15.0, 15.0);
+        let mut r = BinauralRenderer::new(0.0);
+        r.use_dataset(Some(Arc::new(ds.clone())));
+        r.prepare(&SpeakerLayout::stereo(), 48_000).unwrap();
+        let scene = SpatialScene::new(48_000);
+        let el0 = impulse_left_ear(&mut r, &scene, V::new(0.0, 2.0, 0.0));
+        // Same renderer, raised source: el 60° (direction (0, ½, √3/2)·2).
+        let s60 = 60f32.to_radians().sin();
+        let c60 = 60f32.to_radians().cos();
+        let el60 = impulse_left_ear(&mut r, &scene, V::new(0.0, 2.0 * c60, 2.0 * s60));
+        // The pinna notch (≈ 9464 Hz at el 60) must attenuate the raised
+        // source relative to the horizontal one.
+        let f = 6000.0 + 4000.0 * 60f32.to_radians().sin();
+        let h0 = dft_magnitude_at(&el0, f, 48_000.0);
+        let h60 = dft_magnitude_at(&el60, f, 48_000.0);
+        assert!(h60 < h0 * 0.7, "dataset notch: el 60 {h60} vs el 0 {h0}");
+    }
+
+    #[test]
+    fn analytic_path_applies_the_elevation_notch() {
+        // Without a dataset the analytic chain (ITD + shelf + pinna notch)
+        // serves the direct paths; the notch is zero-depth at 0° elevation
+        // and grows with |el|, so the raised source loses high-frequency
+        // energy.
+        let mut r = BinauralRenderer::new(0.0);
+        r.prepare(&SpeakerLayout::stereo(), 48_000).unwrap();
+        let scene = SpatialScene::new(48_000);
+        let el0 = impulse_left_ear(&mut r, &scene, V::new(0.0, 2.0, 0.0));
+        let s60 = 60f32.to_radians().sin();
+        let c60 = 60f32.to_radians().cos();
+        let el60 = impulse_left_ear(&mut r, &scene, V::new(0.0, 2.0 * c60, 2.0 * s60));
+        let f = 6000.0 + 4000.0 * 60f32.to_radians().sin();
+        let h0 = dft_magnitude_at(&el0, f, 48_000.0);
+        let h60 = dft_magnitude_at(&el60, f, 48_000.0);
+        assert!(h60 < h0 * 0.75, "analytic notch: el 60 {h60} vs el 0 {h0}");
+        // Mirror symmetry holds with the notch: mirroring the source swaps
+        // the ears' spectra.
+        let mut r = BinauralRenderer::new(0.0);
+        r.prepare(&SpeakerLayout::stereo(), 48_000).unwrap();
+        let mut sc = SpatialScene::new(48_000);
+        let id = sc.create_audio_object(V::new(0.0, 1.0, 1.732)).unwrap();
+        sc.object_mut(id).unwrap().distance_model = crate::spatial::level::DistanceModel::Linear;
+        let frames = 256;
+        let mut input = vec![0.0f32; frames];
+        input[0] = 1.0;
+        let refs = [input.as_slice()];
+        let inputs = HybridBlockInputs {
+            objects: &refs,
+            beds: &[],
+            fields: &[],
+        };
+        let mut out = vec![0.0f32; 2 * frames];
+        r.process_hybrid_block(&sc, &inputs, frames, &mut out)
+            .unwrap();
+        let left: Vec<f32> = (0..frames).map(|f| out[f * 2]).collect();
+        let right: Vec<f32> = (0..frames).map(|f| out[f * 2 + 1]).collect();
+        // az 0 → both ears identical (delay 0, same α, same notch).
+        for k in 0..frames {
+            assert!((left[k] - right[k]).abs() < 1e-4, "ear symmetry tap {k}");
+        }
     }
 
     #[test]

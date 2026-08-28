@@ -2,6 +2,92 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.19.0] — 2026-08-28
+
+The spatial layer's capstone: **higher-order ambisonics**, a **SpatialNode**
+in the production DSP graph, **measured spectral HRTFs** with elevation
+cues, and the **scene-file format**. Together they close the remaining
+roadmap phases: order-2 SH rendering (roadmap Phase 16), the spatial master
+output stage as a first-class graph node (Phase 17), full head-related
+impulse responses replacing the analytic shelf (Phase 18), and Serde
+scene persistence (Phase 19).
+
+### Added
+
+- **Higher-order ambisonics (Phase 16, spec §34)** — `ambisonic.rs` is
+  rewritten around the exact order-N SH basis (`sh_n`, `channel_count`):
+  order-1 (FOA) behavior is pinned bit-for-bit identical to the previous
+  release, and order-2 adds the 5 new channels (`U`, `V`, `T`, `R`, `S`)
+  per the published Furse–Malham table. The decoder weights are the
+  published max-rE window (order-2 `a1 ≈ 0.9057`, `a2 ≈ 0.6827`; order-1
+  stays `√3/2`), `AmbisonicRenderer::with_order` renders any supported
+  order to any speaker layout, and the bus rotation is the **exact**
+  order-2 rotation (WXYZ interleaved with UV) — a 90° yaw moves a plane
+  wave to the correct column, pinned by a dedicated test.
+- **SpatialNode in the production graph (Phase 17)** — a new `SpatialNode`
+  plan node: a stereo master is spatialized through the binaural head model
+  (optionally with the room); multichannel masters pass through untouched
+  (documented seam). It ships with a full control surface
+  (`set_spatial_enabled/screen/room/listener`), a config section
+  (`SpatialConfig` + `SpatialRoomConfig` in `engine_config`), a per-node
+  atomic control mirror applied at block boundaries, and live enable
+  surviving generation rebuilds (swap replay). Zero allocation on the
+  audio thread, pinned by `realtime_allocation`.
+- **Measured spectral HRTFs (Phase 18, spec §62)** — `HrtfDataset`:
+  a grid of per-ear impulse responses (azimuth × elevation) with bilinear
+  interpolation (azimuth wrapped continuously across the 360° seam),
+  loaded on the control path and validated (`from_planes` rejects
+  non-monotonic grids and non-finite IRs). `BinauralRenderer::use_dataset`
+  switches object direct paths from the analytic chain to FIR convolution
+  of the interpolated IR (which carries both ITD and spectral cues); the
+  analytic path gains `ElevationNotch`, a documented pinna-notch biquad
+  (`f = 6 kHz + 4 kHz·sin(el)`, depth `−8 dB·|sin(el)|`, an exact
+  passthrough at 0° elevation). A synthetic dataset generator discretizes
+  the analytic model on a regular grid so the FIR path is testable without
+  shipping a measured corpus.
+- **Scene file format (Phase 19, spec Part XXVI)** — `config::
+  SpatialSceneConfig` (+ `SceneListenerConfig`, `SpatialObjectConfig`,
+  `SpatialBedConfig`, `SpatialFieldConfig`): a Serde-serializable,
+  renderer-independent scene model (listener, objects, beds by semantic
+  role names, fields, room). `SpatialScene::from_config` / `to_config`
+  convert losslessly (listener orientation stays the canonical quaternion —
+  no Euler drift), `save_scene_json` / `load_scene_json` are the file I/O
+  with typed errors, and `validate` enforces the engine's caps with rich
+  messages before anything reaches the audio thread. Optional fields
+  default (`#[serde(default)]`) so older hosts keep reading newer files.
+
+### Fixed
+
+- **Woodworth ITD folding for wrapped azimuths** — `woodworth_itd_sec`
+  folded angles past ±π with `rem_euclid(...).min(π)`, mapping 300°
+  (physically −60°) to 180° (zero ITD), and `ear_delay_sec`'s left/right
+  side test used `signum(azimuth)`, which is wrong for azimuths wrapped
+  past ±π. Both now fold by reflection / use `sin(azimuth)` so a 0–360°
+  grid (the dataset convention) is rendered correctly; the renderer's
+  signed azimuths were unaffected. Pinned by new unit tests and by the
+  dataset-path mirror-symmetry acceptance test.
+
+### Tests
+
+- Unit suites: `ambisonic.rs` (order-2 basis orthonormality, channel
+  table, max-rE weights, the exact rotation property, order-2 renderer),
+  `hrtf.rs` (dataset structure, bilinear exactness/wrap, synthetic IR
+  pins, notch passthrough/elevation), `binaural.rs` (dataset path renders
+  the IR exactly, mirror symmetry in both paths), `scene.rs` (config
+  round-trip, JSON IO, validation), plus SpatialNode graph tests.
+- Four acceptance suites: `tests/fidelity/spatial_hoa.rs` (order-2
+  rendering to 7.1.4, rotation, per-order weights), `spatial_node.rs`
+  (bit-exact passthrough when disabled, binaural ITD on the graph output,
+  room tail, listener yaw, control surface, reconfig survival, MC seam),
+  `spatial_hrtf_ir.rs` (dataset IR fidelity, mirror symmetry, elevation
+  notch, determinism), and `spatial_scene.rs` (lossless round-trip renders
+  bit-identical, forward-compatible defaults, validation rejections,
+  renderer independence, quaternion fidelity).
+- `realtime_allocation`: three new zero-alloc tests — order-2 ambisonics
+  with per-frame exact rotation, the SpatialNode with a room under a
+  block-rate listener sweep, and the HRTF dataset path with the worst-case
+  order-2 room. 18/18 tests, **zero allocations**.
+
 ## [3.18.0] — 2026-08-28
 
 Head tracking (roadmap Phase 15, spec §48, §136): the VR/AR seam. A new

@@ -86,6 +86,9 @@ impl GraphGeneration {
             // Phase 7 S5: the correction node is the last arena slot — it
             // runs post-aux / pre-EQ in the compiled plan.
             GraphNode::Correction(CorrectionNode::new(sample_rate)),
+            // Phase 17: the spatial master output stage — the final arena
+            // slot, running at the very end of the compiled plan.
+            GraphNode::Spatial(SpatialNode::new(sample_rate)),
         ]; // Arena-order contract: every `node_id` slot must hold the node kind
            // its table entry claims. Debug-only; also keeps the slot constants
            // referenced so the table cannot silently drift from the arena.
@@ -114,6 +117,7 @@ impl GraphGeneration {
             nodes[node_id::CORRECTION],
             GraphNode::Correction(_)
         ));
+        debug_assert!(matches!(nodes[node_id::SPATIAL], GraphNode::Spatial(_)));
 
         let mut gen = GraphGeneration {
             node_ids: GraphGeneration::canonical_ids(nodes.len()),
@@ -156,6 +160,10 @@ impl GraphGeneration {
         // paths → S2–S4 derive) applies to the correction node.
         gen_node!(gen, node_id::CORRECTION, Correction)
             .apply_config(&config.correction, sample_rate);
+
+        // Phase 17: the spatial config (enabled / screen / room / listener)
+        // applies to the spatial master node.
+        gen_node!(gen, node_id::SPATIAL, Spatial).apply_config(&config.spatial, sample_rate);
 
         // User-state replay: a fresh generation inherits the listener's
         // volume / balance / speed from the control bus (seeded with defaults
@@ -228,6 +236,11 @@ impl GraphGeneration {
                     let _ =
                         gen_node!(gen, node_id::CORRECTION, Correction).load_set(set, sample_rate);
                 }
+            }
+            // Phase 17: a live spatial enable toggle survives a swap (live
+            // snapshots only; construction keeps the config-applied state).
+            if user.has_live_bus_state {
+                gen_node!(gen, node_id::SPATIAL, Spatial).set_enabled(user.spatial_enabled);
             }
         }
 

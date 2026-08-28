@@ -76,6 +76,37 @@ pub(crate) enum NodeCmd {
     SetCorrectionEnabled(bool),
     /// Phase-7 S5 correction: live wet/dry depth in [0, 1].
     SetCorrectionDepth(f32),
+    /// Phase-17 spatial master: live enable toggle.
+    SetSpatialEnabled(bool),
+    /// Phase-17 spatial master: virtual-screen geometry
+    /// `(center_azimuth_deg, half_width_deg, elevation_deg, gain)`.
+    SetSpatialScreen {
+        center_azimuth_deg: f32,
+        half_width_deg: f32,
+        elevation_deg: f32,
+        gain: f32,
+    },
+    /// Phase-17 spatial master: room
+    /// `(enabled, width, depth, height, absorption, reflection_order,
+    /// rt60_ms, late_mix, wet)`.
+    SetSpatialRoom {
+        enabled: bool,
+        width: f32,
+        depth: f32,
+        height: f32,
+        absorption: f32,
+        reflection_order: u8,
+        rt60_ms: f32,
+        late_mix: f32,
+        wet: f32,
+    },
+    /// Phase-17 spatial master: listener orientation
+    /// `(yaw_deg, pitch_deg, roll_deg)`.
+    SetSpatialListener {
+        yaw_deg: f32,
+        pitch_deg: f32,
+        roll_deg: f32,
+    },
     /// Runtime crossfade config (Phase 3 S3): curve / enabled / duration
     /// mirror the pipeline's `TrackMixer` setters the engine calls on
     /// `handle_set_crossfade_config`.
@@ -217,6 +248,9 @@ pub(crate) struct ControlBus {
     /// is never contended on a hot path — it exists only to keep the bus
     /// `Sync` (the audio side touches other fields of the same struct).
     user_correction_ir: Mutex<Option<Arc<CorrectionIrSet>>>,
+    /// Phase 17: spatial master enabled flag, mirrored like the aux state so
+    /// a live runtime toggle survives a generation swap.
+    user_spatial_enabled: AtomicU8,
 }
 
 impl ControlBus {
@@ -271,6 +305,7 @@ impl ControlBus {
             user_correction_enabled: AtomicU8::new(0),
             user_correction_depth: AtomicU32::new(1.0f32.to_bits()),
             user_correction_ir: Mutex::new(None),
+            user_spatial_enabled: AtomicU8::new(0),
         }
     }
 
@@ -422,6 +457,17 @@ impl ControlBus {
         )
     }
 
+    /// Mirror the Phase-17 spatial master enable flag, audio side at drain.
+    pub(super) fn set_spatial_user_state(&self, enabled: bool) {
+        self.user_spatial_enabled
+            .store(enabled as u8, Ordering::Relaxed);
+    }
+
+    /// Control-side read of the mirrored spatial master enable flag.
+    pub(super) fn user_spatial(&self) -> bool {
+        self.user_spatial_enabled.load(Ordering::Relaxed) != 0
+    }
+
     /// Store the rendered correction IR set (control side: `LoadCorrectionIr`
     /// / `MeasureRoom` land, and generation seeding reads it back). The
     /// audio thread never reads this — see the field's docs.
@@ -490,6 +536,7 @@ impl ControlBus {
             correction_enabled: self.user_correction_enabled.load(Ordering::Relaxed) != 0,
             correction_depth: f32::from_bits(self.user_correction_depth.load(Ordering::Relaxed)),
             correction_ir: self.user_correction_ir(),
+            spatial_enabled: self.user_spatial_enabled.load(Ordering::Relaxed) != 0,
             // Ducking + automation are NOT mirrored onto the bus atomics:
             // `DspGraph::reconfigure` reads them from the live generation
             // instead (single-threaded control access), so snapshots keep
@@ -930,6 +977,85 @@ impl GraphControlHandle {
         self.bus.user_correction()
     }
 
+    // ── Spatial master (Phase 17) ────────────────────────────────────────
+
+    /// Live toggle of the spatial master output stage. Disabled = the plan
+    /// step is skipped, bit-exact.
+    pub fn set_spatial_enabled(&self, enabled: bool) {
+        self.enqueue(node_id::SPATIAL, NodeCmd::SetSpatialEnabled(enabled));
+    }
+
+    /// Set the virtual screen: `center_azimuth_deg` (screen center),
+    /// `half_width_deg` (L/R spread, clamped to 90°), `elevation_deg`
+    /// (clamped to ±90°), `gain` (linear, clamped to 4).
+    pub fn set_spatial_screen(
+        &self,
+        center_azimuth_deg: f32,
+        half_width_deg: f32,
+        elevation_deg: f32,
+        gain: f32,
+    ) {
+        self.enqueue(
+            node_id::SPATIAL,
+            NodeCmd::SetSpatialScreen {
+                center_azimuth_deg,
+                half_width_deg,
+                elevation_deg,
+                gain,
+            },
+        );
+    }
+
+    /// Configure the room: geometry (metres), wall absorption, reflection
+    /// order (1 or 2), late-field RT60 (ms) / late mix, and the program's
+    /// reflection send `wet` (all clamped).
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_spatial_room(
+        &self,
+        enabled: bool,
+        width: f32,
+        depth: f32,
+        height: f32,
+        absorption: f32,
+        reflection_order: u8,
+        rt60_ms: f32,
+        late_mix: f32,
+        wet: f32,
+    ) {
+        self.enqueue(
+            node_id::SPATIAL,
+            NodeCmd::SetSpatialRoom {
+                enabled,
+                width,
+                depth,
+                height,
+                absorption,
+                reflection_order,
+                rt60_ms,
+                late_mix,
+                wet,
+            },
+        );
+    }
+
+    /// Set the listener orientation (yaw / pitch / roll, degrees) applied
+    /// to the rendered scene.
+    pub fn set_spatial_listener(&self, yaw_deg: f32, pitch_deg: f32, roll_deg: f32) {
+        self.enqueue(
+            node_id::SPATIAL,
+            NodeCmd::SetSpatialListener {
+                yaw_deg,
+                pitch_deg,
+                roll_deg,
+            },
+        );
+    }
+
+    /// Control-side read of the mirrored spatial enable flag.
+    pub fn spatial_enabled(&self) -> bool {
+        self.bus.user_spatial()
+    }
+
     /// Control-side read of the aux meters (peak_db, rms_db), published once
     /// per audio block (Phase 5 S3).
     pub fn aux_meters(&self) -> (f32, f32) {
@@ -1195,6 +1321,13 @@ impl DspGraph {
                         self.bus.set_correction_user_state(c.enabled(), c.depth());
                     }
                 }
+                // Phase 17: mirror the spatial master enable post-apply so a
+                // live runtime toggle survives generation swaps.
+                if matches!(cmd, NodeCmd::SetSpatialEnabled(_)) {
+                    if let GraphNode::Spatial(s) = &self.active.nodes[i] {
+                        self.bus.set_spatial_user_state(s.enabled());
+                    }
+                }
             }
         }
     }
@@ -1243,6 +1376,48 @@ fn apply_node_cmd(node: &mut GraphNode, cmd: &NodeCmd) {
         (GraphNode::Correction(n), NodeCmd::SetCorrectionDepth(depth)) => {
             n.set_runtime(n.enabled(), *depth)
         }
+        (GraphNode::Spatial(n), NodeCmd::SetSpatialEnabled(enabled)) => n.set_enabled(*enabled),
+        (
+            GraphNode::Spatial(n),
+            NodeCmd::SetSpatialScreen {
+                center_azimuth_deg,
+                half_width_deg,
+                elevation_deg,
+                gain,
+            },
+        ) => n.apply_screen(*center_azimuth_deg, *half_width_deg, *elevation_deg, *gain),
+        (
+            GraphNode::Spatial(n),
+            NodeCmd::SetSpatialRoom {
+                enabled,
+                width,
+                depth,
+                height,
+                absorption,
+                reflection_order,
+                rt60_ms,
+                late_mix,
+                wet,
+            },
+        ) => n.apply_room(
+            *enabled,
+            *width,
+            *depth,
+            *height,
+            *absorption,
+            *reflection_order,
+            *rt60_ms,
+            *late_mix,
+            *wet,
+        ),
+        (
+            GraphNode::Spatial(n),
+            NodeCmd::SetSpatialListener {
+                yaw_deg,
+                pitch_deg,
+                roll_deg,
+            },
+        ) => n.apply_listener(*yaw_deg, *pitch_deg, *roll_deg),
         (GraphNode::Mix(n), NodeCmd::SetMixCurve(c)) => n.curve = (*c).into(),
         (GraphNode::Mix(n), NodeCmd::SetMixEnabled(e)) => n.crossfade_enabled = *e,
         (GraphNode::Mix(n), NodeCmd::SetMixDurationFrames(f)) => {
@@ -1589,6 +1764,68 @@ impl DspGraph {
     /// Live wet/dry depth in [0, 1] (1.0 = fully corrected).
     pub fn set_correction_depth(&self, depth: f32) {
         self.control_handle().set_correction_depth(depth);
+    }
+
+    // ── Spatial master (Phase 17) ────────────────────────────────────────
+
+    /// Live toggle of the spatial master output stage.
+    pub fn set_spatial_enabled(&self, enabled: bool) {
+        self.control_handle().set_spatial_enabled(enabled);
+    }
+
+    /// Set the virtual screen (see [`GraphControlHandle::set_spatial_screen`]).
+    pub fn set_spatial_screen(
+        &self,
+        center_azimuth_deg: f32,
+        half_width_deg: f32,
+        elevation_deg: f32,
+        gain: f32,
+    ) {
+        self.control_handle().set_spatial_screen(
+            center_azimuth_deg,
+            half_width_deg,
+            elevation_deg,
+            gain,
+        );
+    }
+
+    /// Configure the room (see [`GraphControlHandle::set_spatial_room`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_spatial_room(
+        &self,
+        enabled: bool,
+        width: f32,
+        depth: f32,
+        height: f32,
+        absorption: f32,
+        reflection_order: u8,
+        rt60_ms: f32,
+        late_mix: f32,
+        wet: f32,
+    ) {
+        self.control_handle().set_spatial_room(
+            enabled,
+            width,
+            depth,
+            height,
+            absorption,
+            reflection_order,
+            rt60_ms,
+            late_mix,
+            wet,
+        );
+    }
+
+    /// Set the listener orientation (see
+    /// [`GraphControlHandle::set_spatial_listener`]).
+    pub fn set_spatial_listener(&self, yaw_deg: f32, pitch_deg: f32, roll_deg: f32) {
+        self.control_handle()
+            .set_spatial_listener(yaw_deg, pitch_deg, roll_deg);
+    }
+
+    /// The spatial master's enable flag (mirrored at drain).
+    pub fn spatial_enabled(&self) -> bool {
+        self.control_handle().spatial_enabled()
     }
 
     /// Load a rendered correction IR set into the ACTIVE node and mirror it

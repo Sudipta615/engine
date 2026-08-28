@@ -10,12 +10,14 @@
 //! objects appear to move exactly as the listener rotates, which is the
 //! foundation for head tracking / VR later.
 
-use super::bed::{BedId, SpatialBed, SpatialBedStore};
-use super::field::{FieldId, SpatialField, SpatialFieldStore};
+use super::bed::{BedId, SpatialBed, SpatialBedStore, MAX_BEDS};
+use super::field::{FieldId, SpatialField, SpatialFieldStore, MAX_FIELDS};
 use super::math::{Quat, Vec3};
+use super::object::MAX_SPATIAL_OBJECTS;
 use super::object::{ObjectAudioRef, ObjectId, SpatialAudioObject, SpatialObjectStore};
+use super::render::RenderError;
 use super::room::Room;
-use crate::decode::ChannelLayout;
+use crate::decode::{ChannelId, ChannelLayout};
 
 /// The listener: the reference frame for spatial perception.
 #[derive(Debug, Clone, PartialEq)]
@@ -173,6 +175,175 @@ impl SpatialScene {
     pub fn field_mut(&mut self, id: FieldId) -> Option<&mut SpatialField> {
         self.fields.get_mut(id)
     }
+
+    /// Build a live scene from the Serde scene-file model (spec Part XXVI).
+    /// Control path. `Err(CapacityExceeded)` when a class exceeds the engine
+    /// caps; `Err(InvalidScene)` for an invalid model (call
+    /// `config::SpatialSceneConfig::validate` first for rich errors).
+    pub fn from_config(cfg: &config::SpatialSceneConfig) -> Result<Self, RenderError> {
+        if cfg.objects.len() > MAX_SPATIAL_OBJECTS
+            || cfg.beds.len() > MAX_BEDS
+            || cfg.fields.len() > MAX_FIELDS
+        {
+            return Err(RenderError::CapacityExceeded);
+        }
+        let mut scene = SpatialScene::new(cfg.sample_rate.max(1));
+        let l = &cfg.listener;
+        scene.listener.position = Vec3::new(l.position[0], l.position[1], l.position[2]);
+        let q = Quat::new(
+            l.orientation[0],
+            l.orientation[1],
+            l.orientation[2],
+            l.orientation[3],
+        );
+        scene
+            .listener
+            .set_orientation(q.normalized().unwrap_or(Quat::IDENTITY));
+        for o in &cfg.objects {
+            let id = scene
+                .create_audio_object(Vec3::new(o.position[0], o.position[1], o.position[2]))
+                .ok_or(RenderError::CapacityExceeded)?;
+            let obj = scene.object_mut(id).expect("just created");
+            obj.gain = o.gain;
+            obj.spread = o.spread;
+            obj.room_send = o.room_send;
+            obj.lfe_send = o.lfe_send;
+            obj.enabled = o.enabled;
+        }
+        for b in &cfg.beds {
+            let ids: Result<Vec<ChannelId>, RenderError> = b
+                .channels
+                .iter()
+                .map(|name| ChannelId::from_name(name).ok_or(RenderError::InvalidScene))
+                .collect();
+            let id = scene
+                .create_bed(ChannelLayout::Custom(ids?))
+                .ok_or(RenderError::CapacityExceeded)?;
+            let bed = scene.bed_mut(id).expect("just created");
+            bed.gain = b.gain;
+            bed.enabled = b.enabled;
+        }
+        for f in &cfg.fields {
+            let id = scene.create_field().ok_or(RenderError::CapacityExceeded)?;
+            let field = scene.field_mut(id).expect("just created");
+            field.gain = f.gain;
+            field.enabled = f.enabled;
+        }
+        let r = &cfg.room;
+        scene.room = Room {
+            enabled: r.enabled,
+            width: r.width,
+            depth: r.depth,
+            height: r.height,
+            absorption: r.absorption,
+            reflection_order: r.reflection_order,
+            rt60_ms: r.rt60_ms,
+            late_mix: r.late_mix,
+            speed_of_sound: r.speed_of_sound,
+        };
+        Ok(scene)
+    }
+
+    /// Serialize the scene into the Serde scene-file model (the inverse of
+    /// [`Self::from_config`]). Content only — the renderer/layout stay host
+    /// choices.
+    pub fn to_config(&self) -> config::SpatialSceneConfig {
+        use config::{
+            SceneListenerConfig, SpatialBedConfig, SpatialFieldConfig, SpatialObjectConfig,
+            SpatialSceneConfig,
+        };
+        let l = &self.listener;
+        SpatialSceneConfig {
+            sample_rate: self.sample_rate,
+            listener: SceneListenerConfig {
+                position: [l.position.x, l.position.y, l.position.z],
+                orientation: [
+                    l.orientation.x,
+                    l.orientation.y,
+                    l.orientation.z,
+                    l.orientation.w,
+                ],
+            },
+            objects: self
+                .objects
+                .iter()
+                .map(|o| SpatialObjectConfig {
+                    name: String::new(),
+                    position: [o.position.x, o.position.y, o.position.z],
+                    gain: o.gain,
+                    spread: o.spread,
+                    room_send: o.room_send,
+                    lfe_send: o.lfe_send,
+                    enabled: o.enabled,
+                })
+                .collect(),
+            beds: self
+                .beds
+                .iter()
+                .map(|b| SpatialBedConfig {
+                    name: String::new(),
+                    channels: b.channels().iter().map(|c| c.name()).collect(),
+                    gain: b.gain,
+                    enabled: b.enabled,
+                })
+                .collect(),
+            fields: self
+                .fields
+                .iter()
+                .map(|f| SpatialFieldConfig {
+                    name: String::new(),
+                    gain: f.gain,
+                    enabled: f.enabled,
+                })
+                .collect(),
+            room: config::SpatialRoomConfig {
+                enabled: self.room.enabled,
+                width: self.room.width,
+                depth: self.room.depth,
+                height: self.room.height,
+                absorption: self.room.absorption,
+                reflection_order: self.room.reflection_order,
+                rt60_ms: self.room.rt60_ms,
+                late_mix: self.room.late_mix,
+                wet: self
+                    .objects
+                    .iter()
+                    .next()
+                    .map(|o| o.room_send)
+                    .unwrap_or(0.0),
+                speed_of_sound: self.room.speed_of_sound,
+            },
+        }
+    }
+}
+
+/// Scene-file I/O errors (spec Part XXVI): disk/JSON failures and scene
+/// validation failures surface as typed errors — never panics.
+#[derive(Debug, thiserror::Error)]
+pub enum SceneFileError {
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("json: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("scene: {0}")]
+    Scene(#[from] RenderError),
+}
+
+/// Save a scene to a JSON file (the scene-file format, spec Part XXVI).
+/// The scene is first serialized to its config model, so only content is
+/// persisted — the renderer and output layout remain host choices.
+pub fn save_scene_json(path: &std::path::Path, scene: &SpatialScene) -> Result<(), SceneFileError> {
+    let cfg = scene.to_config();
+    let file = std::fs::File::create(path)?;
+    serde_json::to_writer_pretty(file, &cfg)?;
+    Ok(())
+}
+
+/// Load a scene from a JSON file, validating it against the engine caps.
+pub fn load_scene_json(path: &std::path::Path) -> Result<SpatialScene, SceneFileError> {
+    let file = std::fs::File::open(path)?;
+    let cfg: config::SpatialSceneConfig = serde_json::from_reader(file)?;
+    Ok(SpatialScene::from_config(&cfg)?)
 }
 
 #[cfg(test)]
@@ -203,6 +374,95 @@ mod tests {
         let local = xf.apply_to_point(Vec3::new(12.0, 0.0, 0.0));
         assert!((local.x - 2.0).abs() < 1e-5);
         assert!((local.y).abs() < 1e-5);
+    }
+
+    #[test]
+    fn config_round_trip_preserves_content() {
+        let mut sc = SpatialScene::new(48_000);
+        sc.listener
+            .set_position(V::new(1.0, 2.0, 0.5))
+            .set_orientation(Quat::from_euler_rad(0.7, 0.3, -0.2));
+        let o = sc.create_audio_object(V::new(-3.0, 4.0, 1.0)).unwrap();
+        let obj = sc.object_mut(o).unwrap();
+        obj.gain = 0.8;
+        obj.spread = 0.4;
+        obj.room_send = 0.5;
+        obj.lfe_send = 0.2;
+        let b = sc
+            .create_bed(crate::decode::ChannelLayout::SevenPointOne)
+            .unwrap();
+        sc.bed_mut(b).unwrap().gain = 0.9;
+        let f = sc.create_field().unwrap();
+        sc.field_mut(f).unwrap().gain = 0.7;
+        sc.room.enabled = true;
+        sc.room.width = 10.0;
+        sc.room.rt60_ms = 650.0;
+
+        let cfg = sc.to_config();
+        assert!(cfg.validate().is_ok(), "saved scene validates");
+        let back = SpatialScene::from_config(&cfg).unwrap();
+        assert_eq!(back.sample_rate, 48_000);
+        assert!((back.listener.position - sc.listener.position).length() < 1e-5);
+        assert!((back.listener.orientation.dot(sc.listener.orientation)).abs() > 0.9999);
+        let bo = back.object(o).unwrap();
+        let so = sc.object(o).unwrap();
+        assert!((bo.position - so.position).length() < 1e-5);
+        assert!((bo.gain - so.gain).abs() < 1e-6);
+        assert!((bo.spread - so.spread).abs() < 1e-6);
+        assert!((bo.room_send - so.room_send).abs() < 1e-6);
+        assert!((bo.lfe_send - so.lfe_send).abs() < 1e-6);
+        let bb = back.bed(b).unwrap();
+        assert_eq!(bb.channels(), sc.bed(b).unwrap().channels());
+        assert!((bb.gain - 0.9).abs() < 1e-6);
+        let bf = back.field(f).unwrap();
+        assert!((bf.gain - 0.7).abs() < 1e-6);
+        assert!(back.room.enabled);
+        assert!((back.room.width - 10.0).abs() < 1e-6);
+        assert!((back.room.rt60_ms - 650.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn save_load_json_round_trip() {
+        let mut sc = SpatialScene::new(48_000);
+        sc.create_audio_object(V::new(-1.0, 2.0, 0.0));
+        sc.create_bed(crate::decode::ChannelLayout::FivePointOne);
+        sc.create_field();
+        sc.room.enabled = true;
+        let path = std::env::temp_dir().join(format!(
+            "freebuff_scene_roundtrip_{}.json",
+            std::process::id()
+        ));
+        save_scene_json(&path, &sc).unwrap();
+        let back = load_scene_json(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(back.objects.len(), 1);
+        assert_eq!(back.beds.len(), 1);
+        assert_eq!(back.fields.len(), 1);
+        assert!(back.room.enabled);
+    }
+
+    #[test]
+    fn from_config_rejects_overflow_and_bad_roles() {
+        use config::{SpatialObjectConfig, SpatialSceneConfig};
+        let cfg = SpatialSceneConfig {
+            objects: (0..65).map(|_| SpatialObjectConfig::default()).collect(),
+            ..Default::default()
+        };
+        assert!(matches!(
+            SpatialScene::from_config(&cfg),
+            Err(RenderError::CapacityExceeded)
+        ));
+        let mut cfg = SpatialSceneConfig::default();
+        cfg.objects.push(SpatialObjectConfig::default());
+        cfg.beds.push(config::SpatialBedConfig {
+            channels: vec!["FL".to_string(), "BOGUS".to_string()],
+            ..Default::default()
+        });
+        assert!(matches!(
+            SpatialScene::from_config(&cfg),
+            Err(RenderError::InvalidScene)
+        ));
+        assert!(cfg.validate().is_err());
     }
 
     #[test]

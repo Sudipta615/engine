@@ -4,7 +4,7 @@
 //! independent bus that a *field* (or any spatial source) encodes into and
 //! that any speaker layout decodes from, so the same bus renders to stereo,
 //! 5.1, 7.1.4, or a custom array without re-authoring. It is the natural
-//! home for diffuse environments, ambience and the future room's late field
+//! home for diffuse environments, ambience and the room's late field
 //! (§32, §55).
 //!
 //! ```text
@@ -13,31 +13,45 @@
 //!
 //! ## Conventions (documented, spec §35 / §153)
 //!
-//! - **Channel ordering**: ACN — order 1 is `[W, Y, Z, X]` (ACN 0–3).
+//! - **Channel ordering**: ACN — order 1 is `[W, Y, Z, X]` (ACN 0–3),
+//!   order 2 appends ACN 4–8.
 //! - **Normalization**: SN3D (W = 1, first order = `√3` times the
-//!   direction components).
+//!   direction components, second order = `√15·(xy, yz)`,
+//!   `(√5/2)(3z²−1)`, `√15·xz`, `(√15/2)(x²−y²)`).
 //! - **Coordinate frame**: the spatial layer's single frame (`+X` right,
 //!   `+Y` front, `+Z` up); directions are listener-space unit vectors.
-//! - **Basis**: real spherical harmonics. Order 1 is implemented;
-//!   `channel_count(order) = (order+1)²` and the per-order decoder weight
-//!   table make higher orders a table + rotation extension (§34).
-//! - **Rotation**: an order-1 rotation keeps `W` invariant and rotates the
-//!   `X Y Z` channels by the same 3×3 as direction vectors. The renderer
-//!   applies the listener orientation, so a world-encoded field stays
-//!   world-fixed as the listener turns (§48).
+//! - **Basis**: real spherical harmonics. Order 1 is the engine-wide
+//!   default ([`AMBISONIC_ORDER`]); the decoder and renderer accept orders
+//!   up to [`MAX_AMBISONIC_ORDER`] (2 = second-order, 9 channels) — the
+//!   documented §34 table + rotation extension.
+//! - **Rotation**: order-1 rotation keeps `W` invariant and rotates the
+//!   `X Y Z` channels by the same 3×3 as direction vectors. Order-2
+//!   rotation keeps `W` invariant, rotates the first-order block like
+//!   vectors, and rotates the second-order block by its exact 5×5 Wigner
+//!   matrix (the basis functions are quadratic forms in the direction, so
+//!   the block is the representation of `F ↦ R F Rᵀ` on the traceless
+//!   quadratic forms — computed by Frobenius projection, exact by
+//!   construction). The renderer applies the listener orientation, so a
+//!   world-encoded field stays world-fixed as the listener turns (§48).
 //! - **Decoding** (§36): the sampling ("basic") decoder `D = Y(S)ᵀ/N` —
-//!   a plane wave from `d` lands on speaker `s` as `(1 + 3·cosθ)/N` — plus
-//!   a **max-rE** policy (`a0 = 1, a1 = √3/2 ≈ 0.866`, the documented FOA
-//!   convention) which narrows the lobe. Decoder selection is separate from
-//!   the scene representation.
+//!   every order weighted equally — plus a **max-rE** policy that narrows
+//!   the lobe: order 1 uses the documented FOA window `a1 = √3/2 ≈ 0.866`;
+//!   order 2 uses the published Zotter–Frank window `a1 ≈ 0.9057,
+//!   a2 ≈ 0.6827`. Decoder selection is separate from the scene
+//!   representation.
 
 use super::math::{Quat, Vec3};
 use super::render::RenderError;
 use super::speaker::SpeakerLayout;
 use crate::buffer::MAX_AUDIO_BLOCK_FRAMES;
 
-/// The implemented ambisonic order (1 = First-Order Ambisonics, FOA).
+/// The default ambisonic order (1 = First-Order Ambisonics, FOA) — the
+/// engine-wide bus width for fields and virtual rings.
 pub const AMBISONIC_ORDER: u8 = 1;
+
+/// Highest implemented order (2 = Second-Order Ambisonics, SOA — 9
+/// channels).
+pub const MAX_AMBISONIC_ORDER: u8 = 2;
 
 /// Number of ambisonic channels for `order` (`(order+1)²`).
 pub fn channel_count(order: u8) -> usize {
@@ -48,6 +62,9 @@ pub fn channel_count(order: u8) -> usize {
 /// FOA channel count (order [`AMBISONIC_ORDER`]).
 pub const AMBISONIC_CHANNELS: usize = 4;
 
+/// SOA channel count (order [`MAX_AMBISONIC_ORDER`]).
+pub const AMBISONIC_CHANNELS_ORDER_2: usize = 9;
+
 /// Real spherical-harmonic basis for a unit direction, ACN/SN3D, order 1:
 /// `[W, Y, Z, X]` = `[1, √3·y, √3·z, √3·x]`.
 #[inline]
@@ -56,7 +73,34 @@ pub fn sh_foa(dir: Vec3) -> [f32; 4] {
     [1.0, s3 * dir.y, s3 * dir.z, s3 * dir.x]
 }
 
-/// Encode a plane wave from `dir` (gain `g`) into one FOA bus frame
+/// Real spherical-harmonic basis, ACN/SN3D, order ≤ [`MAX_AMBISONIC_ORDER`].
+/// Writes `channel_count(order)` values into `out` (panics if too short);
+/// order 1 is exactly [`sh_foa`], order 2 appends ACN 4–8.
+/// `dir` is normalised defensively; a zero direction reads as `+Y`.
+#[inline]
+pub fn sh_n(order: u8, dir: Vec3, out: &mut [f32]) {
+    let n = channel_count(order);
+    assert!(out.len() >= n, "sh_n: out too short ({} < {n})", out.len());
+    let d = dir.normalized().unwrap_or(Vec3::Y);
+    let (x, y, z) = (d.x, d.y, d.z);
+    out[0] = 1.0;
+    if order >= 1 {
+        let s3 = 3.0f32.sqrt();
+        out[1] = s3 * y;
+        out[2] = s3 * z;
+        out[3] = s3 * x;
+    }
+    if order >= 2 {
+        let s15 = 15.0f32.sqrt();
+        out[4] = s15 * x * y;
+        out[5] = s15 * y * z;
+        out[6] = 5.0f32.sqrt() * 0.5 * (3.0 * z * z - 1.0);
+        out[7] = s15 * x * z;
+        out[8] = s15 * 0.5 * (x * x - y * y);
+    }
+}
+
+/// Encode a plane wave from `dir` (gain `g`) into one order-1 FOA bus frame
 /// (`[W, Y, Z, X]`). `dir` is normalised defensively; a zero direction
 /// encodes silence rather than NaN.
 pub fn encode_plane_wave(dir: Vec3, gain: f32, out: &mut [f32; 4]) {
@@ -67,8 +111,18 @@ pub fn encode_plane_wave(dir: Vec3, gain: f32, out: &mut [f32; 4]) {
     }
 }
 
-/// Rotate an FOA bus frame by `q` (order-1 rotation: `W` invariant, the
-/// `X Y Z` channels rotate exactly like direction vectors). `q` is the
+/// Encode a plane wave from `dir` (gain `g`) into a bus frame of any
+/// supported order (write `channel_count(order)` values into `out`).
+pub fn encode_plane_wave_n(order: u8, dir: Vec3, gain: f32, out: &mut [f32]) {
+    let d = dir.normalized().unwrap_or(Vec3::Y);
+    sh_n(order, d, out);
+    for v in out.iter_mut().take(channel_count(order)) {
+        *v *= gain;
+    }
+}
+
+/// Rotate an order-1 FOA bus frame by `q` (order-1 rotation: `W` invariant,
+/// the `X Y Z` channels rotate exactly like direction vectors). `q` is the
 /// world-space rotation to apply to the field.
 pub fn rotate_bus_frame(q: Quat, frame: &mut [f32; 4]) {
     // Channel order [W, Y, Z, X] → direction (X, Y, Z) = (frame[3], frame[1],
@@ -80,35 +134,195 @@ pub fn rotate_bus_frame(q: Quat, frame: &mut [f32; 4]) {
     frame[3] = r.x;
 }
 
+/// Rotate a bus frame of any supported order by `q`. Order 1 matches
+/// [`rotate_bus_frame`]; order 2 additionally rotates the second-order
+/// block (ACN 4–8) by its exact 5×5 Wigner matrix. `frame` must hold at
+/// least `channel_count(order)` values.
+pub fn rotate_bus_frame_n(q: Quat, order: u8, frame: &mut [f32]) {
+    match order {
+        0 => {}
+        1 => {
+            assert!(frame.len() >= 4);
+            let v = Vec3::new(frame[3], frame[1], frame[2]);
+            let r = q.rotate_vec3(v);
+            frame[1] = r.y;
+            frame[2] = r.z;
+            frame[3] = r.x;
+        }
+        2 => {
+            assert!(frame.len() >= 9);
+            // W invariant.
+            let v = Vec3::new(frame[3], frame[1], frame[2]);
+            let r = q.rotate_vec3(v);
+            frame[1] = r.y;
+            frame[2] = r.z;
+            frame[3] = r.x;
+            // Exact second-order Wigner block (computed once per call;
+            // the renderer hoists it per block since the orientation is
+            // constant there).
+            let w2 = wigner_block_2(q);
+            let c = [frame[4], frame[5], frame[6], frame[7], frame[8]];
+            let mut out5 = [0.0f32; 5];
+            for (i, &ci) in c.iter().enumerate() {
+                if ci == 0.0 {
+                    continue;
+                }
+                for j in 0..5 {
+                    out5[j] += w2[i][j] * ci;
+                }
+            }
+            frame[4] = out5[0];
+            frame[5] = out5[1];
+            frame[6] = out5[2];
+            frame[7] = out5[3];
+            frame[8] = out5[4];
+        }
+        _ => panic!("rotate_bus_frame_n: order {order} unsupported"),
+    }
+}
+
+/// The 3×3 rotation matrix for `q` (`R · v` rotates `v` by `q`, matching
+/// [`Quat::rotate_vec3`]). f64 for the order-2 block's exactness.
+fn rotation_matrix_f64(q: Quat) -> [[f64; 3]; 3] {
+    let q = q.normalized().unwrap_or(Quat::IDENTITY);
+    let (x, y, z, w) = (q.x as f64, q.y as f64, q.z as f64, q.w as f64);
+    [
+        [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y - w * z),
+            2.0 * (x * z + w * y),
+        ],
+        [
+            2.0 * (x * y + w * z),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z - w * x),
+        ],
+        [
+            2.0 * (x * z - w * y),
+            2.0 * (y * z + w * x),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+    ]
+}
+
+/// The exact order-2 Wigner rotation block for the real-SH basis (ACN 4–8).
+///
+/// The second-order SN3D basis functions are quadratic forms in the
+/// direction (`√15·xy, √15·yz, (√5/2)(2z²−x²−y²), √15·xz, (√15/2)(x²−y²)`);
+/// under a rotation `R` each form matrix transforms as `F ↦ R F Rᵀ`. The
+/// 5×5 block is the representation of that action in the orthogonal,
+/// equal-norm (7.5) basis, computed by Frobenius projection — exact by
+/// construction, with the basis property pinned by tests
+/// (`sh_n(R·d) == W(R)·sh_n(d)`).
+fn wigner_block_2(q: Quat) -> [[f32; 5]; 5] {
+    let r = rotation_matrix_f64(q);
+    let s15 = 15.0f64.sqrt();
+    let s5h = 5.0f64.sqrt() * 0.5;
+    let s15h = s15 * 0.5;
+    // Basis form matrices (SN3D-scaled), ACN 4..8, all traceless.
+    let basis: [[[f64; 3]; 3]; 5] = [
+        // xy
+        [
+            [0.0, s15 * 0.5, 0.0],
+            [s15 * 0.5, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
+        // yz
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, s15 * 0.5],
+            [0.0, s15 * 0.5, 0.0],
+        ],
+        // 2z²−x²−y²
+        [[-s5h, 0.0, 0.0], [0.0, -s5h, 0.0], [0.0, 0.0, 2.0 * s5h]],
+        // xz
+        [
+            [0.0, 0.0, s15 * 0.5],
+            [0.0, 0.0, 0.0],
+            [s15 * 0.5, 0.0, 0.0],
+        ],
+        // x²−y²
+        [[s15h, 0.0, 0.0], [0.0, -s15h, 0.0], [0.0, 0.0, 0.0]],
+    ];
+    let mut w = [[0.0f32; 5]; 5];
+    for (i, fi) in basis.iter().enumerate() {
+        // rfr = R F_i Rᵀ.
+        let mut rf = [[0.0f64; 3]; 3];
+        for a in 0..3 {
+            for b in 0..3 {
+                let mut s = 0.0;
+                for c in 0..3 {
+                    s += r[a][c] * fi[c][b];
+                }
+                rf[a][b] = s;
+            }
+        }
+        let mut rfr = [[0.0f64; 3]; 3];
+        for a in 0..3 {
+            for b in 0..3 {
+                let mut s = 0.0;
+                for c in 0..3 {
+                    s += rf[a][c] * r[b][c];
+                }
+                rfr[a][b] = s;
+            }
+        }
+        for (j, fj) in basis.iter().enumerate() {
+            let mut ip = 0.0;
+            for a in 0..3 {
+                for b in 0..3 {
+                    ip += rfr[a][b] * fj[a][b];
+                }
+            }
+            // All basis norms are 7.5 (orthogonal, equal-norm).
+            w[i][j] = (ip / 7.5) as f32;
+        }
+    }
+    w
+}
+
 /// Ambisonic decoder policy (spec §36): how the bus maps onto speakers.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DecoderPolicy {
     /// Sampling ("basic") decoder: `D = Y(S)ᵀ/N` — every order weighted
     /// equally. A plane wave from `d` lands on speaker `s` as
-    /// `(1 + 3·cosθ)/N`.
+    /// `(1 + 3·cosθ)/N` (order 1).
     #[default]
     Basic,
-    /// Max-rE FOA weights (`a0 = 1, a1 = √3/2 ≈ 0.866`) — narrows the
-    /// decoded lobe for a tighter image (documented convention).
+    /// Max-rE weights — narrows the decoded lobe for a tighter image.
+    /// Order 1: `a0 = 1, a1 = √3/2 ≈ 0.866` (the documented FOA window);
+    /// order 2: `a1 ≈ 0.9057, a2 ≈ 0.6827` (the published Zotter–Frank
+    /// window).
     MaxRe,
 }
 
-/// Per-order decoder weights for `policy` (order 1: `[a0, a1]`).
-/// Basic weights everything equally; Max-rE applies the documented FOA
-/// `a1 = √3/2`. Higher orders extend this table.
-fn order_weights(policy: DecoderPolicy) -> [f32; 2] {
-    match policy {
-        DecoderPolicy::Basic => [1.0, 1.0],
-        DecoderPolicy::MaxRe => [1.0, 0.866_025_4],
+/// Per-order decoder weights for `policy` (length `channel_count(order)`;
+/// every channel of order `l` shares `a_l`, so Basic is all ones and
+/// Max-rE fills runs).
+fn order_weights(policy: DecoderPolicy, order: u8) -> Vec<f32> {
+    let n = channel_count(order);
+    let mut w = vec![1.0f32; n];
+    match (policy, order) {
+        (DecoderPolicy::Basic, _) => {}
+        (DecoderPolicy::MaxRe, 1) => w[1..4].fill(0.866_025_4),
+        (DecoderPolicy::MaxRe, 2) => {
+            w[1..4].fill(0.905_663_1);
+            w[4..9].fill(0.682_689_4);
+        }
+        _ => {}
     }
+    w
 }
 
 /// The ambisonic decoder: a precomputed per-speaker decode matrix applied to
-/// an interleaved FOA bus. Realtime-safe after `prepare` (all geometry work
-/// happens there; `process_bus` is flat-array arithmetic).
-#[derive(Debug, Default)]
+/// an interleaved bus of any supported order. Realtime-safe after `prepare`
+/// (all geometry work happens there; `process_bus` is flat-array
+/// arithmetic).
+#[derive(Debug)]
 pub struct AmbisonicDecoder {
-    /// Per-speaker decode weights, flat `speakers × AMBISONIC_CHANNELS`.
+    /// Bus order (default [`AMBISONIC_ORDER`]).
+    order: u8,
+    /// Per-speaker decode weights, flat `speakers × channel_count(order)`.
     gains: Vec<f32>,
     /// Enabled non-LFE speaker output indices (rows of `gains`).
     speakers: Vec<usize>,
@@ -117,9 +331,26 @@ pub struct AmbisonicDecoder {
     prepared: bool,
 }
 
+impl Default for AmbisonicDecoder {
+    fn default() -> Self {
+        Self::new(DecoderPolicy::Basic)
+    }
+}
+
 impl AmbisonicDecoder {
+    /// Order-1 decoder (the FOA default).
     pub fn new(policy: DecoderPolicy) -> Self {
+        Self::with_order(policy, AMBISONIC_ORDER)
+    }
+
+    /// Decoder for any supported order (≤ [`MAX_AMBISONIC_ORDER`]).
+    pub fn with_order(policy: DecoderPolicy, order: u8) -> Self {
+        assert!(
+            order <= MAX_AMBISONIC_ORDER,
+            "ambisonic order {order} unsupported (max {MAX_AMBISONIC_ORDER})"
+        );
         Self {
+            order,
             gains: Vec::new(),
             speakers: Vec::new(),
             speaker_count: 0,
@@ -132,6 +363,16 @@ impl AmbisonicDecoder {
         self.policy
     }
 
+    /// The bus order this decoder consumes.
+    pub fn order(&self) -> u8 {
+        self.order
+    }
+
+    /// Width of the bus this decoder consumes (`channel_count(order)`).
+    pub fn bus_width(&self) -> usize {
+        channel_count(self.order)
+    }
+
     /// Control path: build the decode matrix for `layout` (enabled non-LFE
     /// speakers, unit directions, `N` = pan-speaker count).
     pub fn prepare(
@@ -140,7 +381,8 @@ impl AmbisonicDecoder {
         _sample_rate: u32,
     ) -> Result<(), RenderError> {
         layout.validate()?;
-        let w = order_weights(self.policy);
+        let w = order_weights(self.policy, self.order);
+        let ch = channel_count(self.order);
         let mut speakers = Vec::new();
         for (idx, s) in layout.speakers.iter().enumerate() {
             if s.is_lfe || !s.enabled {
@@ -152,18 +394,18 @@ impl AmbisonicDecoder {
             return Err(RenderError::DegenerateGeometry);
         }
         let n = speakers.len() as f32;
-        let mut gains = Vec::with_capacity(speakers.len() * AMBISONIC_CHANNELS);
+        let mut gains = Vec::with_capacity(speakers.len() * ch);
         for idx in &speakers {
             let dir = layout.speakers[*idx]
                 .position
                 .normalized()
                 .unwrap_or(Vec3::Y);
-            let y = sh_foa(dir);
-            // D[s] = (1/N)·[a0·W, a1·Y, a1·Z, a1·X].
-            gains.push(w[0] * y[0] / n);
-            gains.push(w[1] * y[1] / n);
-            gains.push(w[1] * y[2] / n);
-            gains.push(w[1] * y[3] / n);
+            let mut y = vec![0.0f32; ch];
+            sh_n(self.order, dir, &mut y);
+            // D[s] = (1/N)·[a_l · Y_l^m(d)].
+            for (k, v) in y.iter().enumerate() {
+                gains.push(w[k] * v / n);
+            }
         }
         self.gains = gains;
         self.speakers = speakers;
@@ -187,43 +429,46 @@ impl AmbisonicDecoder {
         self.prepared
     }
 
-    /// Decode a single FOA frame into `row[0 .. self.speakers.len()]` (the
+    /// Decode a single bus frame into `row[0 .. self.speakers.len()]` (the
     /// pan speakers in decode order). Allocation-free; the per-frame
     /// building block for pipelines that wrap the decode in further
     /// processing (e.g. the field mixer's decorrelation rings).
-    pub fn decode_frame(&self, frame: &[f32; 4], row: &mut [f32]) {
+    pub fn decode_frame(&self, frame: &[f32], row: &mut [f32]) {
+        let ch = channel_count(self.order);
         for (k, v) in row.iter_mut().enumerate().take(self.speakers.len()) {
-            let g = k * AMBISONIC_CHANNELS;
-            *v = self.gains[g] * frame[0]
-                + self.gains[g + 1] * frame[1]
-                + self.gains[g + 2] * frame[2]
-                + self.gains[g + 3] * frame[3];
+            let g = k * ch;
+            let mut acc = 0.0f32;
+            for c in 0..ch {
+                acc += self.gains[g + c] * frame.get(c).copied().unwrap_or(0.0);
+            }
+            *v = acc;
         }
     }
 
-    /// Decode an interleaved FOA bus (`frames × AMBISONIC_CHANNELS`,
-    /// `[W, Y, Z, X]` per frame) into `out` (`frames × speakers`, **added**,
-    /// not cleared — the hybrid mixer sums classes). Missing bus frames are
-    /// treated as silence. Allocation-free.
+    /// Decode an interleaved bus (`frames × channel_count(order)` per frame)
+    /// into `out` (`frames × speakers`, **added**, not cleared — the hybrid
+    /// mixer sums classes). Missing bus frames are treated as silence.
+    /// Allocation-free.
     pub fn process_bus(&self, bus: &[f32], frames: usize, out: &mut [f32]) {
         if !self.prepared || frames == 0 {
             return;
         }
+        let ch = channel_count(self.order);
         let n_spk = out.len().checked_div(frames).unwrap_or(0);
         if n_spk == 0 {
             return;
         }
         for f in 0..frames {
-            let b0 = bus.get(f * AMBISONIC_CHANNELS).copied().unwrap_or(0.0);
-            let b1 = bus.get(f * AMBISONIC_CHANNELS + 1).copied().unwrap_or(0.0);
-            let b2 = bus.get(f * AMBISONIC_CHANNELS + 2).copied().unwrap_or(0.0);
-            let b3 = bus.get(f * AMBISONIC_CHANNELS + 3).copied().unwrap_or(0.0);
+            let mut frame = [0.0f32; AMBISONIC_CHANNELS_ORDER_2];
+            for (c, slot) in frame.iter_mut().enumerate().take(ch) {
+                *slot = bus.get(f * ch + c).copied().unwrap_or(0.0);
+            }
             for (k, &spk) in self.speakers.iter().enumerate() {
-                let row = k * AMBISONIC_CHANNELS;
-                let v = self.gains[row] * b0
-                    + self.gains[row + 1] * b1
-                    + self.gains[row + 2] * b2
-                    + self.gains[row + 3] * b3;
+                let row = k * ch;
+                let mut v = 0.0f32;
+                for (c, &fc) in frame.iter().enumerate().take(ch) {
+                    v += self.gains[row + c] * fc;
+                }
                 if v != 0.0 && spk < n_spk {
                     out[f * n_spk + spk] += v;
                 }
@@ -235,8 +480,9 @@ impl AmbisonicDecoder {
     /// returns each pan speaker's gain for a source at `dir`.
     #[cfg(test)]
     fn plane_wave_gains(&self, dir: Vec3) -> Vec<f32> {
-        let mut frame = [0.0f32; 4];
-        encode_plane_wave(dir, 1.0, &mut frame);
+        let ch = channel_count(self.order);
+        let mut frame = vec![0.0f32; ch];
+        encode_plane_wave_n(self.order, dir, 1.0, &mut frame);
         let mut out = vec![0.0f32; self.speaker_count];
         let mut bus = Vec::new();
         bus.extend_from_slice(&frame);
@@ -245,12 +491,13 @@ impl AmbisonicDecoder {
     }
 }
 
-/// A standalone ambisonic renderer (spec §23): decodes a FOA bus into the
-/// active speaker layout, applying the listener's orientation (so a
-/// world-encoded field stays world-fixed, §48) and per-speaker calibration.
+/// A standalone ambisonic renderer (spec §23): decodes an ambisonic bus of
+/// order ≤ [`MAX_AMBISONIC_ORDER`] into the active speaker layout, applying
+/// the listener's orientation (so a world-encoded field stays world-fixed,
+/// §48) and per-speaker calibration.
 ///
-/// Input convention for `process_block`: `object_inputs` carries the four
-/// FOA planes `[W, Y, Z, X]` (one mono plane per channel, world
+/// Input convention for `process_block`: `object_inputs` carries the bus
+/// planes `[W, Y, Z, X, …]` (one mono plane per channel, world
 /// orientation). Beds/fields are not part of this renderer (the hybrid
 /// renderers mix them); the trait's default `process_hybrid_block` forwards
 /// to the bus path.
@@ -265,17 +512,28 @@ pub struct AmbisonicRenderer {
 }
 
 impl AmbisonicRenderer {
+    /// Order-1 (FOA) renderer.
     pub fn new(policy: DecoderPolicy) -> Self {
+        Self::with_order(policy, AMBISONIC_ORDER)
+    }
+
+    /// Renderer for any supported order.
+    pub fn with_order(policy: DecoderPolicy, order: u8) -> Self {
         Self {
-            decoder: AmbisonicDecoder::new(policy),
+            decoder: AmbisonicDecoder::with_order(policy, order),
             out_trim: Vec::new(),
-            bus: vec![0.0; AMBISONIC_CHANNELS * MAX_AUDIO_BLOCK_FRAMES],
+            bus: vec![0.0; AMBISONIC_CHANNELS_ORDER_2 * MAX_AUDIO_BLOCK_FRAMES],
             prepared: false,
         }
     }
 
     pub fn policy(&self) -> DecoderPolicy {
         self.decoder.policy()
+    }
+
+    /// The rendered bus order.
+    pub fn order(&self) -> u8 {
+        self.decoder.order()
     }
 }
 
@@ -320,32 +578,31 @@ impl super::render::SpatialRenderer for AmbisonicRenderer {
                 got: out.len(),
             });
         }
+        let ch = self.decoder.bus_width();
+        let order = self.decoder.order();
         // Build the listener-space interleaved bus: rotate each world-
-        // oriented FOA frame by the listener orientation (conjugate), so a
+        // oriented bus frame by the listener orientation (conjugate), so a
         // world-fixed field appears to rotate opposite to the head (§48).
         let xf = super::scene::ListenerTransform::from_listener(&scene.listener);
-        let w = object_inputs.first().copied().unwrap_or(&[]);
-        let y = object_inputs.get(1).copied().unwrap_or(&[]);
-        let z = object_inputs.get(2).copied().unwrap_or(&[]);
-        let x = object_inputs.get(3).copied().unwrap_or(&[]);
         for f in 0..frames {
-            let mut frame = [
-                w.get(f).copied().unwrap_or(0.0),
-                y.get(f).copied().unwrap_or(0.0),
-                z.get(f).copied().unwrap_or(0.0),
-                x.get(f).copied().unwrap_or(0.0),
-            ];
-            rotate_bus_frame(xf.orientation, &mut frame);
-            self.bus[f * AMBISONIC_CHANNELS] = frame[0];
-            self.bus[f * AMBISONIC_CHANNELS + 1] = frame[1];
-            self.bus[f * AMBISONIC_CHANNELS + 2] = frame[2];
-            self.bus[f * AMBISONIC_CHANNELS + 3] = frame[3];
+            let mut frame = [0.0f32; AMBISONIC_CHANNELS_ORDER_2];
+            for (c, slot) in frame.iter_mut().enumerate().take(ch) {
+                *slot = object_inputs
+                    .get(c)
+                    .and_then(|plane| plane.get(f))
+                    .copied()
+                    .unwrap_or(0.0);
+            }
+            rotate_bus_frame_n(xf.orientation, order, &mut frame);
+            for (c, &fc) in frame.iter().enumerate().take(ch) {
+                self.bus[f * ch + c] = fc;
+            }
         }
         for sample in out[..need].iter_mut() {
             *sample = 0.0;
         }
         self.decoder
-            .process_bus(&self.bus[..frames * AMBISONIC_CHANNELS], frames, out);
+            .process_bus(&self.bus[..frames * ch], frames, out);
         // Apply per-speaker calibration.
         let n_spk = self.decoder.channels();
         for f in 0..frames {
@@ -382,6 +639,76 @@ mod tests {
     }
 
     #[test]
+    fn order2_basis_matches_documented_sn3d_convention() {
+        // Second-order block (ACN 4–8) at the axes and diagonal:
+        // √15·xy, √15·yz, (√5/2)(3z²−1), √15·xz, (√15/2)(x²−y²).
+        let s15 = 15.0f32.sqrt();
+        let s5h = 5.0f32.sqrt() * 0.5;
+        let s15h = s15 * 0.5;
+        let mut y = [0.0f32; 9];
+        sh_n(2, Vec3::Y, &mut y);
+        // +Y: W=1, Y=√3, Z=0, X=0, xy=0, yz=0, z²=−√5/2, xz=0, x²−y²=−√15/2.
+        assert!((y[0] - 1.0).abs() < EPS);
+        assert!((y[1] - 3.0f32.sqrt()).abs() < EPS);
+        assert!((y[6] + s5h).abs() < EPS, "Y₂⁰ at +Y = −√5/2");
+        assert!((y[8] + s15h).abs() < EPS, "Y₂² at +Y = −√15/2");
+        let mut y = [0.0f32; 9];
+        sh_n(2, Vec3::X, &mut y);
+        assert!((y[8] - s15h).abs() < EPS, "Y₂² at +X = +√15/2");
+        assert!((y[6] + s5h).abs() < EPS);
+        // Diagonal: all second-order channels populated.
+        let d = Vec3::new(1.0, 2.0, 3.0).normalized().unwrap();
+        let mut y = [0.0f32; 9];
+        sh_n(2, d, &mut y);
+        assert!((y[4] - s15 * d.x * d.y).abs() < EPS);
+        assert!((y[5] - s15 * d.y * d.z).abs() < EPS);
+        assert!((y[6] - s5h * (3.0 * d.z * d.z - 1.0)).abs() < EPS);
+        assert!((y[7] - s15 * d.x * d.z).abs() < EPS);
+        assert!((y[8] - s15h * (d.x * d.x - d.y * d.y)).abs() < EPS);
+        // sh_n(1) matches sh_foa exactly (up to fp noise on normalization).
+        let mut a = [0.0f32; 4];
+        sh_n(1, Vec3::Y, &mut a);
+        assert!((a[0] - sh_foa(Vec3::Y)[0]).abs() < EPS);
+        assert!((a[1] - sh_foa(Vec3::Y)[1]).abs() < EPS);
+    }
+
+    #[test]
+    fn sh_basis_is_norm_preserving_on_the_sphere() {
+        // Discrete orthonormality check over an equirectangular grid: the
+        // basis is 4π-normalized (SN3D), so the empirical RMS of Y_l^m over
+        // the grid must converge to 1 (√(mean(y²)) → 1 as the grid refines).
+        use std::f32::consts::{PI, TAU};
+        const STEPS: usize = 48;
+        let mut sums = [0.0f64; 9];
+        let mut count = 0usize;
+        for i in 0..STEPS {
+            let th = (i as f32 + 0.5) * PI / STEPS as f32; // elevation
+            let z = th.cos();
+            let r = th.sin();
+            for j in 0..(2 * STEPS) {
+                let phi = (j as f32 + 0.5) * TAU / (2 * STEPS) as f32;
+                let d = Vec3::new(r * phi.sin(), r * phi.cos(), z);
+                let mut y = [0.0f32; 9];
+                sh_n(2, d, &mut y);
+                for (k, v) in y.iter().enumerate() {
+                    sums[k] += (*v as f64) * (*v as f64) * th.sin() as f64;
+                }
+                count += 1;
+            }
+        }
+        let _ = count; // the grid weight below is analytic, not empirical
+                       // norm² = (1/4π)·Σ y²·sinθ·Δθ·Δφ with Δθ = Δφ = π/STEPS.
+        let weight = std::f64::consts::PI / (4.0 * (STEPS as f64) * (STEPS as f64));
+        for (k, s) in sums.iter().enumerate() {
+            let norm_sq = s * weight;
+            assert!(
+                (norm_sq - 1.0).abs() < 0.02,
+                "order-2 channel {k} SN3D norm² = {norm_sq}"
+            );
+        }
+    }
+
+    #[test]
     fn plane_wave_encode_then_basic_decode_matches_formula() {
         // Basic decoder on N speakers: a plane wave from d lands on speaker
         // s as (1 + 3·cosθ)/N, exactly the documented sampling pattern.
@@ -411,6 +738,44 @@ mod tests {
     }
 
     #[test]
+    fn order2_basic_decode_round_trips_a_plane_wave() {
+        // Order-2 sampling decode: the per-speaker gain for a plane wave
+        // from d must equal Y(S)ᵀ·Y(d)/N — the orthonormal projection
+        // (4π-normalized basis, 1/N spread). Pin against a direct
+        // recomputation for a front source on 7.1.4.
+        let layout = SpeakerLayout::seven_point_one_four();
+        let mut dec = AmbisonicDecoder::with_order(DecoderPolicy::Basic, 2);
+        dec.prepare(&layout, 48_000).unwrap();
+        assert_eq!(dec.bus_width(), 9);
+        let dir = Vec3::Y;
+        let gains = dec.plane_wave_gains(dir);
+        let n = 11usize;
+        let mut pan = 0usize;
+        for (idx, s) in layout.speakers.iter().enumerate() {
+            if s.is_lfe || !s.enabled {
+                continue;
+            }
+            let spk_dir = s.position.normalized().unwrap();
+            let mut spk_y = [0.0f32; 9];
+            let mut src_y = [0.0f32; 9];
+            sh_n(2, spk_dir, &mut spk_y);
+            sh_n(2, dir, &mut src_y);
+            let mut expected = 0.0f32;
+            for k in 0..9 {
+                expected += spk_y[k] * src_y[k];
+            }
+            expected /= n as f32;
+            assert!(
+                (gains[idx] - expected).abs() < 1e-4,
+                "order-2 speaker {idx}: {} want {expected}",
+                gains[idx]
+            );
+            pan += 1;
+        }
+        assert_eq!(pan, n);
+    }
+
+    #[test]
     fn max_re_policy_narrows_the_response() {
         // Max-rE (a1 = √3/2): same front lobe centre, but the rear gain
         // (cosθ = −1) is less negative — narrower, more focused.
@@ -431,6 +796,109 @@ mod tests {
             let expected = (1.0 + 3.0 * a1 * cos) / n as f32;
             assert!((mg[idx] - expected).abs() < 1e-4, "max-rE speaker {idx}");
             assert!(mg[idx].is_finite() && bg[idx].is_finite());
+        }
+    }
+
+    #[test]
+    fn order2_max_re_weights_apply_per_order_run() {
+        // Order-2 max-rE: a1 applies to ACN 1–3, a2 to ACN 4–8 — verify via
+        // the decoder against the documented window directly.
+        let layout = SpeakerLayout::seven_point_one_four();
+        let mut maxre = AmbisonicDecoder::with_order(DecoderPolicy::MaxRe, 2);
+        maxre.prepare(&layout, 48_000).unwrap();
+        let dir = Vec3::Y;
+        let gains = maxre.plane_wave_gains(dir);
+        let n = 11usize;
+        let (a1, a2) = (0.905_663_1f32, 0.682_689_4f32);
+        for (idx, s) in layout.speakers.iter().enumerate() {
+            if s.is_lfe || !s.enabled {
+                continue;
+            }
+            let spk_dir = s.position.normalized().unwrap();
+            let mut spk_y = [0.0f32; 9];
+            let mut src_y = [0.0f32; 9];
+            sh_n(2, spk_dir, &mut spk_y);
+            sh_n(2, dir, &mut src_y);
+            let mut expected = 0.0f32;
+            for k in 0..9 {
+                let a = if k == 0 {
+                    1.0
+                } else if k <= 3 {
+                    a1
+                } else {
+                    a2
+                };
+                // The decoder weights apply on the decode side only (the
+                // encoder stays unweighted).
+                expected += a * spk_y[k] * src_y[k];
+            }
+            expected /= n as f32;
+            assert!(
+                (gains[idx] - expected).abs() < 1e-4,
+                "order-2 max-rE speaker {idx}: {} want {expected}",
+                gains[idx]
+            );
+        }
+        // The max-rE order-2 lobe is narrower than order-1 max-rE: rear
+        // (RL/RR) energy is closer to zero.
+        let o1 = {
+            let mut d = AmbisonicDecoder::new(DecoderPolicy::MaxRe);
+            d.prepare(&layout, 48_000).unwrap();
+            d.plane_wave_gains(Vec3::Y)
+        };
+        let rear_o1: f32 = o1[6..8].iter().map(|g| g * g).sum();
+        let rear_o2: f32 = gains[6..8].iter().map(|g| g * g).sum();
+        assert!(
+            rear_o2 < rear_o1,
+            "order-2 max-rE narrows the rear lobe ({rear_o2} vs {rear_o1})"
+        );
+    }
+
+    #[test]
+    fn rotation_commutes_with_the_basis() {
+        // The defining property: rotating a direction then evaluating the
+        // basis equals rotating the basis coefficients (block-diagonal
+        // [1, R, W₂]).
+        for q in [
+            Quat::from_euler_rad(0.7, 0.3, -0.2),
+            Quat::from_euler_rad(FRAC_PI_2, 0.0, 0.0),
+            Quat::from_euler_rad(0.0, -1.1, 2.3),
+        ] {
+            let r = |v: Vec3| q.rotate_vec3(v);
+            for d in [Vec3::Y, Vec3::X, Vec3::new(1.0, 2.0, 3.0)] {
+                let d = d.normalized().unwrap();
+                let rd = r(d);
+                let mut y = [0.0f32; 9];
+                let mut yr = [0.0f32; 9];
+                sh_n(2, d, &mut y);
+                sh_n(2, rd, &mut yr);
+                // Apply the rotation operator directly.
+                let mut rotated = y;
+                rotate_bus_frame_n(q, 2, &mut rotated);
+                for k in 0..9 {
+                    assert!(
+                        (rotated[k] - yr[k]).abs() < 1e-3,
+                        "q={q:?} d={d:?} channel {k}: {} want {}",
+                        rotated[k],
+                        yr[k]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn order2_rotation_round_trips_to_identity() {
+        let q = Quat::from_euler_rad(0.7, 0.3, -0.2);
+        let d = Vec3::new(1.0, 2.0, 3.0).normalized().unwrap();
+        let mut frame = [0.0f32; 9];
+        encode_plane_wave_n(2, d, 1.0, &mut frame);
+        rotate_bus_frame_n(q, 2, &mut frame);
+        rotate_bus_frame_n(q.conjugate(), 2, &mut frame);
+        let mut orig = [0.0f32; 9];
+        encode_plane_wave_n(2, d, 1.0, &mut orig);
+        for k in 0..9 {
+            assert!((frame[k] - orig[k]).abs() < 1e-3, "channel {k}");
         }
     }
 
@@ -484,6 +952,71 @@ mod tests {
     }
 
     #[test]
+    fn order2_renderer_decodes_onto_the_layout() {
+        use super::super::render::SpatialRenderer;
+        let layout = SpeakerLayout::stereo();
+        let mut r = AmbisonicRenderer::with_order(DecoderPolicy::Basic, 2);
+        r.prepare(&layout, 48_000).unwrap();
+        let scene = SpatialScene::new(48_000);
+        // Encode a front plane wave (W=1, Y=√3) at order 2.
+        let frames = 8usize;
+        let w = vec![1.0f32; frames];
+        let y = vec![3.0f32.sqrt(); frames];
+        let rest: Vec<&[f32]> = (2..9).map(|_| &[][..]).collect();
+        let mut planes: Vec<&[f32]> = vec![&w, &y];
+        planes.extend(rest);
+        let mut out = vec![0.0f32; 2 * frames];
+        r.process_block(&scene, &planes, frames, &mut out).unwrap();
+        // Sampling decode on 2 speakers: (1 + 3·cos30°)/2 — the order-2
+        // channels contribute zero for a front source on this layout.
+        let expected = (1.0 + 3.0 * 30f32.to_radians().cos()) / 2.0;
+        assert!((out[0] - expected).abs() < 1e-3, "FL {}", out[0]);
+        assert!((out[1] - expected).abs() < 1e-3, "FR {}", out[1]);
+        assert!(out.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn order2_renderer_rotates_world_field_with_listener() {
+        use super::super::render::SpatialRenderer;
+        let layout = SpeakerLayout::stereo();
+        let mut r = AmbisonicRenderer::with_order(DecoderPolicy::Basic, 2);
+        r.prepare(&layout, 48_000).unwrap();
+        let mut scene = SpatialScene::new(48_000);
+        scene
+            .listener
+            .set_orientation(Quat::from_euler_rad(FRAC_PI_2, 0.0, 0.0));
+        // Encode a plane wave at world +X at order 2. The yawed listener
+        // hears it at front.
+        let frames = 8usize;
+        let mut frame = [0.0f32; 9];
+        encode_plane_wave_n(2, Vec3::X, 1.0, &mut frame);
+        let planes: Vec<Vec<f32>> = frame.iter().map(|&v| vec![v; frames]).collect();
+        let refs: Vec<&[f32]> = planes.iter().map(|p| p.as_slice()).collect();
+        let mut out = vec![0.0f32; 2 * frames];
+        r.process_block(&scene, &refs, frames, &mut out).unwrap();
+        // The rotated frame is exactly the order-2 encoding of +Y; the
+        // stereo decode is the full 9-channel projection, computed here
+        // directly.
+        let n = 2usize;
+        let mut src = [0.0f32; 9];
+        sh_n(2, Vec3::Y, &mut src);
+        for (idx, s) in layout.speakers.iter().enumerate() {
+            let mut spk = [0.0f32; 9];
+            sh_n(2, s.position.normalized().unwrap(), &mut spk);
+            let mut expected = 0.0f32;
+            for k in 0..9 {
+                expected += spk[k] * src[k];
+            }
+            expected /= n as f32;
+            assert!(
+                (out[idx] - expected).abs() < 1e-3,
+                "speaker {idx}: {} want {expected}",
+                out[idx]
+            );
+        }
+    }
+
+    #[test]
     fn decoder_rejects_empty_layout() {
         let mut dec = AmbisonicDecoder::new(DecoderPolicy::Basic);
         assert!(matches!(
@@ -502,5 +1035,10 @@ mod tests {
             dec.prepare(&lfe_only, 48_000),
             Err(RenderError::DegenerateGeometry)
         ));
+        // Unsupported order panics at construction (order 3 has no basis).
+        let result = std::panic::catch_unwind(|| {
+            AmbisonicDecoder::with_order(DecoderPolicy::Basic, 3);
+        });
+        assert!(result.is_err(), "order 3 rejected");
     }
 }

@@ -38,19 +38,23 @@ drive the whole surface.
 │   │                           #   plans split by concern (construction/plan/swap/
 │   │                           #   access/controls/lifecycle/process/limiter/report
 │   │                           #   + nodes/: mix/{mod,envelope,sum}, aux_node, …)
-│   ├── spatial/                # speaker-independent spatial layer (Phases 8–15):
+│   ├── spatial/                # speaker-independent spatial layer (Phases 8–19):
 │   │                           #   math/ (Vec3+Quat+one coordinate system),
 │   │                           #   scene/object/speaker/level/render + panner/
 │   │                           #   (BasicPanner, equal-power) + vbap/
 │   │                           #   (3-triplet VBAP) + directivity/,
 │   │                           #   occlusion/, spread/ (object behavior) +
 │   │                           #   bed/, field/ (beds & fields hybrid) +
-│   │                           #   ambisonic/ (FOA bus, decoder, renderer) +
+│   │                           #   ambisonic/ (order-1 FOA pinned + order-2
+│   │                           #   HOA basis, exact rotation, max-rE decoder) +
 │   │                           #   room/ (reflections + late field) +
 │   │                           #   hrtf/ (Woodworth ITD + Duda-Martens head
-│   │                           #   shadow) + binaural/ (head-model renderer)
+│   │                           #   shadow + pinna notch + spectral HrtfDataset)
+│   │                           #   + binaural/ (head-model renderer)
 │   │                           #   + tracking/ (head tracking: nlerp + one-pole
 │   │                           #   smoothing of IMU/VR orientation samples)
+│   │                           #   + scene-file format (Serde save/load) and a
+│   │                           #   SpatialNode in the production graph
 │   ├── output/                 # per-OS backends (alsa/wasapi/asio/coreaudio/cpal) +
 │   │                           #   endpoint.rs (per-endpoint worker, drift correction)
 │   │                           #   + device_monitor, output_profile, rate_policy

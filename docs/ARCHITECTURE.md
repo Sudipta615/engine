@@ -127,9 +127,15 @@ src/
 │                             #   per-send automation + independent
 │                             #   metering; Phase 7: nodes/correction_node.rs
 │                             #   (CorrectionNode — per-channel partitioned
-│                             #   convolution bank, post-aux/pre-EQ)
+│                             #   convolution bank, post-aux/pre-EQ);
+│                             #   Phase 11: nodes/spatial_node.rs
+│                             #   (SpatialNode — binaural master spatial-
+│                             #   ization on the front pair, per-node
+│                             #   atomic control mirror, live-enable replay
+│                             #   on generation swap; MC masters pass
+│                             #   through untouched)
 │
-├── spatial/                  # ── Spatial audio (Phases 8–15, opt-in) ──
+├── spatial/                  # ── Spatial audio (Phases 8–19, opt-in) ──
 │   ├── math.rs               # Vec3 / Quat + the single documented coordinate
 │   │                         #   system (+X right, +Y front, +Z up; metres /
 │   │                         #   radians / linear gain) — no linear-algebra dep
@@ -159,25 +165,35 @@ src/
 │   │                         #   every pan speaker (√N diffuse compensation),
 │   │                         #   decorrelated per speaker via delay rings
 │   │                         #   (AmbisonicFieldMixer)
-│   ├── ambisonic.rs          # Ambisonics/HOA core: ACN/SN3D conventions,
-│   │                         #   sh_foa SH basis, encode_plane_wave, order-1
-│   │                         #   rotate_bus_frame, DecoderPolicy (Basic /
-│   │                         #   MaxRe), AmbisonicDecoder (per-speaker
-│   │                         #   matrix), AmbisonicRenderer (listener-
-│   │                         #   rotated FOA-bus decode to any layout)
+│   ├── ambisonic.rs          # Ambisonics/HOA core (Phase 16): exact order-N
+│   │                         #   SH basis (sh_n, channel_count — order-1
+│   │                         #   FOA pinned + order-2 U/V/T/R/S per the
+│   │                         #   Furse–Malham table), encode_plane_wave_n,
+│   │                         #   exact order-2 rotate_bus_frame_n,
+│   │                         #   DecoderPolicy (Basic / MaxRe with per-order
+│   │                         #   max-rE weights), AmbisonicDecoder
+│   │                         #   (per-speaker matrix), AmbisonicRenderer::
+│   │                         #   with_order (any supported order → any layout)
 │   ├── room.rs               # Room acoustics: Room (box + absorption +
 │   │                         #   order + RT60), image-source enumeration,
 │   │                         #   EarlyReflections (per-object delay rings +
 │   │                         #   tap smoothing + the binaural ring
 │   │                         #   primitives), RoomLateField (Schroeder
 │   │                         #   tail encoding into the ambisonic bus)
-│   ├── hrtf.rs               # Binaural head model: Woodworth ITD,
+│   ├── hrtf.rs               # Binaural head model: Woodworth ITD (reflective
+│   │                         #   fold — correct for 0–360° azimuths),
 │   │                         #   Duda-Martens head-shadow shelf (α = 1.05 +
 │   │                         #   0.95·sinφ, first-order, DC=1), fractional-
-│   │                         #   delay ring read
+│   │                         #   delay ring read, ElevationNotch (pinna
+│   │                         #   notch biquad, exact passthrough at 0°),
+│   │                         #   HrtfDataset (Phase 18: azimuth × elevation
+│   │                         #   IR grid + bilinear interpolation with 360°
+│   │                         #   wrap + synthetic generator for testing)
 │   ├── binaural.rs           # BinauralRenderer — the whole hybrid scene
 │   │                         #   through the head model: objects (per-ear
-│   │                         #   ITD + shadow, spread blurs cues), beds
+│   │                         #   ITD + shadow, spread blurs cues; FIR
+│   │                         #   convolution of interpolated spectral IRs
+│   │                         #   when a dataset is loaded), beds
 │   │                         #   (semantic-role fold, LFE at 1/√2), fields
 │   │                         #   + late field via a virtual 8-speaker ring
 │   ├── tracking.rs           # Head tracking (VR/AR seam): HeadTracker,
@@ -202,9 +218,6 @@ src/
 │                             #   empty-triangle region filter), allocation-
 │                             #   free render path with max-min-gain triplet
 │                             #   selection and energy normalization.
-│                             #   Higher-order ambisonics and full spectral
-│                             #   HRTFs are declared seams for later phases
-│                             #   (spec Part XXVI).
 │
 ├── output/                   # ── Output backends ──
 │   ├── mod.rs                # Module wiring + re-exports

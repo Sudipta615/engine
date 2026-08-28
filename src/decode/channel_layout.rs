@@ -17,6 +17,54 @@ pub enum ChannelId {
     Unknown(u8),
 }
 
+impl ChannelId {
+    /// The stable two/three-letter name (used by the spatial scene file
+    /// format's bed role lists). `Unknown` maps to `"U{n}"`.
+    pub fn name(self) -> String {
+        match self {
+            ChannelId::FrontLeft => "FL".to_string(),
+            ChannelId::FrontRight => "FR".to_string(),
+            ChannelId::Center => "C".to_string(),
+            ChannelId::Lfe => "LFE".to_string(),
+            ChannelId::SideLeft => "SL".to_string(),
+            ChannelId::SideRight => "SR".to_string(),
+            ChannelId::RearLeft => "RL".to_string(),
+            ChannelId::RearRight => "RR".to_string(),
+            ChannelId::BackCenter => "BC".to_string(),
+            ChannelId::TopFrontLeft => "TFL".to_string(),
+            ChannelId::TopFrontRight => "TFR".to_string(),
+            ChannelId::TopRearLeft => "TRL".to_string(),
+            ChannelId::TopRearRight => "TRR".to_string(),
+            ChannelId::Unknown(n) => format!("U{n}"),
+        }
+    }
+
+    /// Parse a role name back into a [`ChannelId`] (`None` for unknown
+    /// names; `"U{n}"` round-trips an [`ChannelId::Unknown`]).
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "FL" => ChannelId::FrontLeft,
+            "FR" => ChannelId::FrontRight,
+            "C" => ChannelId::Center,
+            "LFE" => ChannelId::Lfe,
+            "SL" => ChannelId::SideLeft,
+            "SR" => ChannelId::SideRight,
+            "RL" => ChannelId::RearLeft,
+            "RR" => ChannelId::RearRight,
+            "BC" => ChannelId::BackCenter,
+            "TFL" => ChannelId::TopFrontLeft,
+            "TFR" => ChannelId::TopFrontRight,
+            "TRL" => ChannelId::TopRearLeft,
+            "TRR" => ChannelId::TopRearRight,
+            _ => {
+                let rest = name.strip_prefix('U')?;
+                let n = rest.parse::<u8>().ok()?;
+                ChannelId::Unknown(n)
+            }
+        })
+    }
+}
+
 /// Semantic multi-channel layout.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ChannelLayout {

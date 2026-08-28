@@ -70,6 +70,8 @@ pub struct EngineConfig {
     #[serde(default)]
     pub correction: CorrectionConfig,
     #[serde(default)]
+    pub spatial: SpatialConfig,
+    #[serde(default)]
     pub endpoints: Vec<EndpointConfig>,
 }
 
@@ -156,6 +158,178 @@ fn default_mix_slots() -> usize {
     2
 }
 
+/// The spatial master output stage (Phase 17): renders the mixed front
+/// pair through the engine's spatial layer (binaural head model + room).
+/// Disabled by default, so existing configurations render bit-identically.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpatialConfig {
+    /// Master enable. Disabled = the graph's spatial step is skipped
+    /// (bit-exact passthrough).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Virtual-screen center azimuth (degrees; + = right of the listener).
+    #[serde(default)]
+    pub center_azimuth_deg: f32,
+    /// Half-width of the L/R screen spread (degrees, clamped to 90).
+    #[serde(default = "default_spatial_half_width")]
+    pub half_width_deg: f32,
+    /// Screen elevation (degrees, clamped to ±90).
+    #[serde(default)]
+    pub elevation_deg: f32,
+    /// Linear screen gain (clamped to 4).
+    #[serde(default = "default_master_gain")]
+    pub gain: f32,
+    /// The room applied to the program (early reflections + late field).
+    #[serde(default)]
+    pub room: SpatialRoomConfig,
+    /// Listener orientation (degrees; yaw positive = right turn).
+    #[serde(default)]
+    pub listener_yaw_deg: f32,
+    #[serde(default)]
+    pub listener_pitch_deg: f32,
+    #[serde(default)]
+    pub listener_roll_deg: f32,
+}
+
+fn default_spatial_half_width() -> f32 {
+    30.0
+}
+
+impl Default for SpatialConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            center_azimuth_deg: 0.0,
+            half_width_deg: default_spatial_half_width(),
+            elevation_deg: 0.0,
+            gain: 1.0,
+            room: SpatialRoomConfig::default(),
+            listener_yaw_deg: 0.0,
+            listener_pitch_deg: 0.0,
+            listener_roll_deg: 0.0,
+        }
+    }
+}
+
+/// Room model for the spatial master: geometry, wall absorption,
+/// reflection order, and the late field (spec §49).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpatialRoomConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Room width / depth / height in metres (origin at a corner).
+    #[serde(default = "default_room_width")]
+    pub width: f32,
+    #[serde(default = "default_room_depth")]
+    pub depth: f32,
+    #[serde(default = "default_room_height")]
+    pub height: f32,
+    /// Wall absorption `0..1` (reflection coefficient = `1 − absorption`).
+    #[serde(default = "default_room_absorption")]
+    pub absorption: f32,
+    /// Early-reflection order: 1 (six images) or 2 (24 images).
+    #[serde(default = "default_room_order")]
+    pub reflection_order: u8,
+    /// Late-field RT60 in ms.
+    #[serde(default = "default_room_rt60")]
+    pub rt60_ms: f32,
+    /// Late-field wet mix `0..1`.
+    #[serde(default = "default_room_late_mix")]
+    pub late_mix: f32,
+    /// Program reflection send `0..1` (the object-side room send).
+    #[serde(default = "default_room_wet")]
+    pub wet: f32,
+    /// Speed of sound (m/s), used for the reflection delays.
+    #[serde(default = "default_speed_of_sound")]
+    pub speed_of_sound: f32,
+}
+
+fn default_speed_of_sound() -> f32 {
+    343.0
+}
+fn default_room_width() -> f32 {
+    12.0
+}
+fn default_room_depth() -> f32 {
+    10.0
+}
+fn default_room_height() -> f32 {
+    3.0
+}
+fn default_room_absorption() -> f32 {
+    0.2
+}
+fn default_room_order() -> u8 {
+    1
+}
+fn default_room_rt60() -> f32 {
+    800.0
+}
+fn default_room_late_mix() -> f32 {
+    0.3
+}
+fn default_room_wet() -> f32 {
+    0.5
+}
+
+impl Default for SpatialRoomConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            width: default_room_width(),
+            depth: default_room_depth(),
+            height: default_room_height(),
+            absorption: default_room_absorption(),
+            reflection_order: default_room_order(),
+            rt60_ms: default_room_rt60(),
+            late_mix: default_room_late_mix(),
+            wet: default_room_wet(),
+            speed_of_sound: default_speed_of_sound(),
+        }
+    }
+}
+
+impl SpatialRoomConfig {
+    /// Validate the room fields in isolation (shared by the engine-config
+    /// and scene-file validators). `Err` carries the first problem.
+    pub fn validate_scene(&self) -> Result<(), String> {
+        if !self.width.is_finite() || self.width <= 0.0 {
+            return Err(format!("invalid room width {}", self.width));
+        }
+        if !self.depth.is_finite() || self.depth <= 0.0 {
+            return Err(format!("invalid room depth {}", self.depth));
+        }
+        if !self.height.is_finite() || self.height <= 0.0 {
+            return Err(format!("invalid room height {}", self.height));
+        }
+        if !self.absorption.is_finite() || !(0.0..=0.99).contains(&self.absorption) {
+            return Err(format!("invalid room absorption {}", self.absorption));
+        }
+        if self.reflection_order != 1 && self.reflection_order != 2 {
+            return Err(format!(
+                "invalid room reflection_order {}",
+                self.reflection_order
+            ));
+        }
+        if !self.rt60_ms.is_finite() || self.rt60_ms <= 0.0 {
+            return Err(format!("invalid room rt60_ms {}", self.rt60_ms));
+        }
+        if !self.late_mix.is_finite() || !(0.0..=1.0).contains(&self.late_mix) {
+            return Err(format!("invalid room late_mix {}", self.late_mix));
+        }
+        if !self.wet.is_finite() || !(0.0..=1.0).contains(&self.wet) {
+            return Err(format!("invalid room wet {}", self.wet));
+        }
+        if !self.speed_of_sound.is_finite() || self.speed_of_sound <= 0.0 {
+            return Err(format!(
+                "invalid room speed_of_sound {}",
+                self.speed_of_sound
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
@@ -195,6 +369,7 @@ impl Default for EngineConfig {
             mix_sends: Vec::new(),
             aux: AuxBusConfig::default(),
             correction: CorrectionConfig::default(),
+            spatial: SpatialConfig::default(),
             endpoints: Vec::new(),
         }
     }
@@ -290,6 +465,19 @@ impl EngineConfig {
                 "invalid correction smoothing_octaves {}",
                 self.correction.smoothing_octaves
             ));
+        }
+        let s = &self.spatial;
+        if !s.gain.is_finite() || !(0.0..=4.0).contains(&s.gain) {
+            v.errors.push(format!("invalid spatial gain {}", s.gain));
+        }
+        if !s.half_width_deg.is_finite() || !(0.0..=90.0).contains(&s.half_width_deg) {
+            v.errors.push(format!(
+                "invalid spatial half_width_deg {}",
+                s.half_width_deg
+            ));
+        }
+        if let Err(e) = s.room.validate_scene() {
+            v.errors.push(e);
         }
         let mut endpoint_ids = std::collections::HashSet::new();
         for endpoint in &self.endpoints {

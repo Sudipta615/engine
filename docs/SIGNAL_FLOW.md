@@ -159,7 +159,7 @@ device's actual crystal (offset reported in ppm) instead of its nominal
 clock. Same-rate endpoints reuse the master's already-limited block
 untouched.
 
-### Spatial rendering (opt-in, v3.11.0 → v3.18.0)
+### Spatial rendering (opt-in, v3.11.0 → v3.19.0)
 
 ```
 SpatialScene (world space: listener + objects + beds + fields)
@@ -182,22 +182,27 @@ interleaved multichannel PCM (frames × layout channels)
         ▼
 output domain ──▶ existing ring / endpoint path
 
-Ambisonic bus path (opt-in, v3.15.0)
-        │  FOA bus planes [W, Y, Z, X] (world orientation)
+Ambisonic bus path (opt-in, v3.15.0 → order-2 in v3.19.0)
+        │  bus planes [W, Y, Z, X] or order-2 [W,Y,Z,X,U,V,T,R,S]
+        │  (world orientation, exact SH basis)
         ▼
-AmbisonicRenderer: per-frame listener rotation → decode matrix
-        │            (Basic sampling or Max-rE policy) → calibration
+AmbisonicRenderer (order ≤ 2): per-frame listener rotation (exact
+        │   order-2 matrices) → decode matrix (Basic sampling or per-order
+        │   max-rE weights) → calibration
         ▼
 interleaved multichannel PCM
 
-Binaural path (opt-in, v3.17.0) — the head model, no speaker array
+Binaural path (opt-in, v3.17.0 → spectral HRTFs in v3.19.0)
         │  full hybrid scene (objects + beds + fields + room)
         ▼
 BinauralRenderer (stereo/headphone layout, exactly 2 ears)
-        │   objects: level chain → per-(direction, ear) Woodworth ITD
-        │            (fractional delay) + Duda-Martens shadow shelf;
-        │            spread samples each ring direction with its own cues;
-        │            LFE send folds at 1/√2
+        │   objects: level chain → per-(direction, ear) cues — analytic
+        │            Woodworth ITD (fractional delay) + Duda-Martens
+        │            shadow shelf + pinna ElevationNotch, or FIR
+        │            convolution of an interpolated spectral IR when a
+        │            measured HrtfDataset is loaded (carries ITD +
+        │            elevation cues); spread samples each ring direction
+        │            with its own cues; LFE send folds at 1/√2
         │   beds:    semantic-role azimuth fold (FL → −30°, SL → −110°, …;
         │            LFE role folds at 1/√2)
         │   room:    image reflections at excess_path + ITD(ear), per-image
@@ -215,6 +220,23 @@ Head tracking (opt-in, v3.18.0) — the VR/AR seam, control-side only
 listener.orientation ──> scene ──> any renderer (unchanged)
         │  world-fixed sources keep their world position as the head turns;
         │  the host calls tracker.sample(now) once per render block
+
+SpatialNode in the production graph (opt-in, v3.19.0)
+        │  stereo master planes [L, R] + node controls (enable / screen /
+        │  room / listener) drained at the block boundary
+        ▼
+SpatialNode plan step: binaural head model (+ room) on the front pair
+        │  MC masters pass through untouched (documented seam); live
+        │  enable survives generation swaps
+        ▼
+master planes ──> limiter / output
+
+Scene files (opt-in, v3.19.0) — content only, renderer-independent
+        │  SpatialScene ──to_config──> config::SpatialSceneConfig
+        │     (listener quaternion, objects, beds by role names, fields,
+        │      room) ──save_scene_json──> JSON on disk
+        │  JSON ──load_scene_json──> config ──from_config──> SpatialScene
+        │  validate() enforces engine caps before conversion
 ```
 
 Spatial rendering is **opt-in**: the conventional decode loop and DSP graph are
@@ -249,15 +271,27 @@ at `1/√2`, and diffuse content (fields + the room's late field) decodes
 onto a virtual 8-speaker ring (ambisonic bus + `√N` compensation + the
 field mixer's decorrelation) before each virtual speaker is head-modeled.
 Mirror symmetry is the exact invariant; the head diffracts (no
-constant-power law). A host that already has an ambisonic bus can skip the scene and
-feed `AmbisonicRenderer` directly: the renderer rotates each frame by the
-listener orientation (world-fixed fields) and applies the decode matrix
-(`Basic` sampling or `MaxRe` policy) plus calibration. The scene/level model
-and renderers live in `crate::spatial` (see
+constant-power law). With a measured `HrtfDataset` loaded, object direct
+paths replace the analytic chain with FIR convolution of the bilinearly
+interpolated spectral IR (which carries both the ITD and the elevation
+cues); the analytic path keeps the `ElevationNotch` pinna model as its
+elevation cue. The same hybrid scene is now also reachable as a real plan
+step: the `SpatialNode` spatializes the graph's stereo master through the
+head model (optionally with the room) with a full control surface, while
+multichannel masters pass through untouched. A host that already has an
+ambisonic bus can skip the scene and feed `AmbisonicRenderer` directly
+(now up to order 2): the renderer rotates each frame by the listener
+orientation (world-fixed fields) and applies the decode matrix (`Basic`
+sampling or per-order `MaxRe` weights) plus calibration. Scenes persist
+through the scene-file format: `save_scene_json` / `load_scene_json`
+round-trip a `SpatialScene` losslessly (the listener orientation stays the
+canonical quaternion) into a renderer-independent JSON document. The
+scene/level model and renderers live in `crate::spatial` (see
 [`ARCHITECTURE.md`](ARCHITECTURE.md)); `tests/fidelity/spatial_panner.rs`,
 `tests/fidelity/spatial_vbap.rs`, `tests/fidelity/spatial_object_behavior.rs`,
 `tests/fidelity/spatial_hybrid.rs`, `tests/fidelity/spatial_ambisonic.rs`,
-and `tests/fidelity/spatial_room.rs` pin the contracts and
+`tests/fidelity/spatial_room.rs`, `spatial_hoa.rs`, `spatial_node.rs`,
+`spatial_hrtf_ir.rs` and `spatial_scene.rs` pin the contracts and
 `realtime_allocation` verifies the render paths allocate nothing in steady
 state.
 

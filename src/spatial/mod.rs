@@ -99,19 +99,30 @@
 //! The binaural path (Part VII) renders the full hybrid scene — objects,
 //! beds, fields, and the room's reflections — to two ears through the
 //! documented head model: Woodworth ITD + a Duda-Martens head-shadow shelf
-//! ([`hrtf`]), with diffuse content decoded onto a virtual 8-speaker ring
-//! before the head model. It is azimuth-only by design (no elevation
-//! spectral cues yet — the documented HRTF seam, §136); mirror symmetry is
-//! the exact invariant, not constant power (the head diffracts).
+//! plus a pinna [`ElevationNotch`] ([`hrtf`]), with diffuse content decoded
+//! onto a virtual 8-speaker ring before the head model. Mirror symmetry is
+//! the exact invariant, not constant power (the head diffracts). When a
+//! measured [`HrtfDataset`] is loaded, object direct paths replace the
+//! analytic chain with FIR convolution of the bilinearly interpolated
+//! spectral IR — carrying both ITD and elevation cues (§62).
 //!
 //! Head tracking is a live seam ([`HeadTracker`]): the listener's
 //! orientation is a first-class scene transform, so a host feeds IMU/VR
 //! samples and applies the smoothed result to the listener before each
-//! render block — the renderers never change (spec §48, §136). Still
-//! future: higher-order Ambisonics (the order-1 basis + per-order decoder
-//! weights are the documented §34 extension), full spectral HRTFs, and the
-//! scene file format (per the spec's dependency order, Part XXVI); the
-//! data model is shaped so they slot in without redesign (§136).
+//! render block — the renderers never change (spec §48, §136).
+//!
+//! Higher-order ambisonics is implemented ([`ambisonic`]): the exact
+//! order-N SH basis (order-1 FOA pinned, order-2 `U/V/T/R/S` per the
+//! published Furse–Malham table), per-order max-rE decoder weights, and an
+//! exact order-2 bus rotation (§34). Scenes persist through the scene-file
+//! format (Part XXVI): [`SpatialScene::to_config`] /
+//! [`SpatialScene::from_config`] convert losslessly to a
+//! Serde-serializable, renderer-independent model saved via
+//! [`save_scene_json`] / [`load_scene_json`]. And the spatial layer is a
+//! first-class part of the production graph via the `SpatialNode`
+//! (`crate::dsp::graph`), which spatializes the stereo master through the
+//! head model at the block boundary. Still future: order-3+ (the same
+//! pattern extends), measured HRTF corpus loading, and spatial recording.
 //!
 //! The spatial layer contains **no** Dolby/DTS codecs, bitstreams, metadata,
 //! or trademarks — it is an independent implementation (§3, §115).
@@ -136,15 +147,18 @@ pub mod tracking;
 pub mod vbap;
 
 pub use ambisonic::{
-    encode_plane_wave, rotate_bus_frame, sh_foa, AmbisonicDecoder, AmbisonicRenderer, DecoderPolicy,
+    channel_count, encode_plane_wave, encode_plane_wave_n, rotate_bus_frame, rotate_bus_frame_n,
+    sh_foa, sh_n, AmbisonicDecoder, AmbisonicRenderer, DecoderPolicy, AMBISONIC_CHANNELS,
+    AMBISONIC_CHANNELS_ORDER_2, AMBISONIC_ORDER, MAX_AMBISONIC_ORDER,
 };
 pub use bed::{BedId, SpatialBed, SpatialBedStore, MAX_BEDS};
 pub use binaural::{BinauralRenderer, VIRTUAL_RING_SPEAKERS};
 pub use directivity::{CustomDirectivity, Directivity};
 pub use field::{FieldId, SpatialField, SpatialFieldStore, MAX_FIELDS};
 pub use hrtf::{
-    ear_delay_sec, head_shadow_alpha, max_itd_sec, woodworth_itd_sec, Ear, HeadShadow,
-    DEFAULT_HEAD_RADIUS, DEFAULT_SPEED_OF_SOUND,
+    ear_delay_sec, elevation_notch_depth_db, elevation_notch_hz, head_shadow_alpha, max_itd_sec,
+    woodworth_itd_sec, Ear, ElevationNotch, HeadShadow, HrtfDataset, DEFAULT_HEAD_RADIUS,
+    DEFAULT_SPEED_OF_SOUND, MAX_HRTF_TAPS,
 };
 pub use level::{AirAbsorption, DistanceModel};
 pub use math::{Quat, Vec3};
@@ -156,6 +170,8 @@ pub use occlusion::{AcousticTransmission, Occlusion};
 pub use panner::BasicPanner;
 pub use render::{HybridBlockInputs, RenderError, RendererKind, SpatialRenderer, VbapRenderer};
 pub use room::{EarlyReflections, Room, RoomLateField};
-pub use scene::{Listener, ListenerTransform, SpatialScene};
+pub use scene::{
+    load_scene_json, save_scene_json, Listener, ListenerTransform, SceneFileError, SpatialScene,
+};
 pub use speaker::{LayoutCalibration, Speaker, SpeakerId, SpeakerLayout};
 pub use tracking::{HeadSample, HeadTracker, TrackingConfig};

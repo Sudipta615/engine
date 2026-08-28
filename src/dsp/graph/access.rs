@@ -54,6 +54,22 @@ impl DspGraph {
         }
     }
 
+    // ── Spatial master (Phase 17) ─────────────────────────────────────────
+
+    pub fn spatial(&self) -> &SpatialNode {
+        match &self.active.nodes[node_id::SPATIAL] {
+            GraphNode::Spatial(n) => n,
+            _ => unreachable!("arena slot SPATIAL holds a SpatialNode"),
+        }
+    }
+
+    pub fn spatial_mut(&mut self) -> &mut SpatialNode {
+        match &mut self.active.nodes[node_id::SPATIAL] {
+            GraphNode::Spatial(n) => n,
+            _ => unreachable!("arena slot SPATIAL holds a SpatialNode"),
+        }
+    }
+
     // ── Pre-mix accessors — input-0 / input-1 aliases into the mix bus ────
     //
     // Backward-compatible with the Phase-1 named pre-mix accessors: input 0

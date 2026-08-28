@@ -121,8 +121,12 @@ mod node_id {
     /// Phase 7 S5: the room/headphone correction node (per-channel
     /// partitioned convolution bank), placed post-aux / pre-EQ.
     pub const CORRECTION: usize = 15;
+    /// Phase 17: the spatial master output stage (renders the front pair
+    /// through the binaural head model with the room), placed at the very
+    /// end of the post-mix chain.
+    pub const SPATIAL: usize = 16;
     /// Number of canonical node slots (also the first non-node `NodeId`).
-    pub const NODE_COUNT: usize = 16;
+    pub const NODE_COUNT: usize = 17;
 }
 
 /// Uniform node storage for the arena. The enum enables monomorphized (match)
@@ -152,6 +156,7 @@ pub(super) enum GraphNode {
     Dither(DitherNode),
     Aux(AuxBusNode),
     Correction(CorrectionNode),
+    Spatial(SpatialNode),
 }
 
 const VOLUME_RAMP_DURATION_MS: f32 = 10.0;
@@ -174,7 +179,8 @@ const PREAMP_RAMP_DURATION_MS: f32 = VOLUME_RAMP_DURATION_MS;
 ///   ├── Volume (GainProcessor)
 ///   ├── Resampler (AudioResampler adapter)
 ///   ├── Limiter (LookaheadLimiter)
-///   └── Dither/Conversion (Dither adapter)
+///   ├── Dither/Conversion (Dither adapter)
+///   └── Spatial (SpatialNode — Phase 17: spatial master output)
 /// ```
 ///
 /// Features:

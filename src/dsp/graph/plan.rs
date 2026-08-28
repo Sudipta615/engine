@@ -118,6 +118,10 @@ impl PlanSet {
             (TIMESTRETCH, StepScope::FrontPair),
             (VOLUME, StepScope::AllChannels),
             (SEEK_FADE, StepScope::AllChannels),
+            // Phase 17: the spatial master output stage runs last — it
+            // spatializes the fully-processed master. Disabled it returns
+            // before touching a sample (bit-exact passthrough).
+            (SPATIAL, StepScope::AllChannels),
         ];
         Self {
             normal: ExecutionPlan::new(&stereo_chain),

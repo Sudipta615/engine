@@ -118,6 +118,9 @@ pub struct UserState {
     /// (a `LoadCorrectionIr` / `MeasureRoom` result survives a swap).
     /// Immutable after load; `None` = no IR.
     pub correction_ir: Option<Arc<CorrectionIrSet>>,
+    /// Phase 17: the spatial master enable flag, mirrored like the aux
+    /// state so a live runtime toggle survives a generation swap.
+    pub spatial_enabled: bool,
     /// Program-gated ducking config (Phase 4 S4), carried across a rebuild
     /// so a reconfig never drops a configured duck. `None` = disabled.
     pub duck: Option<DuckState>,
@@ -143,6 +146,7 @@ impl Default for UserState {
             correction_enabled: false,
             correction_depth: 1.0,
             correction_ir: None,
+            spatial_enabled: false,
             duck: None,
             slot_automation: Vec::new(),
         }

@@ -1025,3 +1025,195 @@ fn realtime_head_tracker_does_not_allocate() {
         "steady-state head tracking allocated on the audio path"
     );
 }
+
+/// Higher-order ambisonics (Phase 11 / roadmap Phase 16) must uphold the
+/// zero-allocation contract at order 2: the 9-channel SH basis, the exact
+/// order-2 bus rotation (WXYZ→WXYZ+UV), and the per-order max-rE decoder
+/// weights all run on preallocated flat buffers.
+#[test]
+fn realtime_hoa_renderer_does_not_allocate() {
+    use engine::spatial::{AmbisonicRenderer, MAX_AMBISONIC_ORDER};
+
+    const _: () = assert!(MAX_AMBISONIC_ORDER >= 2);
+    let layout = SpeakerLayout::seven_point_one_four();
+    let mut renderer = AmbisonicRenderer::with_order(DecoderPolicy::MaxRe, 2);
+    renderer.prepare(&layout, 48_000).unwrap();
+    assert_eq!(renderer.order(), 2);
+
+    const FRAMES: usize = 128;
+    const CH: usize = 9; // order-2 channel count
+                         // A world-encoded order-2 bus: constant front plane wave.
+    let mut frame = [0.0f32; CH];
+    engine::spatial::encode_plane_wave_n(2, Vec3::Y, 1.0, &mut frame);
+    let planes: Vec<Vec<f32>> = frame.iter().map(|&c| vec![c; FRAMES]).collect();
+    let input_refs: Vec<&[f32]> = planes.iter().map(|v| v.as_slice()).collect();
+    let mut out = vec![0.0f32; 12 * FRAMES];
+    let mut scene = SpatialScene::new(48_000);
+
+    // Warm up (incl. the 9-channel bus scratch) before arming the allocator.
+    renderer
+        .process_block(&scene, &input_refs, FRAMES, &mut out)
+        .unwrap();
+    out.fill(0.0);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    // Sweep the listener yaw every block: the order-2 rotation matrices are
+    // recomputed per frame on the hot path.
+    for block in 0..10_000 {
+        let yaw = block as f32 * 0.001;
+        scene
+            .listener
+            .set_orientation(Quat::from_euler_rad(yaw, 0.0, 0.0));
+        renderer
+            .process_block(&scene, &input_refs, FRAMES, &mut out)
+            .unwrap();
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocations = THREAD_ALLOCS.with(|c| c.get());
+
+    assert_eq!(
+        allocations, 0,
+        "steady-state order-2 ambisonic processing allocated on the audio path"
+    );
+}
+
+/// The SpatialNode (Phase 11 / roadmap Phase 17) is a real plan step in the
+/// production graph, so its steady-state path — binaural head model with the
+/// room's image sources + late field on the master's front pair — must be
+/// allocation-free like every other graph node. The node preallocates its
+/// renderer flat at construction/prepare; the measured loop only runs the
+/// compiled plan.
+#[test]
+fn realtime_spatial_node_does_not_allocate() {
+    let mut graph = DspGraph::from_config(&config::EngineConfig::default(), 48_000.0);
+    graph.set_spatial_enabled(true);
+    graph.set_spatial_screen(0.0, 30.0, 0.0, 1.0);
+    graph.set_spatial_room(true, 12.0, 10.0, 3.0, 0.3, 2, 800.0, 0.5, 0.5);
+    graph.set_spatial_listener(0.0, 0.0, 0.0);
+    graph.drain_queued_control();
+    assert!(graph.spatial().enabled());
+
+    let mut left = [0.0f32; 128];
+    let mut right = [0.0f32; 128];
+
+    // Warm up: fill the ITD rings and the room's reflection/tail state.
+    left[0] = 1.0;
+    right[0] = 0.5;
+    graph.process_block(&mut left, &mut right);
+    left.fill(0.0);
+    right.fill(0.0);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    // A block-rate listener sweep exercises the per-frame cue updates and
+    // the per-block room tap recomputation inside the plan step.
+    for block in 0..10_000 {
+        let yaw = block as f32 * 0.001;
+        graph.set_spatial_listener(yaw, 0.0, 0.0);
+        graph.drain_queued_control();
+        left.fill(0.2);
+        right.fill(0.15);
+        graph.process_block(&mut left, &mut right);
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocations = THREAD_ALLOCS.with(|c| c.get());
+
+    assert_eq!(
+        allocations, 0,
+        "steady-state SpatialNode processing allocated on the audio path"
+    );
+}
+
+/// The measured-HRTF dataset path (Phase 11 / roadmap Phase 18) must be
+/// allocation-free even in the worst case: bilinear IR interpolation into
+/// preallocated scratch, FIR convolution on preallocated rings, and the
+/// analytic fallback shelf/notch chain all coexist in one block.
+#[test]
+fn realtime_hrtf_dataset_path_does_not_allocate() {
+    use engine::spatial::{BinauralRenderer, HrtfDataset, Occlusion};
+
+    let mut scene = SpatialScene::new(48_000);
+    scene.listener.set_position(Vec3::new(6.0, 5.0, 1.5));
+    scene.room = engine::spatial::Room {
+        enabled: true,
+        width: 12.0,
+        depth: 10.0,
+        height: 3.0,
+        absorption: 0.3,
+        reflection_order: 2, // worst case: 24 image sources per object
+        rt60_ms: 800.0,
+        late_mix: 0.7,
+        speed_of_sound: 343.0,
+    };
+    for pos in [
+        Vec3::new(1.0, 5.0, 1.5),
+        Vec3::new(11.0, 5.0, 1.5),
+        Vec3::new(6.0, 1.0, 1.5),
+        Vec3::new(6.0, 9.0, 1.5),
+    ] {
+        let id = scene.create_audio_object(pos).expect("add object");
+        let obj = scene.object_mut(id).unwrap();
+        obj.room_send = 1.0;
+        obj.spread = 0.3;
+        obj.lfe_send = 0.3;
+        obj.occlusion = Occlusion {
+            amount: 0.3,
+            ..Default::default()
+        };
+    }
+    scene
+        .create_bed(engine::decode::ChannelLayout::Stereo)
+        .unwrap();
+    scene.create_field().unwrap();
+
+    let ds = HrtfDataset::synthetic(48_000, 64, 15.0, 15.0);
+    let mut renderer = BinauralRenderer::new(0.0);
+    renderer.use_dataset(Some(std::sync::Arc::new(ds)));
+    renderer.prepare(&SpeakerLayout::stereo(), 48_000).unwrap();
+
+    const FRAMES: usize = 128;
+    let object_planes: Vec<Vec<f32>> = (0..4).map(|_| vec![0.3f32; FRAMES]).collect();
+    let object_refs: Vec<&[f32]> = object_planes.iter().map(|v| v.as_slice()).collect();
+    let bed_planes: Vec<Vec<f32>> = (0..2).map(|_| vec![0.2f32; FRAMES]).collect();
+    let bed_refs: Vec<&[f32]> = bed_planes.iter().map(|v| v.as_slice()).collect();
+    let field_planes: Vec<Vec<f32>> = vec![vec![0.1f32; FRAMES]];
+    let field_refs: Vec<&[f32]> = field_planes.iter().map(|v| v.as_slice()).collect();
+    let inputs = engine::spatial::render::HybridBlockInputs {
+        objects: &object_refs,
+        beds: &bed_refs,
+        fields: &field_refs,
+    };
+    let mut out = vec![0.0f32; 2 * FRAMES];
+
+    // Warm up: fill the FIR rings and reflection state before arming.
+    renderer
+        .process_hybrid_block(&scene, &inputs, FRAMES, &mut out)
+        .unwrap();
+    out.fill(0.0);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for block in 0..10_000 {
+        let yaw = block as f32 * 0.001;
+        scene
+            .listener
+            .set_orientation(Quat::from_euler_rad(yaw, 0.0, 0.0));
+        renderer
+            .process_hybrid_block(&scene, &inputs, FRAMES, &mut out)
+            .unwrap();
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocations = THREAD_ALLOCS.with(|c| c.get());
+
+    assert_eq!(
+        allocations, 0,
+        "steady-state HRTF dataset rendering allocated on the audio path"
+    );
+}

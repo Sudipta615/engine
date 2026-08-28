@@ -8,6 +8,7 @@ mod dsp_config;
 mod engine_config;
 mod enums;
 mod rate_policy;
+mod scene_config;
 
 pub use dsp_config::{
     BandConfig, BassManagementConfig, ChannelEqConfig, ChannelEqEntry, ChannelMixConfig,
@@ -18,7 +19,7 @@ pub use dsp_config::{
 };
 pub use engine_config::{
     AuxBusConfig, ConfigValidation, EndpointConfig, EngineConfig, EnginePreset, SlotSendConfig,
-    SlotTrimEntry,
+    SlotTrimEntry, SpatialConfig, SpatialRoomConfig,
 };
 pub use enums::{
     AudioBackend, ChannelPolicy, CompressorDetector, CrossfadeCurve, CrossfeedProfile,
@@ -27,6 +28,10 @@ pub use enums::{
     ResamplerQualityInfo, SpeedMode, TimeStretchQuality, TransitionMode, VolumeMode,
 };
 pub use rate_policy::{apply_fallback, base_rate, clock_family, nearest_rate, SampleRatePolicy};
+pub use scene_config::{
+    is_valid_role, SceneListenerConfig, SpatialBedConfig, SpatialFieldConfig, SpatialObjectConfig,
+    SpatialSceneConfig,
+};
 
 pub mod types {
     pub mod enums {
