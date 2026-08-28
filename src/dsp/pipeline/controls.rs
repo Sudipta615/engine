@@ -419,6 +419,10 @@ impl DspPipeline {
         let compressor_bypassed = self.bit_perfect || !self.multiband_compressor.is_enabled();
         let convolution_bypassed =
             self.bit_perfect || !self.convolution.is_enabled() || !self.convolution.is_ir_loaded();
+        // The frozen pipeline oracle hosts no correction stage (Phase 7 S5
+        // lives in the graph), so this term is always bypassed here; the
+        // graph's twin builder reads the live CorrectionNode.
+        let correction_bypassed = true;
         let crossfeed_bypassed = self.bit_perfect || !self.crossfeed.is_enabled();
         let stereo_bypassed = self.bit_perfect
             || !self.stereo_enhancer.is_enabled()
@@ -428,6 +432,7 @@ impl DspPipeline {
         let dynamics_bypassed = limiter_bypassed
             && compressor_bypassed
             && convolution_bypassed
+            && correction_bypassed
             && crossfeed_bypassed
             && stereo_bypassed
             && loudness_bypassed;
@@ -544,6 +549,7 @@ impl DspPipeline {
             dynamics_bypassed,
             compressor_bypassed,
             convolution_bypassed,
+            correction_bypassed,
             crossfeed_bypassed,
             stereo_bypassed,
             limiter_bypassed,
@@ -653,10 +659,15 @@ impl DspPipeline {
         } else {
             0.0
         };
+        // The frozen pipeline oracle hosts no correction stage (Phase 7 S5
+        // lives in the graph); the graph's twin builder reports the live
+        // CorrectionNode latency.
+        let correction_latency_ms = 0.0;
         let crossfeed_delay_ms = self.crossfeed.latency_ms();
         let timestretch_latency_ms = self.timestretcher.latency_ms();
         let total_latency_ms = limiter_lookahead_ms
             + convolution_latency_ms
+            + correction_latency_ms
             + crossfeed_delay_ms
             + timestretch_latency_ms
             + resampler_latency_ms
@@ -667,6 +678,7 @@ impl DspPipeline {
             limiter_lookahead_ms,
             limiter_detector_delay_ms,
             convolution_latency_ms,
+            correction_latency_ms,
             crossfeed_delay_ms,
             timestretch_latency_ms,
             resampler_latency_ms,

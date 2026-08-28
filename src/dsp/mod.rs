@@ -5,6 +5,7 @@ pub mod autoeq;
 pub mod biquad;
 pub mod channel_trim;
 pub mod convolution;
+pub mod correction;
 pub mod crossfade;
 pub mod crossfeed;
 pub mod device_profile;

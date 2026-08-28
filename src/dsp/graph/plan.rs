@@ -83,11 +83,13 @@ impl PlanSet {
     /// Compile the canonical stage order. Fixed, and must match the pre-plan
     /// `process.rs` sequences:
     ///
-    /// - stereo (`Normal`): `mix → eq → dynamics → convolution → balance →
-    ///   crossfeed → stereo → timestretch → volume → seek_fade`. The mix
-    ///   step applies every bus input's pre-mix (preamp + loudness) and
-    ///   sums them — the Phase-3 S1 replacement for the former
-    ///   `out_preamp → out_loudness` steps.
+    /// - stereo (`Normal`): `mix → aux → correction → eq → dynamics →
+    ///   convolution → balance → crossfeed → stereo → timestretch → volume
+    ///   → seek_fade`. The mix step applies every bus input's pre-mix
+    ///   (preamp + loudness) and sums them — the Phase-3 S1 replacement for
+    ///   the former `out_preamp → out_loudness` steps. Phase 7 S5: the
+    ///   correction node runs post-aux (so it corrects the aux return too)
+    ///   and pre-EQ (so user EQ stacks on the corrected response).
     /// - multichannel (`NormalMc`): the same chain with `routing` (channel
     ///   trim) prepended on every channel, matching the >2-channel path.
     ///
@@ -103,6 +105,10 @@ impl PlanSet {
             // aux return lands in the master front pair, then EQ → … →
             // dither process it like any other mix contribution).
             (AUX, StepScope::FrontPair),
+            // Phase 7 S5: correction runs post-aux / pre-EQ on every
+            // channel the loaded IR set covers (a disabled or IR-less node
+            // returns without touching a sample — bit-exact).
+            (CORRECTION, StepScope::AllChannels),
             (EQ, StepScope::FrontPair),
             (DYNAMICS, StepScope::FrontPair),
             (CONVOLUTION, StepScope::FrontPair),

@@ -1,6 +1,6 @@
 [package]
 name = "config"
-version = "3.9.0"
+version = "3.10.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"

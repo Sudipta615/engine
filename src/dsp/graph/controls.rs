@@ -19,13 +19,14 @@ use super::swap::NodeId;
 use super::*;
 use crate::buffer::{PcmRingBuffer, MAX_CHANNELS};
 use crate::dsp::{
+    correction::CorrectionIrSet,
     crossfade::MixerState,
     equalizer::EqBandParams,
     limiter::LimiterMode,
     loudness::{LoudnessMetadata, LoudnessMode},
 };
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Depth of each per-node control queue. Bounded, so the block-boundary
 /// drain is O(QUEUE_CAPACITY) per queue — deterministic and budgetable.
@@ -71,6 +72,10 @@ pub(crate) enum NodeCmd {
         enabled: bool,
         wet_mix: f32,
     },
+    /// Phase-7 S5 correction: live enabled toggle (the loaded IR stays).
+    SetCorrectionEnabled(bool),
+    /// Phase-7 S5 correction: live wet/dry depth in [0, 1].
+    SetCorrectionDepth(f32),
     /// Runtime crossfade config (Phase 3 S3): curve / enabled / duration
     /// mirror the pipeline's `TrackMixer` setters the engine calls on
     /// `handle_set_crossfade_config`.
@@ -202,6 +207,16 @@ pub(crate) struct ControlBus {
     /// Phase 6: per-send aux peaks (dBFS), one per mix slot — independent
     /// metering for the aux bus's per-slot automation.
     user_aux_send_peak_db: [AtomicU32; MAX_MIX_SLOTS],
+    /// Phase 7 S5: live correction enabled / depth, mirrored like the aux
+    /// state so a runtime toggle survives a generation swap.
+    user_correction_enabled: AtomicU8,
+    user_correction_depth: AtomicU32,
+    /// Phase 7 S5: the rendered correction IR set. Written ONLY on the
+    /// control thread (the `LoadCorrectionIr` / `MeasureRoom` handler and
+    /// generation seeding); the audio thread never touches it, so the mutex
+    /// is never contended on a hot path — it exists only to keep the bus
+    /// `Sync` (the audio side touches other fields of the same struct).
+    user_correction_ir: Mutex<Option<Arc<CorrectionIrSet>>>,
 }
 
 impl ControlBus {
@@ -253,6 +268,9 @@ impl ControlBus {
             user_aux_peak_db: AtomicU32::new((-96.0f32).to_bits()),
             user_aux_rms_db: AtomicU32::new((-96.0f32).to_bits()),
             user_aux_send_peak_db: [const { AtomicU32::new((-96.0f32).to_bits()) }; MAX_MIX_SLOTS],
+            user_correction_enabled: AtomicU8::new(0),
+            user_correction_depth: AtomicU32::new(1.0f32.to_bits()),
+            user_correction_ir: Mutex::new(None),
         }
     }
 
@@ -388,6 +406,41 @@ impl ControlBus {
         )
     }
 
+    /// Mirror the Phase-7 S5 correction toggle / depth, audio side at drain.
+    pub(super) fn set_correction_user_state(&self, enabled: bool, depth: f32) {
+        self.user_correction_enabled
+            .store(enabled as u8, Ordering::Relaxed);
+        self.user_correction_depth
+            .store(depth.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+
+    /// Control-side read of the mirrored correction toggle / depth.
+    pub(super) fn user_correction(&self) -> (bool, f32) {
+        (
+            self.user_correction_enabled.load(Ordering::Relaxed) != 0,
+            f32::from_bits(self.user_correction_depth.load(Ordering::Relaxed)),
+        )
+    }
+
+    /// Store the rendered correction IR set (control side: `LoadCorrectionIr`
+    /// / `MeasureRoom` land, and generation seeding reads it back). The
+    /// audio thread never reads this — see the field's docs.
+    pub(super) fn set_correction_ir(&self, set: Arc<CorrectionIrSet>) {
+        let mut guard = self
+            .user_correction_ir
+            .lock()
+            .expect("correction IR mutex poisoned");
+        *guard = Some(set);
+    }
+
+    /// Control-side read of the stored correction IR set (if any).
+    pub(super) fn user_correction_ir(&self) -> Option<Arc<CorrectionIrSet>> {
+        self.user_correction_ir
+            .lock()
+            .expect("correction IR mutex poisoned")
+            .clone()
+    }
+
     /// Publish the aux meters (Phase 5 S3), audio side once per block.
     pub(super) fn publish_aux_meters(&self, peak_db: f32, rms_db: f32) {
         self.user_aux_peak_db
@@ -434,6 +487,9 @@ impl ControlBus {
             aux_insert_wet_mix: f32::from_bits(
                 self.user_aux_insert_wet_mix.load(Ordering::Relaxed),
             ),
+            correction_enabled: self.user_correction_enabled.load(Ordering::Relaxed) != 0,
+            correction_depth: f32::from_bits(self.user_correction_depth.load(Ordering::Relaxed)),
+            correction_ir: self.user_correction_ir(),
             // Ducking + automation are NOT mirrored onto the bus atomics:
             // `DspGraph::reconfigure` reads them from the live generation
             // instead (single-threaded control access), so snapshots keep
@@ -849,6 +905,31 @@ impl GraphControlHandle {
         self.bus.user_aux_insert()
     }
 
+    // ── Correction (Phase 7 S5) ─────────────────────────────────────────
+
+    /// Live toggle of the correction stage (enabled only; the loaded IR
+    /// stays). Disabled = the plan step is skipped, bit-exact.
+    pub fn set_correction_enabled(&self, enabled: bool) {
+        self.enqueue(node_id::CORRECTION, NodeCmd::SetCorrectionEnabled(enabled));
+    }
+
+    /// Live wet/dry depth in [0, 1] (1.0 = fully corrected).
+    pub fn set_correction_depth(&self, depth: f32) {
+        self.enqueue(node_id::CORRECTION, NodeCmd::SetCorrectionDepth(depth));
+    }
+
+    /// Store a rendered correction IR set (control side) so a generation
+    /// swap replays it into the new node. The set is immutable after load;
+    /// the audio thread never reads it.
+    pub fn load_correction_ir(&self, set: Arc<CorrectionIrSet>) {
+        self.bus.set_correction_ir(set);
+    }
+
+    /// Control-side read of the mirrored correction toggle / depth.
+    pub fn correction_state(&self) -> (bool, f32) {
+        self.bus.user_correction()
+    }
+
     /// Control-side read of the aux meters (peak_db, rms_db), published once
     /// per audio block (Phase 5 S3).
     pub fn aux_meters(&self) -> (f32, f32) {
@@ -1104,6 +1185,16 @@ impl DspGraph {
                         self.bus.set_aux_insert_user_state(enabled, wet);
                     }
                 }
+                // Phase 7 S5: mirror the correction toggle / depth post-apply
+                // so a live runtime toggle survives generation swaps.
+                if matches!(
+                    cmd,
+                    NodeCmd::SetCorrectionEnabled(_) | NodeCmd::SetCorrectionDepth(_)
+                ) {
+                    if let GraphNode::Correction(c) = &self.active.nodes[i] {
+                        self.bus.set_correction_user_state(c.enabled(), c.depth());
+                    }
+                }
             }
         }
     }
@@ -1145,6 +1236,12 @@ fn apply_node_cmd(node: &mut GraphNode, cmd: &NodeCmd) {
         ) => n.apply_aux(*enabled, *return_gain),
         (GraphNode::Aux(n), NodeCmd::SetAuxInsert { enabled, wet_mix }) => {
             n.set_aux_insert(*enabled, *wet_mix)
+        }
+        (GraphNode::Correction(n), NodeCmd::SetCorrectionEnabled(enabled)) => {
+            n.set_runtime(*enabled, n.depth())
+        }
+        (GraphNode::Correction(n), NodeCmd::SetCorrectionDepth(depth)) => {
+            n.set_runtime(n.enabled(), *depth)
         }
         (GraphNode::Mix(n), NodeCmd::SetMixCurve(c)) => n.curve = (*c).into(),
         (GraphNode::Mix(n), NodeCmd::SetMixEnabled(e)) => n.crossfade_enabled = *e,
@@ -1479,6 +1576,30 @@ impl DspGraph {
     /// Runtime toggle of the Phase-6 aux insert (enabled / wet only).
     pub fn set_aux_insert(&self, enabled: bool, wet_mix: f32) {
         self.control_handle().set_aux_insert(enabled, wet_mix);
+    }
+
+    // ── Correction (Phase 7 S5) ──────────────────────────────────────────
+
+    /// Live toggle of the correction stage (enabled only; the loaded IR
+    /// stays). Disabled = the plan step is skipped, bit-exact.
+    pub fn set_correction_enabled(&self, enabled: bool) {
+        self.control_handle().set_correction_enabled(enabled);
+    }
+
+    /// Live wet/dry depth in [0, 1] (1.0 = fully corrected).
+    pub fn set_correction_depth(&self, depth: f32) {
+        self.control_handle().set_correction_depth(depth);
+    }
+
+    /// Load a rendered correction IR set into the ACTIVE node and mirror it
+    /// onto the sticky bus state so a later generation rebuild replays it.
+    /// Single-threaded control path (the engine's tick thread); cross-thread
+    /// hosts must publish a fresh generation instead (which inherits the
+    /// sticky set through `build_with_state`).
+    pub fn load_correction_ir(&mut self, set: Arc<CorrectionIrSet>) {
+        let rate = self.sample_rate;
+        let _ = self.correction_mut().load_set(&set, rate);
+        self.control_handle().load_correction_ir(set);
     }
 
     pub fn set_input_mute(&self, input: u8, mute: bool) {

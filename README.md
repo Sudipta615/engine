@@ -54,7 +54,8 @@ from C, C++, Python, C#, Node.js, and any language that can call C.
    ┌──────────────────────────── AUDIO ENGINE CORE ─────────────────────────────┐
    │  Decode loop ─▶ Mix bus ─▶ DSP graph ─▶ Output domain ─▶ safety limiter     │
    │  (per-stream decoders +  (N slots: primary,  (compiled plan:              │
-   │   resamplers, SPSC rings) crossfade, lanes)  mix → aux → eq → … → limiter) │
+   │   resamplers, SPSC rings) crossfade, lanes)  mix → aux → correction →   │
+   │                                              eq → … → limiter)          │
    │  ──────────────────────────────────────────────────────────────────────────│
    │  Each endpoint: SPSC ring → rate resampler → Slip drift correction         │
    └────────────────────────────────────────────────────────────────────────────┘
@@ -115,11 +116,13 @@ Source frames
             with a Slip drift corrector against its real clock)
 ```
 
-The plan is data: `mix → aux → eq → dynamics → convolution → balance → crossfeed →
-stereo → timestretch → volume → seek_fade` (`routing` is prepended on the
-multichannel plan), compiled per mode (stereo f32 / f64, multichannel). Any stage can
-be selectively disabled; disabled paths are bit-exact. The output-domain resampler,
-final safety limiter, and dither run downstream of the graph.
+The plan is data: `mix → aux → correction → eq → dynamics → convolution → balance →
+crossfeed → stereo → timestretch → volume → seek_fade` (`routing` is prepended on
+the multichannel plan; the correction step is the Phase 7 room/headphone
+correction node, skipped when disabled), compiled per mode (stereo f32 / f64,
+multichannel). Any stage can be selectively disabled; disabled paths are bit-exact.
+The output-domain resampler, final safety limiter, and dither run downstream of the
+graph.
 
 Two **hard bypass modes** bypass the entire graph:
 - **Bit-perfect** — only volume ramps and seek fades survive; every DSP stage is skipped.

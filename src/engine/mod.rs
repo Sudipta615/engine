@@ -121,6 +121,10 @@ pub struct AudioEngine {
     #[cfg(all(target_os = "windows", feature = "wasapi-native"))]
     capture: Option<ActiveCapture>,
 
+    /// Phase-7 S5 room measurement in flight (sweep playing + capture
+    /// scheduled). Control-thread only; `None` when idle.
+    pub(crate) measurement: Option<commands::PendingMeasurement>,
+
     // ── Domain sub-structures ──
     pub(crate) telemetry: EngineTelemetry,
     pub(crate) dsd: DsdTransportState,

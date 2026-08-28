@@ -73,8 +73,14 @@ src/
 │
 ├── dsp/                      # ── Signal processing ──
 │   ├── pipeline/             # DspPipeline — reference chain; bit-exact
-│                             #   oracle for the graph equivalence suite
+│   │                         #   oracle for the graph equivalence suite
 │   │                         #   (mod.rs + controls/process/format/tests)
+│   ├── correction/           # Room & headphone correction (Phase 7):
+│   │                         #   sweep/ (ESS measurement + deconvolution),
+│   │                         #   ir/ (WAV import + conditioning), phase/
+│   │                         #   (min/linear/hybrid rendering), derive/
+│   │                         #   (smoothed regularized inverse) — all
+│   │                         #   control-thread f64 DSP
 │   ├── equalizer/            # Parametric EQ (RBJ) + shared types
 │   ├── graphic_eq.rs         # Graphic EQ model (10/15/31 ISO bands) → compiled into EQ
 │   ├── loudness/             # EBU R128 loudness meter/normalizer
@@ -118,7 +124,10 @@ src/
 │                             #   Phase 5: per-slot PerChannelTrim banks
 │                             #   and post-fader SlotSend taps; Phase 6:
 │                             #   aux promoted to its own AUX plan step with
-│                             #   per-send automation + independent metering)
+│                             #   per-send automation + independent
+│                             #   metering; Phase 7: nodes/correction_node.rs
+│                             #   (CorrectionNode — per-channel partitioned
+│                             #   convolution bank, post-aux/pre-EQ)
 │
 ├── output/                   # ── Output backends ──
 │   ├── mod.rs                # Module wiring + re-exports

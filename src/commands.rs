@@ -97,6 +97,32 @@ pub enum EngineCommand {
         enabled: bool,
         wet_mix: f32,
     },
+    /// Phase-7 S5 correction: live enabled toggle (the loaded IR stays;
+    /// disabled = the plan step is skipped, bit-exact).
+    SetCorrectionEnabled(bool),
+    /// Phase-7 S5 correction: live wet/dry depth in [0, 1] (1.0 = fully
+    /// corrected).
+    SetCorrectionDepth(f32),
+    /// Phase-7 S5 correction: load a measured IR file and derive the
+    /// correction from it (S2 condition → S4 regularized inverse → S3 phase
+    /// render, using the config's target / boost clamp / smoothing / phase
+    /// mode), then enable it. A missing or unreadable file keeps the
+    /// previous correction (or none) — never a failure state.
+    LoadCorrectionIr(std::path::PathBuf),
+    /// Phase-7 S5 measurement orchestration: generate the S1 exponential
+    /// sine sweep, play it on the primary stream, capture it (WASAPI
+    /// loopback on Windows), then run S1 deconvolution → S2 → S4 and land
+    /// the result as the live correction. Progress / completion surface as
+    /// `MeasurementProgress` / `MeasurementComplete { path, snr_db }`;
+    /// without a capture backend the sweep still plays and
+    /// `MeasurementFailed` fires.
+    MeasureRoom {
+        /// Sweep duration in seconds (0.25–120).
+        seconds: f32,
+        /// Pre-emphasis in dB; > 0 flattens the sweep's spectral energy
+        /// density for HF SNR.
+        pre_emphasis: f32,
+    },
     SetEqEnabled(bool),
     /// Enable or disable automatic EQ headroom. When enabled, the engine
     /// reserves the curve's own peak boost as pre-EQ attenuation and keeps it

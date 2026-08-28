@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use super::dsp_config::{
     BassManagementConfig, ChannelEqConfig, ChannelMixConfig, ChannelRoutingConfig,
-    ChannelTrimConfig, ConvolutionConfig, CrossfadeConfig, CrossfeedConfig, EqConfig,
-    GraphicEqConfig, LfeConfig, LimiterConfig, LoudnessConfig, MultibandCompressorConfig,
+    ChannelTrimConfig, ConvolutionConfig, CorrectionConfig, CrossfadeConfig, CrossfeedConfig,
+    EqConfig, GraphicEqConfig, LfeConfig, LimiterConfig, LoudnessConfig, MultibandCompressorConfig,
     StereoEnhancerConfig,
 };
 use super::enums::{
@@ -67,6 +67,8 @@ pub struct EngineConfig {
     pub mix_sends: Vec<SlotSendConfig>,
     #[serde(default)]
     pub aux: AuxBusConfig,
+    #[serde(default)]
+    pub correction: CorrectionConfig,
     #[serde(default)]
     pub endpoints: Vec<EndpointConfig>,
 }
@@ -192,6 +194,7 @@ impl Default for EngineConfig {
             mix_trims: Vec::new(),
             mix_sends: Vec::new(),
             aux: AuxBusConfig::default(),
+            correction: CorrectionConfig::default(),
             endpoints: Vec::new(),
         }
     }
@@ -265,6 +268,28 @@ impl EngineConfig {
         if !self.aux.return_gain.is_finite() || !(0.0..=1.0).contains(&self.aux.return_gain) {
             v.errors
                 .push(format!("invalid aux return {}", self.aux.return_gain));
+        }
+        if !self.correction.depth.is_finite() || !(0.0..=1.0).contains(&self.correction.depth) {
+            v.errors.push(format!(
+                "invalid correction depth {}",
+                self.correction.depth
+            ));
+        }
+        if self.correction.max_boost_db.is_finite()
+            && !(0.0..=24.0).contains(&self.correction.max_boost_db)
+        {
+            v.errors.push(format!(
+                "invalid correction max_boost_db {}",
+                self.correction.max_boost_db
+            ));
+        }
+        if self.correction.smoothing_octaves.is_finite()
+            && !(0.02..=1.0).contains(&self.correction.smoothing_octaves)
+        {
+            v.errors.push(format!(
+                "invalid correction smoothing_octaves {}",
+                self.correction.smoothing_octaves
+            ));
         }
         let mut endpoint_ids = std::collections::HashSet::new();
         for endpoint in &self.endpoints {

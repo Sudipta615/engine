@@ -24,6 +24,7 @@ impl DspGraph {
         self.routing_mut().prepare(sample_rate, MAX_CHANNELS);
         self.limiter_mut().prepare(sample_rate, MAX_CHANNELS);
         self.dither_mut().prepare(sample_rate, MAX_CHANNELS);
+        self.correction_mut().prepare(sample_rate, MAX_CHANNELS);
         // Rescale an in-progress bus transition without resetting it (the
         // envelope's normalized progress is preserved, mirroring
         // `TrackMixer::rescale_sample_rate`).
@@ -50,6 +51,7 @@ impl DspGraph {
         self.routing_mut().reset();
         self.limiter_mut().reset();
         self.dither_mut().reset();
+        self.correction_mut().reset();
     }
 
     /// Reset filter state only without touching volume ramps.
@@ -63,6 +65,7 @@ impl DspGraph {
         self.timestretch_mut().reset();
         self.routing_mut().reset();
         self.limiter_mut().reset();
+        self.correction_mut().reset();
     }
 
     pub fn set_precision_mode(&mut self, mode: PrecisionMode) {

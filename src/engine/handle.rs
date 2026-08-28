@@ -386,6 +386,38 @@ impl EngineHandle {
         let _ = self.send_command(EngineCommand::SetAuxInsert { enabled, wet_mix });
     }
 
+    // ── Room & headphone correction (Phase 7 S5) ─────────────────────────
+
+    /// Live toggle of the correction stage (enabled only; the loaded IR
+    /// stays). Disabled = the plan step is skipped, bit-exact.
+    pub fn set_correction_enabled(&self, enabled: bool) {
+        let _ = self.send_command(EngineCommand::SetCorrectionEnabled(enabled));
+    }
+
+    /// Live wet/dry depth in [0, 1] (1.0 = fully corrected).
+    pub fn set_correction_depth(&self, depth: f32) {
+        let _ = self.send_command(EngineCommand::SetCorrectionDepth(depth));
+    }
+
+    /// Load a measured IR file and derive the correction from it (S2 → S4,
+    /// using the config's target / boost clamp / smoothing / phase mode),
+    /// then enable it. A missing or unreadable file keeps the previous
+    /// correction (or none) — never a failure state.
+    pub fn load_correction_ir(&self, path: impl Into<std::path::PathBuf>) {
+        let _ = self.send_command(EngineCommand::LoadCorrectionIr(path.into()));
+    }
+
+    /// Run a room measurement: play the S1 exponential sine sweep and, where
+    /// a capture backend exists (WASAPI loopback on Windows), deconvolve the
+    /// recording into a correction and land it. Progress / completion
+    /// surface as `MeasurementProgress` / `MeasurementComplete` events.
+    pub fn measure_room(&self, seconds: f32, pre_emphasis: f32) {
+        let _ = self.send_command(EngineCommand::MeasureRoom {
+            seconds,
+            pre_emphasis,
+        });
+    }
+
     /// Replace the configured physical endpoint fan-out list.
     #[cfg(feature = "audio-output")]
     pub fn clear_endpoints(&self) {

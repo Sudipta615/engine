@@ -40,6 +40,16 @@ impl DspGraph {
                             (false, 0.0, 0.0)
                         }
                     }
+                    "correction" => {
+                        let node = self.correction();
+                        if node.is_active() {
+                            let latency_ms = node.latency_ms(self.sample_rate);
+                            let ir_len_ms = node.tail_samples() as f32 / self.sample_rate * 1000.0;
+                            (true, latency_ms, ir_len_ms.max(0.0))
+                        } else {
+                            (false, 0.0, 0.0)
+                        }
+                    }
                     "balance" => (self.balance().is_active(), 0.0, 0.0),
                     "crossfeed" => {
                         if self.crossfeed().is_active() {
@@ -108,6 +118,9 @@ impl DspGraph {
         if self.convolution().is_active() {
             total += self.convolution().engine.latency_ms();
         }
+        if self.correction().is_active() {
+            total += self.correction().latency_ms(self.sample_rate);
+        }
         total
     }
 }
@@ -151,10 +164,16 @@ impl DspGraph {
         } else {
             0.0
         };
+        let correction_latency_ms = if self.correction().is_active() {
+            self.correction().latency_ms(self.sample_rate)
+        } else {
+            0.0
+        };
         let crossfeed_delay_ms = self.crossfeed().crossfeed.latency_ms();
         let timestretch_latency_ms = self.timestretch().stretcher.latency_ms();
         let total_latency_ms = limiter_lookahead_ms
             + convolution_latency_ms
+            + correction_latency_ms
             + crossfeed_delay_ms
             + timestretch_latency_ms
             + resampler_latency_ms
@@ -165,6 +184,7 @@ impl DspGraph {
             limiter_lookahead_ms,
             limiter_detector_delay_ms,
             convolution_latency_ms,
+            correction_latency_ms,
             crossfeed_delay_ms,
             timestretch_latency_ms,
             resampler_latency_ms,
@@ -214,6 +234,7 @@ impl DspGraph {
         let convolution_bypassed = self.bit_perfect
             || !self.convolution().engine.is_enabled()
             || !self.convolution().engine.is_ir_loaded();
+        let correction_bypassed = self.bit_perfect || !self.correction().is_active();
         let crossfeed_bypassed = self.bit_perfect || !self.crossfeed().crossfeed.is_enabled();
         let stereo_bypassed = self.bit_perfect
             || !self.stereo().enhancer.is_enabled()
@@ -224,6 +245,7 @@ impl DspGraph {
         let dynamics_bypassed = limiter_bypassed
             && compressor_bypassed
             && convolution_bypassed
+            && correction_bypassed
             && crossfeed_bypassed
             && stereo_bypassed
             && loudness_bypassed;
@@ -322,6 +344,7 @@ impl DspGraph {
             compressor_bypassed,
             dynamics_bypassed,
             convolution_bypassed,
+            correction_bypassed,
             crossfeed_bypassed,
             stereo_bypassed,
             limiter_bypassed,
