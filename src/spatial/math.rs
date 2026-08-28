@@ -246,6 +246,82 @@ impl Quat {
     pub fn inverse_rotation(self) -> Self {
         self.conjugate()
     }
+
+    /// The quaternion of the same rotation with the opposite sign (the
+    /// shortest-path double cover: `q` and `−q` rotate identically). Used by
+    /// the interpolation routines to pick the shorter arc.
+    #[inline]
+    pub fn negated(self) -> Self {
+        Self::new(-self.x, -self.y, -self.z, -self.w)
+    }
+
+    /// The dot product of the two quaternion 4-vectors.
+    #[inline]
+    pub fn dot(self, o: Self) -> f32 {
+        self.x * o.x + self.y * o.y + self.z * o.z + self.w * o.w
+    }
+
+    /// The 4-vector norm (1 for a unit quaternion).
+    #[inline]
+    pub fn length(self) -> f32 {
+        self.dot(self).sqrt()
+    }
+
+    /// Whether every component is finite.
+    #[inline]
+    pub fn is_finite(self) -> bool {
+        self.x.is_finite() && self.y.is_finite() && self.z.is_finite() && self.w.is_finite()
+    }
+
+    /// Normalise to unit norm. Returns `None` for the (near-)zero
+    /// quaternion.
+    pub fn normalized(self) -> Option<Self> {
+        let l = self.dot(self).sqrt();
+        if l > f32::EPSILON {
+            Some(Self::new(self.x / l, self.y / l, self.z / l, self.w / l))
+        } else {
+            None
+        }
+    }
+
+    /// Shortest-path normalized linear interpolation (`nlerp`) toward
+    /// `other` at `t ∈ [0, 1]`. `t = 0` returns `self`, `t = 1` returns
+    /// `other`; the interpolant takes the *shorter* arc (flipping `other`'s
+    /// sign when the dot product is negative — `q` and `−q` are the same
+    /// rotation). Cheaper than slerp and visually indistinguishable for the
+    /// small per-block steps head tracking produces.
+    pub fn nlerp(self, other: Self, t: f32) -> Self {
+        let o = if self.dot(other) < 0.0 {
+            other.negated()
+        } else {
+            other
+        };
+        let q = self * (1.0 - t) + o * t;
+        q.normalized().unwrap_or(self)
+    }
+
+    /// The rotation angle (radians) between two unit quaternions, in
+    /// `[0, π]` — `2·acos(|dot|)`, the shortest-arc magnitude.
+    #[inline]
+    pub fn angle_to(self, other: Self) -> f32 {
+        2.0 * self.dot(other).abs().clamp(-1.0, 1.0).acos()
+    }
+}
+
+impl Add for Quat {
+    type Output = Quat;
+    #[inline]
+    fn add(self, o: Self) -> Self {
+        Self::new(self.x + o.x, self.y + o.y, self.z + o.z, self.w + o.w)
+    }
+}
+
+impl Mul<f32> for Quat {
+    type Output = Quat;
+    #[inline]
+    fn mul(self, s: f32) -> Self {
+        Self::new(self.x * s, self.y * s, self.z * s, self.w * s)
+    }
 }
 
 #[cfg(test)]
@@ -334,6 +410,58 @@ mod tests {
         // Pitch +90° (about +X): +Y (front) tilts up to +Z.
         let q = Quat::from_euler_rad(0.0, std::f32::consts::FRAC_PI_2, 0.0);
         assert!((q.rotate_vec3(Vec3::Y) - Vec3::Z).length() < 1e-4);
+    }
+
+    #[test]
+    fn nlerp_endpoints_and_yaw_midpoint() {
+        // t=0 → self, t=1 → other; the midpoint of a 0°→90° yaw is a 45°
+        // yaw (pinned via angle_to, which the tracker uses).
+        let q0 = Quat::IDENTITY;
+        let q90 = Quat::from_euler_rad(std::f32::consts::FRAC_PI_2, 0.0, 0.0);
+        assert!(q0.nlerp(q90, 0.0).angle_to(q0) < 1e-6, "t=0 returns self");
+        assert!(q0.nlerp(q90, 1.0).angle_to(q90) < 1e-6, "t=1 returns other");
+        let mid = q0.nlerp(q90, 0.5);
+        assert!((mid.length() - 1.0).abs() < 1e-6, "unit length");
+        let deg = mid.angle_to(Quat::IDENTITY).to_degrees();
+        assert!((deg - 45.0).abs() < 1e-3, "midpoint yaw {deg}°");
+    }
+
+    #[test]
+    fn nlerp_takes_the_shortest_arc() {
+        // 350° → 10° must rotate the *short* way through 0°, not the long
+        // way through 180°. The midpoint quat is ±(0,0,0,1) ≈ identity, so
+        // its angle to identity is ~0 (not ~180°).
+        let q350 = Quat::from_euler_rad(350.0_f32.to_radians(), 0.0, 0.0);
+        let q10 = Quat::from_euler_rad(10.0_f32.to_radians(), 0.0, 0.0);
+        let mid = q350.nlerp(q10, 0.5);
+        let deg = mid.angle_to(Quat::IDENTITY).to_degrees();
+        assert!(deg < 1.0, "short way through 0° (mid at {deg}°)");
+        assert!((mid.length() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn angle_to_and_negated() {
+        let q90 = Quat::from_euler_rad(std::f32::consts::FRAC_PI_2, 0.0, 0.0);
+        assert!((Quat::IDENTITY.angle_to(q90) - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+        assert!(Quat::IDENTITY.angle_to(Quat::IDENTITY.negated()).abs() < 1e-6);
+        // q and −q rotate identically.
+        let v = Vec3::new(1.0, 2.0, 3.0);
+        assert!((q90.rotate_vec3(v) - q90.negated().rotate_vec3(v)).length() < 1e-6);
+        // angle_to is bounded to [0, π].
+        let q180 = Quat::from_euler_rad(std::f32::consts::PI, 0.0, 0.0);
+        assert!((Quat::IDENTITY.angle_to(q180) - std::f32::consts::PI).abs() < 1e-5);
+    }
+
+    #[test]
+    fn quat_scalar_ops_and_normalize() {
+        let q = Quat::new(1.0, 2.0, 3.0, 4.0);
+        let s = q * 2.0;
+        assert_eq!(s, Quat::new(2.0, 4.0, 6.0, 8.0));
+        let sum = q + q;
+        assert_eq!(sum, Quat::new(2.0, 4.0, 6.0, 8.0));
+        let n = q.normalized().unwrap();
+        assert!((n.length() - 1.0).abs() < 1e-6);
+        assert!(Quat::new(0.0, 0.0, 0.0, 0.0).normalized().is_none());
     }
 
     #[test]

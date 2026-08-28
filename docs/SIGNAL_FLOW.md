@@ -159,7 +159,7 @@ device's actual crystal (offset reported in ppm) instead of its nominal
 clock. Same-rate endpoints reuse the master's already-limited block
 untouched.
 
-### Spatial rendering (opt-in, v3.11.0 → v3.17.0)
+### Spatial rendering (opt-in, v3.11.0 → v3.18.0)
 
 ```
 SpatialScene (world space: listener + objects + beds + fields)
@@ -206,6 +206,15 @@ BinauralRenderer (stereo/headphone layout, exactly 2 ears)
         │            speaker ring (decorrelated) → per-speaker ITD + shadow
         ▼
 interleaved stereo PCM (L, R ears)
+
+Head tracking (opt-in, v3.18.0) — the VR/AR seam, control-side only
+        │  IMU / VR rig ── HeadSample(time, quat) ──> HeadTracker
+        │        nlerp across the last two samples → one-pole smoothing
+        │        (smoothing_ms) → optional rate limit (deg/s)
+        ▼
+listener.orientation ──> scene ──> any renderer (unchanged)
+        │  world-fixed sources keep their world position as the head turns;
+        │  the host calls tracker.sample(now) once per render block
 ```
 
 Spatial rendering is **opt-in**: the conventional decode loop and DSP graph are

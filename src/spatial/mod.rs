@@ -70,6 +70,10 @@
 //! - `binaural.rs` — [`BinauralRenderer`]: the whole hybrid scene through
 //!   the head model, with a virtual 8-speaker ring for diffuse content
 //!   (Part VII).
+//! - `tracking.rs` — head tracking ([`HeadTracker`], [`HeadSample`],
+//!   [`TrackingConfig`]): interpolates and smooths a stream of IMU/VR
+//!   orientation samples into the listener's orientation at block rate —
+//!   the VR/AR seam (§48, §136).
 //! - `panner.rs` — [`BasicPanner`] (§24–30, §46, §56–57).
 //! - `vbap.rs` — [`VbapRenderer`]: 3-triplet VBAP, Delaunay region
 //!   preprocessor, out-of-coverage fallback (§21, §25–29).
@@ -100,11 +104,14 @@
 //! spectral cues yet — the documented HRTF seam, §136); mirror symmetry is
 //! the exact invariant, not constant power (the head diffracts).
 //!
-//! Still future: higher-order Ambisonics (the order-1 basis + per-order
-//! decoder weights are the documented §34 extension), full spectral HRTFs,
-//! head tracking and the scene file format (per the spec's dependency
-//! order, Part XXVI); the data model is shaped so they slot in without
-//! redesign (§136).
+//! Head tracking is a live seam ([`HeadTracker`]): the listener's
+//! orientation is a first-class scene transform, so a host feeds IMU/VR
+//! samples and applies the smoothed result to the listener before each
+//! render block — the renderers never change (spec §48, §136). Still
+//! future: higher-order Ambisonics (the order-1 basis + per-order decoder
+//! weights are the documented §34 extension), full spectral HRTFs, and the
+//! scene file format (per the spec's dependency order, Part XXVI); the
+//! data model is shaped so they slot in without redesign (§136).
 //!
 //! The spatial layer contains **no** Dolby/DTS codecs, bitstreams, metadata,
 //! or trademarks — it is an independent implementation (§3, §115).
@@ -125,6 +132,7 @@ pub mod room;
 pub mod scene;
 pub mod speaker;
 pub mod spread;
+pub mod tracking;
 pub mod vbap;
 
 pub use ambisonic::{
@@ -150,3 +158,4 @@ pub use render::{HybridBlockInputs, RenderError, RendererKind, SpatialRenderer, 
 pub use room::{EarlyReflections, Room, RoomLateField};
 pub use scene::{Listener, ListenerTransform, SpatialScene};
 pub use speaker::{LayoutCalibration, Speaker, SpeakerId, SpeakerLayout};
+pub use tracking::{HeadSample, HeadTracker, TrackingConfig};

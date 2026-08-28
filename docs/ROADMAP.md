@@ -792,6 +792,49 @@ fractional-delay interpolation, spread centroid metric).
 
 **Unblocks (Horizon).** Higher orders, full spectral HRTFs (the model is
 azimuth-only today — elevation cues are the documented seam), head
-**tracking, scene file format, and eventually a `SpatialNode` in the
-production graph.
+tracking (done — Phase 15), scene file format, and eventually a
+`SpatialNode` in the production graph.
+
+## Phase 15 — Head tracking (v3.18.0) — **Implemented**
+
+**Intent.** Close the VR/AR loop (spec §48, §136): feed the scene a live
+stream of head-orientation samples and let the audio follow the head. The
+renderers never change — the listener's orientation was already a
+first-class scene transform — so tracking is a **control-side**
+interpolation + smoothing problem.
+
+### Key mechanisms
+
+- **`spatial::tracking::HeadTracker`** — `push(HeadSample)` ingests
+  timestamped orientations (IMU / VR rig / mock); `sample(now)` returns
+  the smoothed current orientation; `apply_to(&mut listener, now)` is the
+  per-block host convenience. The pipeline is documented: shortest-path
+  **nlerp** across the last two samples (a pure yaw sweep glides, never
+  snaps; the latest sample is held when no new one has arrived) → an
+  **exponential one-pole** on the orientation error (`smoothing_ms`;
+  `0` snaps exactly) → an optional **rate limit** (`max_angular_rate_deg_s`
+  clamps the per-step angle, so a glitch cannot fling the soundfield).
+- **`Quat` interpolation math** (`math.rs`): `nlerp` (shortest path,
+  normalized), `angle_to` (`2·acos(|dot|)`), `dot`, `normalized`,
+  `negated`, `length`, `is_finite`, `Add`/`Mul<f32>` — unit-tested.
+
+**Realtime discipline.** The tracker is fixed-size state — `push` and
+`sample` allocate nothing and take no locks, so a host may run them on the
+audio thread's caller; the renderers themselves stay untouched and
+lock-free. New `realtime_allocation` test: a 10k-sample jittery stream with
+block-rate sampling, 0 allocs.
+
+**Acceptance (spec-first).** `tests/fidelity/spatial_tracking.rs` — the
+headline Woodworth consistency: a 137° tracked yaw sweep renders a
+world-fixed source with the closed-form `itd(az, L) − itd(az, R)` ear lag
+at *every* block; the frozen-image contrast (the same sweep without
+applying the tracker leaves the image at +90° while the head has turned
+90°); smoothing gliding the ear lag without zipper and converging; a 5.1
+panner moving the image from the side pair to front/center as the head
+turns; tracker determinism + rate-limit capping; and `apply_to` updating
+the listener (pinned via the ITD). Plus unit suites in `tracking.rs` /
+`math.rs`.
+
+**Unblocks (Horizon).** Higher orders, full spectral HRTFs, scene file
+format, and eventually a `SpatialNode` in the production graph.
 

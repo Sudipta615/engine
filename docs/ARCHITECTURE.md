@@ -129,7 +129,7 @@ src/
 │                             #   (CorrectionNode — per-channel partitioned
 │                             #   convolution bank, post-aux/pre-EQ)
 │
-├── spatial/                  # ── Spatial audio (Phases 8–14, opt-in) ──
+├── spatial/                  # ── Spatial audio (Phases 8–15, opt-in) ──
 │   ├── math.rs               # Vec3 / Quat + the single documented coordinate
 │   │                         #   system (+X right, +Y front, +Z up; metres /
 │   │                         #   radians / linear gain) — no linear-algebra dep
@@ -180,6 +180,11 @@ src/
 │   │                         #   ITD + shadow, spread blurs cues), beds
 │   │                         #   (semantic-role fold, LFE at 1/√2), fields
 │   │                         #   + late field via a virtual 8-speaker ring
+│   ├── tracking.rs           # Head tracking (VR/AR seam): HeadTracker,
+│   │                         #   HeadSample, TrackingConfig — nlerp
+│   │                         #   interpolation + one-pole smoothing +
+│   │                         #   optional rate limit; host applies the
+│   │                         #   result to the listener per block
 │   ├── render.rs             # SpatialRenderer trait (incl. HybridBlockInputs /
 │   │                         #   process_hybrid_block), RendererKind (Basic /
 │   │                         #   Vbap / Ambisonic / Binaural), RenderError
@@ -197,9 +202,9 @@ src/
 │                             #   empty-triangle region filter), allocation-
 │                             #   free render path with max-min-gain triplet
 │                             #   selection and energy normalization.
-│                             #   Higher-order ambisonics, full spectral
-│                             #   HRTFs and head tracking are declared seams
-│                             #   for later phases (spec Part XXVI).
+│                             #   Higher-order ambisonics and full spectral
+│                             #   HRTFs are declared seams for later phases
+│                             #   (spec Part XXVI).
 │
 ├── output/                   # ── Output backends ──
 │   ├── mod.rs                # Module wiring + re-exports

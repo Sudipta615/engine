@@ -2,6 +2,51 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.18.0] — 2026-08-28
+
+Head tracking (roadmap Phase 15, spec §48, §136): the VR/AR seam. A new
+`spatial::tracking` module turns a stream of timestamped orientation
+samples (an IMU, a webcam, a game engine's VR rig — anything that can
+produce a `Quat`) into a smooth current head orientation the host applies
+to the scene listener before each render block. The renderers never
+change: the listener's orientation was already a first-class transform,
+so tracking is purely a control-side interpolation + smoothing problem.
+The `HeadTracker` shortest-path nlerps across the last two samples, feeds
+an exponential (one-pole) filter on the orientation error (τ in ms; `0`
+snaps exactly), and can rate-limit the angular step (deg/s) so a violent
+head jump or sensor glitch cannot fling the soundfield.
+
+### Added
+
+- **`spatial::tracking`** — [`HeadTracker`], [`HeadSample`] (timestamped
+  orientation), [`TrackingConfig`] (`smoothing_ms`, `max_angular_rate_deg_s`):
+  `push` ingests samples (host thread), `sample(now)` returns the smoothed
+  current orientation, `apply_to(&mut listener, now)` is the per-block host
+  convenience. Pure fixed-size state — allocation-free and lock-free, so it
+  can run on the audio thread's caller.
+- **Quaternion interpolation** (`math`): `Quat::nlerp` (shortest-path,
+  normalized linear interpolation), `Quat::angle_to`, `Quat::dot`,
+  `Quat::normalized`, `Quat::negated`, `Quat::length`, `Quat::is_finite`,
+  and `Add` / `Mul<f32>` — all unit-tested (midpoint pins, shortest-arc
+  wrap, `q` vs `−q`).
+
+### Tests
+
+- Unit suites in `tracking.rs` (segment interpolation vs the closed form,
+  shortest arc, smoothing ramp + convergence, exact mode, rate-limit cap,
+  reset/first-sample snap, `apply_to`) and `math.rs` (nlerp endpoints /
+  midpoint / shortest arc, `angle_to` bounds, scalar ops).
+- Acceptance suite `tests/fidelity/spatial_tracking.rs` (6 tests): the
+  headline Woodworth consistency — a 137° tracked yaw sweep renders a
+  world-fixed source with the closed-form `itd(az, L) − itd(az, R)` ear lag
+  at every block; the frozen-image contrast (same sweep without applying
+  the tracker); smoothing gliding the image without zipper; a 5.1 panner
+  moving the image from the side pair to the front/center as the head turns;
+  tracker determinism + rate-limit capping end to end; and `apply_to`
+  updating the listener (plus the renderer using it, pinned via the ITD).
+- `realtime_allocation`: new `realtime_head_tracker_does_not_allocate` — a
+  10k-sample jittery stream with block-rate sampling, **zero allocations**.
+
 ## [3.17.0] — 2026-08-28
 
 Binaural rendering (roadmap Phase 14, spec Part VII §47–48, §62, §136):

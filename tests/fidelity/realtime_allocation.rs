@@ -988,3 +988,40 @@ fn realtime_spatial_binaural_does_not_allocate() {
         "steady-state binaural processing allocated on the audio path"
     );
 }
+
+/// Head tracking (Phase 10, spec §48/§136) must also be allocation-free:
+/// the tracker is host-side (the renderers never touch it), but a host may
+/// run it on the audio thread's caller — `push` and `sample` are pure
+/// fixed-size state (interpolation + one-pole + optional rate limit), no
+/// `Vec` growth, no locks.
+#[test]
+fn realtime_head_tracker_does_not_allocate() {
+    use engine::spatial::{HeadSample, HeadTracker, Quat, TrackingConfig};
+
+    let mut tracker = HeadTracker::new(TrackingConfig {
+        smoothing_ms: 8.0,
+        max_angular_rate_deg_s: 540.0,
+    });
+    tracker.push(HeadSample::new(0.0, Quat::IDENTITY));
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    // A 10k-sample jittery stream (the IMU callback rate is independent of
+    // the block rate) with the host sampling at block rate.
+    for i in 1..=10_000 {
+        let t = 0.001 * i as f64;
+        let yaw = (i as f32 * 0.05).sin() * 2.0 + i as f32 * 1e-4;
+        tracker.push(HeadSample::new(t, Quat::from_euler_rad(yaw, 0.0, 0.0)));
+        let q = tracker.sample(t);
+        assert!(q.is_finite());
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocations = THREAD_ALLOCS.with(|c| c.get());
+
+    assert_eq!(
+        allocations, 0,
+        "steady-state head tracking allocated on the audio path"
+    );
+}

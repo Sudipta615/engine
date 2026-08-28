@@ -3,7 +3,7 @@ members = [".", "crates/config"]
 
 [package]
 name = "engine"
-version = "3.17.0"
+version = "3.18.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"
@@ -364,6 +364,10 @@ path = "tests/fidelity/spatial_room.rs"
 [[test]]
 name = "spatial_binaural"
 path = "tests/fidelity/spatial_binaural.rs"
+
+[[test]]
+name = "spatial_tracking"
+path = "tests/fidelity/spatial_tracking.rs"
 
 [[test]]
 name = "graph_pipeline_equivalence"
