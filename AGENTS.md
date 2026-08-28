@@ -45,8 +45,8 @@ drive the whole surface.
 │   │                           #   (3-triplet VBAP) + directivity/,
 │   │                           #   occlusion/, spread/ (object behavior) +
 │   │                           #   bed/, field/ (beds & fields hybrid) +
-│   │                           #   ambisonic/ (order-1 FOA pinned + order-2
-│   │                           #   HOA basis, exact rotation, max-rE decoder) +
+│   │                           #   ambisonic/ (order-1 FOA pinned + order-2/3
+│   │                           #   HOA basis, exact rotation, max-rE) +
 │   │                           #   room/ (reflections + late field) +
 │   │                           #   hrtf/ (Woodworth ITD + Duda-Martens head
 │   │                           #   shadow + pinna notch + spectral HrtfDataset)

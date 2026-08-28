@@ -112,17 +112,17 @@
 //! render block — the renderers never change (spec §48, §136).
 //!
 //! Higher-order ambisonics is implemented ([`ambisonic`]): the exact
-//! order-N SH basis (order-1 FOA pinned, order-2 `U/V/T/R/S` per the
-//! published Furse–Malham table), per-order max-rE decoder weights, and an
-//! exact order-2 bus rotation (§34). Scenes persist through the scene-file
-//! format (Part XXVI): [`SpatialScene::to_config`] /
-//! [`SpatialScene::from_config`] convert losslessly to a
-//! Serde-serializable, renderer-independent model saved via
+//! order-N SH basis (order-1 FOA pinned, order-2 `U/V/T/R/S` and order-3
+//! ACN 9–15 per the published Furse–Malham table), per-order max-rE
+//! decoder weights, and exact order-1/2/3 bus rotation (§34). Scenes
+//! persist through the scene-file format (Part XXVI):
+//! [`SpatialScene::to_config`] / [`SpatialScene::from_config`] convert
+//! losslessly to a Serde-serializable, renderer-independent model saved via
 //! [`save_scene_json`] / [`load_scene_json`]. And the spatial layer is a
 //! first-class part of the production graph via the `SpatialNode`
 //! (`crate::dsp::graph`), which spatializes the stereo master through the
-//! head model at the block boundary. Still future: order-3+ (the same
-//! pattern extends), measured HRTF corpus loading, and spatial recording.
+//! head model at the block boundary. Still future: order-4+, measured HRTF
+//! corpus loading, and spatial recording.
 //!
 //! The spatial layer contains **no** Dolby/DTS codecs, bitstreams, metadata,
 //! or trademarks — it is an independent implementation (§3, §115).

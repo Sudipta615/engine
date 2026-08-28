@@ -873,9 +873,10 @@ orthonormality, channel table, weights, rotation, order-2 renderer). New
 `realtime_allocation` test: order-2 with per-frame exact rotation, 0
 allocs.
 
-**Unblocks (Horizon).** Order-3+ (the same pattern extends; the rotation
-matrices are the closed-form Wigner-D entries), and higher-order *spatial*
-recording via the order-2 encoder.
+**Unblocks (Horizon).** Order 3 is implemented (v3.20.0 — the cubic
+coefficient projection extends the same pattern); the next step is
+higher-order *spatial* recording via the order-3 encoder, and beyond that
+order 4+ (the form-tensor projection generalizes to any degree).
 
 ## Phase 17 — SpatialNode in the production graph (v3.19.0) — **Implemented**
 

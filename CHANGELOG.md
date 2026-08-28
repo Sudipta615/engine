@@ -2,6 +2,57 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.20.0] — 2026-08-28
+
+The ambisonic layer extends from order 2 to **order 3** (Third-Order
+Ambisonics, 16 channels). This is a backward-compatible capability: every
+order-≤2 behavior — basis values, decode, and the exact rotation — is
+pinned bit-for-bit identical to v3.19.0 by the existing unit and acceptance
+tests.
+
+### Added
+
+- **Third-order SN3D basis** (`sh_n`, order 3): the seven ACN-9–15 cubic
+  harmonics per the Furse–Malham table — `√(35/8)·x(x²−3y²)`, `√105·xyz`,
+  `√(21/8)·y(5z²−1)`, `(√7/2)·z(5z²−3)`, `√(21/8)·x(5z²−1)`,
+  `(√105/2)·z(x²−y²)`, `√(35/8)·y(y²−3x²)` — each validated to unit sphere
+  mean-square (SN3D) and mutual orthogonality by a dedicated grid test. New
+  `AMBISONIC_CHANNELS_ORDER_3 = 16` and `AMBISONIC_CHANNELS_MAX` channel
+  constants.
+- **Exact order-3 Wigner rotation** (`rotate_bus_frame_n`): the 7×7 block
+  is the projection of the cubic triple-Kronecker action `R⊗R⊗R` onto the
+  order-3 subspace, computed by coefficient linear algebra (monomial
+  substitution under `R` + Gram projection), in f64 — so the defining
+  property `sh_n(3, R·v) == W₃·sh_n(3, v)` holds to high precision on every
+  channel. `AmbisonicRenderer` / `AmbisonicDecoder::with_order` now accept
+  order 3; `process_bus` and the renderer scratch buffers grow to
+  `AMBISONIC_CHANNELS_MAX` (still fully preallocated, zero allocations).
+- **Third-order max-rE window**: the published Zotter–Frank weights
+  `a1 ≈ 0.7660, a2 ≈ 0.6534, a3 ≈ 0.5715`, verifiable per-speaker against
+  the closed-form decode.
+
+### Tests
+
+- Unit suite additions: `order3_basis_matches_documented_sn3d_convention`
+  (cardinal-direction values + order-1/2 rows unchanged), `
+  order3_norm_preserving_on_the_sphere` (mean-square 1 + orthogonality),
+  `order3_rotation_is_exact_on_the_basis` and `order3_rotation_round_trips_
+  to_identity`, and the rejection test now checks order 4 is unsupported.
+  Total 137 spatial lib tests.
+- Acceptance suite `spatial_hoa` gains three order-3 tests (conventions,
+  exact rotation + world-fixed end-to-end decode, and the max-rE window vs
+  the closed form + max-rE-over-basic rear-lobe narrowing). 9 tests green.
+- Three implementation defects were caught while extending:
+  - A test-side arithmetic error asserted `Y₃⁰(+Y)=√7` (really 0; `z=0` at
+    +Y) and `Y₃¹(+Y)=−√(21/8)` (really ACN 11); corrected to pin `Y₃³(+Y)`
+    and `Y₃⁻¹(+Y)`.
+  - The order-3 rotate arm initially accumulated `W₃ᵀ·c` (transposed);
+    corrected to the direct `W₃·c` convention (order-2's block is stored
+    transposed, order-3's is direct — now documented in the code).
+  - A flawed acceptance assumption (order-3 max-rE rear lobe narrower than
+    order-2's) was wrong; replaced with the per-order-3 meaningful invariant
+    (max-rE vs basic at order 3).
+
 ## [3.19.0] — 2026-08-28
 
 The spatial layer's capstone: **higher-order ambisonics**, a **SpatialNode**

@@ -165,11 +165,13 @@ src/
 │   │                         #   every pan speaker (√N diffuse compensation),
 │   │                         #   decorrelated per speaker via delay rings
 │   │                         #   (AmbisonicFieldMixer)
-│   ├── ambisonic.rs          # Ambisonics/HOA core (Phase 16): exact order-N
-│   │                         #   SH basis (sh_n, channel_count — order-1
-│   │                         #   FOA pinned + order-2 U/V/T/R/S per the
-│   │                         #   Furse–Malham table), encode_plane_wave_n,
-│   │                         #   exact order-2 rotate_bus_frame_n,
+│   ├── ambisonic.rs          # Ambisonics/HOA core (Phase 16 → order 3):
+│   │                         #   exact order-N SH basis (sh_n, channel_count
+│   │                         #   — order-1 FOA pinned + order-2 U/V/T/R/S +
+│   │                         #   order-3 ACN 9–15 per the Furse–Malham table,
+│   │                         #   all SN3D mean-square 1), encode_plane_wave_n,
+│   │                         #   exact order-2/order-3 rotate_bus_frame_n
+│   │                         #   (Wigner blocks by form/tensor projection),
 │   │                         #   DecoderPolicy (Basic / MaxRe with per-order
 │   │                         #   max-rE weights), AmbisonicDecoder
 │   │                         #   (per-speaker matrix), AmbisonicRenderer::

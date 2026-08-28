@@ -182,13 +182,13 @@ interleaved multichannel PCM (frames × layout channels)
         ▼
 output domain ──▶ existing ring / endpoint path
 
-Ambisonic bus path (opt-in, v3.15.0 → order-2 in v3.19.0)
-        │  bus planes [W, Y, Z, X] or order-2 [W,Y,Z,X,U,V,T,R,S]
-        │  (world orientation, exact SH basis)
+Ambisonic bus path (opt-in, v3.15.0 → order-3 in v3.20.0)
+        │  bus planes [W, Y, Z, X] or order-2 [W,Y,Z,X,U,V,T,R,S] or
+        │  order-3 +ACN 9–15 (world orientation, exact SN3D SH basis)
         ▼
-AmbisonicRenderer (order ≤ 2): per-frame listener rotation (exact
-        │   order-2 matrices) → decode matrix (Basic sampling or per-order
-        │   max-rE weights) → calibration
+AmbisonicRenderer (order ≤ 3): per-frame listener rotation (exact
+        │   order-1/2/3 Wigner matrices) → decode matrix (Basic sampling
+        │   or per-order max-rE weights) → calibration
         ▼
 interleaved multichannel PCM
 

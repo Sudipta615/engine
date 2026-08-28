@@ -22,7 +22,7 @@
 //!   `+Y` front, `+Z` up); directions are listener-space unit vectors.
 //! - **Basis**: real spherical harmonics. Order 1 is the engine-wide
 //!   default ([`AMBISONIC_ORDER`]); the decoder and renderer accept orders
-//!   up to [`MAX_AMBISONIC_ORDER`] (2 = second-order, 9 channels) — the
+//!   up to [`MAX_AMBISONIC_ORDER`] (3 = third-order, 16 channels) — the
 //!   documented §34 table + rotation extension.
 //! - **Rotation**: order-1 rotation keeps `W` invariant and rotates the
 //!   `X Y Z` channels by the same 3×3 as direction vectors. Order-2
@@ -31,14 +31,20 @@
 //!   matrix (the basis functions are quadratic forms in the direction, so
 //!   the block is the representation of `F ↦ R F Rᵀ` on the traceless
 //!   quadratic forms — computed by Frobenius projection, exact by
-//!   construction). The renderer applies the listener orientation, so a
+//!   construction). Order-3 extends to the exact 7×7 Wigner matrix on the
+//!   cubic forms: each third-order basis function is a harmonic cubic, so
+//!   the block is the projection of the triple-Kronecker action
+//!   `F ↦ R ⊗ R ⊗ R` onto the order-3 subspace, computed by coefficient
+//!   linear algebra (monomial substitution + Gram solve) — exact by
+//!   construction. The renderer applies the listener orientation, so a
 //!   world-encoded field stays world-fixed as the listener turns (§48).
 //! - **Decoding** (§36): the sampling ("basic") decoder `D = Y(S)ᵀ/N` —
 //!   every order weighted equally — plus a **max-rE** policy that narrows
 //!   the lobe: order 1 uses the documented FOA window `a1 = √3/2 ≈ 0.866`;
 //!   order 2 uses the published Zotter–Frank window `a1 ≈ 0.9057,
-//!   a2 ≈ 0.6827`. Decoder selection is separate from the scene
-//!   representation.
+//!   a2 ≈ 0.6827`; order 3 uses the published window `a1 ≈ 0.7660,
+//!   a2 ≈ 0.6534, a3 ≈ 0.5715`. Decoder selection is separate from the
+//!   scene representation.
 
 use super::math::{Quat, Vec3};
 use super::render::RenderError;
@@ -49,9 +55,9 @@ use crate::buffer::MAX_AUDIO_BLOCK_FRAMES;
 /// engine-wide bus width for fields and virtual rings.
 pub const AMBISONIC_ORDER: u8 = 1;
 
-/// Highest implemented order (2 = Second-Order Ambisonics, SOA — 9
+/// Highest implemented order (3 = Third-Order Ambisonics, TOA — 16
 /// channels).
-pub const MAX_AMBISONIC_ORDER: u8 = 2;
+pub const MAX_AMBISONIC_ORDER: u8 = 3;
 
 /// Number of ambisonic channels for `order` (`(order+1)²`).
 pub fn channel_count(order: u8) -> usize {
@@ -62,8 +68,15 @@ pub fn channel_count(order: u8) -> usize {
 /// FOA channel count (order [`AMBISONIC_ORDER`]).
 pub const AMBISONIC_CHANNELS: usize = 4;
 
-/// SOA channel count (order [`MAX_AMBISONIC_ORDER`]).
+/// Second-order (SOA) channel count.
 pub const AMBISONIC_CHANNELS_ORDER_2: usize = 9;
+
+/// Third-order (TOA) channel count.
+pub const AMBISONIC_CHANNELS_ORDER_3: usize = 16;
+
+/// Largest supported bus width (`channel_count(MAX_AMBISONIC_ORDER)`),
+/// used to size the allocation-free per-frame scratch on the hot path.
+pub const AMBISONIC_CHANNELS_MAX: usize = AMBISONIC_CHANNELS_ORDER_3;
 
 /// Real spherical-harmonic basis for a unit direction, ACN/SN3D, order 1:
 /// `[W, Y, Z, X]` = `[1, √3·y, √3·z, √3·x]`.
@@ -75,8 +88,9 @@ pub fn sh_foa(dir: Vec3) -> [f32; 4] {
 
 /// Real spherical-harmonic basis, ACN/SN3D, order ≤ [`MAX_AMBISONIC_ORDER`].
 /// Writes `channel_count(order)` values into `out` (panics if too short);
-/// order 1 is exactly [`sh_foa`], order 2 appends ACN 4–8.
-/// `dir` is normalised defensively; a zero direction reads as `+Y`.
+/// order 1 is exactly [`sh_foa`], order 2 appends ACN 4–8, order 3 appends
+/// ACN 9–15. `dir` is normalised defensively; a zero direction reads as
+/// `+Y`.
 #[inline]
 pub fn sh_n(order: u8, dir: Vec3, out: &mut [f32]) {
     let n = channel_count(order);
@@ -97,6 +111,31 @@ pub fn sh_n(order: u8, dir: Vec3, out: &mut [f32]) {
         out[6] = 5.0f32.sqrt() * 0.5 * (3.0 * z * z - 1.0);
         out[7] = s15 * x * z;
         out[8] = s15 * 0.5 * (x * x - y * y);
+    }
+    if order >= 3 {
+        // Third-order SN3D block (ACN 9–15), each ± combination of the
+        // seven harmonic cubics — all validated to unit sphere RMS (mean-
+        // square 1) and mutual orthogonality, and to rotate by the exact
+        // 7×7 Wigner block (`wigner_block_3`).
+        //   ACN 9 :  √(35/8)·x(x²−3y²)
+        //   ACN10 :  √105·xyz
+        //   ACN11 :  √(21/8)·y(5z²−1)
+        //   ACN12 :  (√7/2)·z(5z²−3)
+        //   ACN13 :  √(21/8)·x(5z²−1)
+        //   ACN14 :  (√105/2)·z(x²−y²)
+        //   ACN15 :  √(35/8)·y(y²−3x²)
+        let s358 = (35.0f32 / 8.0).sqrt(); // √(35/8)
+        let s105 = 105.0f32.sqrt(); // √105
+        let s218 = (21.0f32 / 8.0).sqrt(); // √(21/8)
+        let s7h = 7.0f32.sqrt() * 0.5; // √7/2
+        let s105h = 105.0f32.sqrt() * 0.5; // √105/2
+        out[9] = s358 * x * (x * x - 3.0 * y * y);
+        out[10] = s105 * x * y * z;
+        out[11] = s218 * y * (5.0 * z * z - 1.0);
+        out[12] = s7h * z * (5.0 * z * z - 3.0);
+        out[13] = s218 * x * (5.0 * z * z - 1.0);
+        out[14] = s105h * z * (x * x - y * y);
+        out[15] = s358 * y * (y * y - 3.0 * x * x);
     }
 }
 
@@ -176,6 +215,55 @@ pub fn rotate_bus_frame_n(q: Quat, order: u8, frame: &mut [f32]) {
             frame[6] = out5[2];
             frame[7] = out5[3];
             frame[8] = out5[4];
+        }
+        3 => {
+            assert!(frame.len() >= 16);
+            // W invariant; first- and second-order blocks rotate exactly as
+            // for orders 1 and 2.
+            let v = Vec3::new(frame[3], frame[1], frame[2]);
+            let r = q.rotate_vec3(v);
+            frame[1] = r.y;
+            frame[2] = r.z;
+            frame[3] = r.x;
+            let w2 = wigner_block_2(q);
+            let c2 = [frame[4], frame[5], frame[6], frame[7], frame[8]];
+            let mut out5 = [0.0f32; 5];
+            for (i, &ci) in c2.iter().enumerate() {
+                if ci != 0.0 {
+                    for j in 0..5 {
+                        out5[j] += w2[i][j] * ci;
+                    }
+                }
+            }
+            frame[4] = out5[0];
+            frame[5] = out5[1];
+            frame[6] = out5[2];
+            frame[7] = out5[3];
+            frame[8] = out5[4];
+            // Exact third-order Wigner block (ACN 9–15) by cubic-coefficient
+            // linear algebra — validated to satisfy `sh_n(3,R·v) == W₃·sh_n(3,v)`.
+            let w3 = wigner_block_3(q);
+            let c3 = [
+                frame[9], frame[10], frame[11], frame[12], frame[13], frame[14], frame[15],
+            ];
+            let mut out7 = [0.0f32; 7];
+            for (i, out) in out7.iter_mut().enumerate() {
+                // Accumulate into output index `i` from all input columns `j`.
+                // (Order-2's block is stored transposed relative to this;
+                // order-3's is the direct `W₃·c` convention.)
+                let mut acc = 0.0f32;
+                for j in 0..7 {
+                    acc += w3[i][j] * c3[j];
+                }
+                *out = acc;
+            }
+            frame[9] = out7[0];
+            frame[10] = out7[1];
+            frame[11] = out7[2];
+            frame[12] = out7[3];
+            frame[13] = out7[4];
+            frame[14] = out7[5];
+            frame[15] = out7[6];
         }
         _ => panic!("rotate_bus_frame_n: order {order} unsupported"),
     }
@@ -281,6 +369,170 @@ fn wigner_block_2(q: Quat) -> [[f32; 5]; 5] {
     w
 }
 
+/// The exact order-3 Wigner rotation block for the real-SH basis (ACN 9–15).
+///
+/// The third-order SN3D basis functions are harmonic cubics
+/// (`√(35/8)·x(x²−3y²), √105·xyz, √(21/8)·y(5z²−1), (√7/2)·z(5z²−3),
+/// √(21/8)·x(5z²−1), (√105/2)·z(x²−y²), √(35/8)·y(y²−3x²)`). Under a
+/// rotation `R` each cubic transforms by the triple-Kronecker action
+/// `F ↦ R ⊗ R ⊗ R` on its degree-3 homogeneous form. The 7×7 block is the
+/// projection of that action onto the order-3 subspace, computed by
+/// coefficient linear algebra: each basis cubic is a 10-vector over the
+/// cubic monomials, the monomials are substituted under `R`, and the block
+/// is obtained by Gram projection `W₃ = (BᵀMB)·(BᵀB)⁻¹` on the exact
+/// orthonormal basis — so `sh_n(3, R·v) == W₃·sh_n(3, v)` holds by
+/// construction (pinned by tests). f64 throughout for exactness.
+fn wigner_block_3(q: Quat) -> [[f32; 7]; 7] {
+    const M: usize = 10;
+    // Cubic monomial exponents (x,y,z): x³ x²y x²z xy² xyz xz² y³ y²z yz² z³.
+    const EXPS: [[usize; 3]; M] = [
+        [3, 0, 0],
+        [2, 1, 0],
+        [2, 0, 1],
+        [1, 2, 0],
+        [1, 1, 1],
+        [1, 0, 2],
+        [0, 3, 0],
+        [0, 2, 1],
+        [0, 1, 2],
+        [0, 0, 3],
+    ];
+    // SN3D constants.
+    let s358 = (35.0f64 / 8.0).sqrt(); // √(35/8)
+    let s105 = 105.0f64.sqrt();
+    let s218 = (21.0f64 / 8.0).sqrt();
+    let s7h = 7.0f64.sqrt() * 0.5;
+    let s105h = 105.0f64.sqrt() * 0.5;
+    // The 7 basis cubics as 10-vectors (homogenized — equal to the sphere
+    // forms on the unit sphere, and rotation-invariant since `R` preserves
+    // `r²`). ACN 9..15.
+    let basis: [[f64; M]; 7] = [
+        // x(x²−3y²) = x³ −3xy²
+        [s358, 0.0, 0.0, -3.0 * s358, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        // xyz
+        [0.0, 0.0, 0.0, 0.0, s105, 0.0, 0.0, 0.0, 0.0, 0.0],
+        // y(5z²−1) → 4yz² −x²y −y³
+        [0.0, -s218, 0.0, 0.0, 0.0, 0.0, -s218, 0.0, 4.0 * s218, 0.0],
+        // z(5z²−3) → 2z³ −3x²z −3y²z
+        [
+            0.0,
+            0.0,
+            -3.0 * s7h,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -3.0 * s7h,
+            0.0,
+            2.0 * s7h,
+        ],
+        // x(5z²−1) → 4xz² −x³ −xy²
+        [-s218, 0.0, 0.0, -s218, 0.0, 4.0 * s218, 0.0, 0.0, 0.0, 0.0],
+        // z(x²−y²) = x²z −y²z
+        [0.0, 0.0, s105h, 0.0, 0.0, 0.0, 0.0, -s105h, 0.0, 0.0],
+        // y(y²−3x²) = y³ −3x²y
+        [0.0, -3.0 * s358, 0.0, 0.0, 0.0, 0.0, s358, 0.0, 0.0, 0.0],
+    ];
+
+    let r = rotation_matrix_f64(q);
+    // The 10×10 monomial substitution: `sub[n][m]` is the coefficient of
+    // monomial `n` in monomial `m` under `d ↦ R·d`. Each cubic monomial
+    // `x^a y^b z^c` expands as `Π (Σ_k R[i][k] d_k)^e`, so we place each of
+    // its `a+b+c` factors onto one of the three rows of `R` times a d-
+    // component and collect the resulting d-exponents. Deterministic DCG
+    // (with multiplicity) — a stack of fixed size 3⁴.
+    let mut sub = [[0.0f64; M]; M];
+    for (mi, &[a, b, c]) in EXPS.iter().enumerate() {
+        let mut stack: Vec<(usize, usize, usize, [usize; 3], f64)> =
+            vec![(a, b, c, [0, 0, 0], 1.0)];
+        while let Some((ra, rb, rc, expt, coeff)) = stack.pop() {
+            if ra + rb + rc == 0 {
+                let idx = EXPS.iter().position(|&e| e == expt).unwrap();
+                sub[idx][mi] += coeff;
+                continue;
+            }
+            if ra > 0 {
+                for comp in 0..3 {
+                    let mut e2 = expt;
+                    e2[comp] += 1;
+                    stack.push((ra - 1, rb, rc, e2, coeff * r[0][comp]));
+                }
+            } else if rb > 0 {
+                for comp in 0..3 {
+                    let mut e2 = expt;
+                    e2[comp] += 1;
+                    stack.push((ra, rb - 1, rc, e2, coeff * r[1][comp]));
+                }
+            } else {
+                for comp in 0..3 {
+                    let mut e2 = expt;
+                    e2[comp] += 1;
+                    stack.push((ra, rb, rc - 1, e2, coeff * r[2][comp]));
+                }
+            }
+        }
+    }
+    // Gram `G = BᵀB` (7×7) and `RHS = Bᵀ·(sub)ᵀ...`: compute `Q[i][j] =
+    // <sub·H_i, H_j>` and set `W₃ = Q·G⁻¹` (since `sub·H_i = Σ_j W₃[i][j] H_j`).
+    let dot = |u: [f64; M], v: [f64; M]| (0..M).map(|k| u[k] * v[k]).sum::<f64>();
+    let mut g = [[0.0f64; 7]; 7];
+    let mut q = [[0.0f64; 7]; 7];
+    for i in 0..7 {
+        // sub·H_i
+        let mut shi = [0.0f64; M];
+        for n in 0..M {
+            for mm in 0..M {
+                shi[n] += sub[n][mm] * basis[i][mm];
+            }
+        }
+        for j in 0..7 {
+            g[i][j] = dot(basis[i], basis[j]);
+            q[i][j] = dot(shi, basis[j]);
+        }
+    }
+    // Invert G.
+    let mut gin = [[0.0f64; 7]; 7];
+    gin.iter_mut().enumerate().for_each(|(i, row)| row[i] = 1.0);
+    let mut gg = g;
+    for c in 0..7 {
+        let mut p = c;
+        for r in c..7 {
+            if gg[r][c].abs() > gg[p][c].abs() {
+                p = r;
+            }
+        }
+        gg.swap(c, p);
+        gin.swap(c, p);
+        let d = gg[c][c];
+        for k in 0..7 {
+            gg[c][k] /= d;
+            gin[c][k] /= d;
+        }
+        for r in 0..7 {
+            if r == c {
+                continue;
+            }
+            let f = gg[r][c];
+            for k in 0..7 {
+                gg[r][k] -= f * gg[c][k];
+                gin[r][k] -= f * gin[c][k];
+            }
+        }
+    }
+    // W₃ = Q·G⁻¹.
+    let mut w = [[0.0f32; 7]; 7];
+    for i in 0..7 {
+        for j in 0..7 {
+            let mut acc = 0.0;
+            for p in 0..7 {
+                acc += q[i][p] * gin[p][j];
+            }
+            w[i][j] = acc as f32;
+        }
+    }
+    w
+}
+
 /// Ambisonic decoder policy (spec §36): how the bus maps onto speakers.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DecoderPolicy {
@@ -308,6 +560,12 @@ fn order_weights(policy: DecoderPolicy, order: u8) -> Vec<f32> {
         (DecoderPolicy::MaxRe, 2) => {
             w[1..4].fill(0.905_663_1);
             w[4..9].fill(0.682_689_4);
+        }
+        (DecoderPolicy::MaxRe, 3) => {
+            // Published third-order max-rE window (Zotter–Frank).
+            w[1..4].fill(0.766_044_5);
+            w[4..9].fill(0.653_445_5);
+            w[9..16].fill(0.571_5);
         }
         _ => {}
     }
@@ -459,7 +717,7 @@ impl AmbisonicDecoder {
             return;
         }
         for f in 0..frames {
-            let mut frame = [0.0f32; AMBISONIC_CHANNELS_ORDER_2];
+            let mut frame = [0.0f32; AMBISONIC_CHANNELS_MAX];
             for (c, slot) in frame.iter_mut().enumerate().take(ch) {
                 *slot = bus.get(f * ch + c).copied().unwrap_or(0.0);
             }
@@ -522,7 +780,7 @@ impl AmbisonicRenderer {
         Self {
             decoder: AmbisonicDecoder::with_order(policy, order),
             out_trim: Vec::new(),
-            bus: vec![0.0; AMBISONIC_CHANNELS_ORDER_2 * MAX_AUDIO_BLOCK_FRAMES],
+            bus: vec![0.0; AMBISONIC_CHANNELS_MAX * MAX_AUDIO_BLOCK_FRAMES],
             prepared: false,
         }
     }
@@ -585,7 +843,7 @@ impl super::render::SpatialRenderer for AmbisonicRenderer {
         // world-fixed field appears to rotate opposite to the head (§48).
         let xf = super::scene::ListenerTransform::from_listener(&scene.listener);
         for f in 0..frames {
-            let mut frame = [0.0f32; AMBISONIC_CHANNELS_ORDER_2];
+            let mut frame = [0.0f32; AMBISONIC_CHANNELS_MAX];
             for (c, slot) in frame.iter_mut().enumerate().take(ch) {
                 *slot = object_inputs
                     .get(c)
@@ -1035,10 +1293,154 @@ mod tests {
             dec.prepare(&lfe_only, 48_000),
             Err(RenderError::DegenerateGeometry)
         ));
-        // Unsupported order panics at construction (order 3 has no basis).
+        // Unsupported order panics at construction (order 4 > max).
         let result = std::panic::catch_unwind(|| {
-            AmbisonicDecoder::with_order(DecoderPolicy::Basic, 3);
+            AmbisonicDecoder::with_order(DecoderPolicy::Basic, 4);
         });
-        assert!(result.is_err(), "order 3 rejected");
+        assert!(result.is_err(), "order 4 rejected");
+    }
+
+    #[test]
+    fn order3_basis_matches_documented_sn3d_convention() {
+        // Third-order block (ACN 9–15) at the cardinal directions:
+        //   √(35/8)·x(x²−3y²), √105·xyz, √(21/8)·y(5z²−1), (√7/2)·z(5z²−3),
+        //   √(21/8)·x(5z²−1), (√105/2)·z(x²−y²), √(35/8)·y(y²−3x²).
+        let s358 = (35.0f32 / 8.0).sqrt();
+        let s105 = 105.0f32.sqrt();
+        let s218 = (21.0f32 / 8.0).sqrt();
+        let s7h = 7.0f32.sqrt() * 0.5;
+        let s105h = 0.5 * 105.0f32.sqrt();
+        assert_eq!(channel_count(3), 16);
+        let mut y = [0.0f32; 16];
+        sh_n(3, Vec3::Y, &mut y);
+        // At +Y front (x=0,z=0): ACN15 = √(35/8)·y³=√(35/8) and
+        // ACN11 = √(21/8)·(5z²−1)y = −√(21/8); all others vanish.
+        assert!((y[15] - s358).abs() < 1e-4, "Y₃³(+Y) = √(35/8)");
+        assert!((y[11] + s218).abs() < 1e-4, "Y₃⁻¹(+Y) = −√(21/8)");
+        for k in 9..16 {
+            if k != 15 && k != 11 {
+                assert!(y[k].abs() < 1e-4, "ACN {k} vanishes at +Y: {}", y[k]);
+            }
+        }
+        // At +Z up: ACN12 = (√7/2)(5−3)=√7; all others vanish.
+        let mut y = [0.0f32; 16];
+        sh_n(3, Vec3::Z, &mut y);
+        for k in 9..16 {
+            if k == 12 {
+                assert!(
+                    (y[12] - (s7h * 2.0)).abs() < 1e-3,
+                    "Y₃⁰(+Z) = √7 ≈ 2.6458, got {}",
+                    y[k]
+                );
+            } else {
+                assert!(y[k].abs() < 1e-4, "ACN {k} vanishes at +Z: {}", y[k]);
+            }
+        }
+        // +X right: ACN9 = √(35/8)·x³=√(35/8); ACN13 = −√(21/8); others
+        // vanish.
+        let mut y = [0.0f32; 16];
+        sh_n(3, Vec3::X, &mut y);
+        assert!((y[9] - s358).abs() < 1e-4, "Y₃⁻³(+X) = √(35/8)");
+        assert!((y[13] + s218).abs() < 1e-4, "Y₃¹(+X) = −√(21/8)");
+        // Diagonal: all seven populated, matching the closed forms directly.
+        let d = Vec3::new(1.0, 2.0, 3.0).normalized().unwrap();
+        let (x, yy, z) = (d.x, d.y, d.z);
+        let mut y = [0.0f32; 16];
+        sh_n(3, d, &mut y);
+        assert!((y[9] - s358 * x * (x * x - 3.0 * yy * yy)).abs() < 1e-4);
+        assert!((y[10] - s105 * x * yy * z).abs() < 1e-4);
+        assert!((y[11] - s218 * yy * (5.0 * z * z - 1.0)).abs() < 1e-4);
+        assert!((y[12] - s7h * z * (5.0 * z * z - 3.0)).abs() < 1e-4);
+        assert!((y[13] - s218 * x * (5.0 * z * z - 1.0)).abs() < 1e-4);
+        assert!((y[14] - s105h * z * (x * x - yy * yy)).abs() < 1e-4);
+        assert!((y[15] - s358 * yy * (yy * yy - 3.0 * x * x)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn order3_norm_preserving_on_the_sphere() {
+        // Each order-3 channel has unit mean-square over the sphere (SN3D),
+        // and the seven are mutually orthogonal.
+        use std::f32::consts::{PI, TAU};
+        const STEPS: usize = 48;
+        let mut sums = [0.0f64; 16];
+        let mut cross = [[0.0f64; 7]; 7];
+        for i in 0..STEPS {
+            let th = (i as f32 + 0.5) * PI / STEPS as f32;
+            let z = th.cos();
+            let r = th.sin();
+            for j in 0..(2 * STEPS) {
+                let phi = (j as f32 + 0.5) * TAU / (2 * STEPS) as f32;
+                let d = Vec3::new(r * phi.sin(), r * phi.cos(), z);
+                let mut y = [0.0f32; 16];
+                sh_n(3, d, &mut y);
+                for (k, v) in y.iter().enumerate() {
+                    sums[k] += (*v as f64) * (*v as f64) * th.sin() as f64;
+                }
+                for a in 0..7 {
+                    for b in 0..7 {
+                        cross[a][b] += y[9 + a] as f64 * y[9 + b] as f64 * th.sin() as f64;
+                    }
+                }
+            }
+        }
+        let weight = std::f64::consts::PI / (4.0 * (STEPS as f64) * (STEPS as f64));
+        for k in 9..16 {
+            let norm_sq = sums[k] * weight;
+            assert!(
+                norm_sq - 1.0 < 0.02,
+                "order-3 channel {k} norm² = {norm_sq}"
+            );
+        }
+        for a in 0..7 {
+            for b in (a + 1)..7 {
+                let ip = cross[a][b] * weight;
+                assert!(ip.abs() < 0.02, "<{}|{}> = {:.4}", 9 + a, 9 + b, ip);
+            }
+        }
+    }
+
+    #[test]
+    fn order3_rotation_is_exact_on_the_basis() {
+        // The defining property of the exact order-3 Wigner block: evaluating
+        // the basis at a rotated direction equals rotating the coefficients.
+        for q in [
+            Quat::from_euler_rad(0.7, 0.3, -0.2),
+            Quat::from_euler_rad(FRAC_PI_2, 0.0, 0.0),
+            Quat::from_euler_rad(0.0, -1.1, 2.3),
+        ] {
+            for d in [Vec3::Y, Vec3::X, Vec3::new(1.0, 2.0, 3.0)] {
+                let d = d.normalized().unwrap();
+                let rd = q.rotate_vec3(d);
+                let mut y = [0.0f32; 16];
+                let mut yr = [0.0f32; 16];
+                sh_n(3, d, &mut y);
+                sh_n(3, rd, &mut yr);
+                let mut rotated = y;
+                rotate_bus_frame_n(q, 3, &mut rotated);
+                for k in 0..16 {
+                    assert!(
+                        (rotated[k] - yr[k]).abs() < 2e-3,
+                        "q={q:?} d={d:?} ACN {k}: {} want {}",
+                        rotated[k],
+                        yr[k]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn order3_rotation_round_trips_to_identity() {
+        let q = Quat::from_euler_rad(0.7, 0.3, -0.2);
+        let d = Vec3::new(1.0, 2.0, 3.0).normalized().unwrap();
+        let mut frame = [0.0f32; 16];
+        encode_plane_wave_n(3, d, 1.0, &mut frame);
+        rotate_bus_frame_n(q, 3, &mut frame);
+        rotate_bus_frame_n(q.conjugate(), 3, &mut frame);
+        let mut orig = [0.0f32; 16];
+        encode_plane_wave_n(3, d, 1.0, &mut orig);
+        for k in 0..16 {
+            assert!((frame[k] - orig[k]).abs() < 2e-3, "channel {k}");
+        }
     }
 }
