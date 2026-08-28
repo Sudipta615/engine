@@ -185,13 +185,17 @@ ones, nearest-speaker out-of-coverage fallback) — on a `SpeakerLayout`
 (stereo / 5.1 / 7.1 / 7.1.4 / custom), and renders decoded object planes into a
 caller-supplied interleaved multichannel buffer that can be pushed through the
 existing output core (`SampleSink::push_frames_interleaved`). The pipeline
-order is: `listener-space transform → distance model → pan coefficients
-(BasicPanner equal-power or VBAP basis solve with energy normalization) →
+order is: `listener-space transform → distance model → directivity (source
+facing vs. listener angle) → occlusion (attenuation + low-pass) → pan
+coefficients (BasicPanner equal-power or VBAP basis solve with energy
+normalization; angular-region spread samples the direction cap) →
 coefficient smoothing → LFE send → channel calibration trim`. The scene/level
 model and renderers live in `crate::spatial` (see
-[`ARCHITECTURE.md`](ARCHITECTURE.md)); `tests/fidelity/spatial_panner.rs` and
-`tests/fidelity/spatial_vbap.rs` pin the contracts and `realtime_allocation`
-verifies both render paths allocate nothing in steady state.
+[`ARCHITECTURE.md`](ARCHITECTURE.md)); `tests/fidelity/spatial_panner.rs`,
+`tests/fidelity/spatial_vbap.rs`, and
+`tests/fidelity/spatial_object_behavior.rs` pin the contracts and
+`realtime_allocation` verifies the render paths allocate nothing in steady
+state.
 
 ### Loudness analysis
 

@@ -13,10 +13,12 @@
 //! and writes a normal interleaved multichannel PCM buffer the engine's
 //! existing output core can deliver.
 //!
-//! This layer ships the full scene / speaker / listener / object data model
-//! plus two renderers: the **equal-power [`BasicPanner`]** and the 3D
+//! This layer ships the full scene / speaker / listener / object data model,
+//! two renderers — the **equal-power [`BasicPanner`]** and the 3D
 //! **VBAP-style [`VbapRenderer`]** (speaker-geometry triangulation, 2D
-//! reduction for coplanar layouts, out-of-coverage fallback). The
+//! reduction for coplanar layouts, out-of-coverage fallback) — and object
+//! behavior: **directivity** ([`Directivity`]), **occlusion**
+//! ([`Occlusion`]), and **angular-region spread** ([`spread`]). The
 //! conventional PCM & DSP path is untouched; spatial rendering is opt-in.
 //!
 //! ## Module map
@@ -30,6 +32,12 @@
 //!   source), [`SpatialObjectStore`], [`SpatialSourceType`] (§13–15, §31).
 //! - `scene.rs` — [`SpatialScene`], [`Listener`], [`ListenerTransform`]
 //!   (§12, §16, §48).
+//! - `directivity.rs` — [`Directivity`], [`CustomDirectivity`], and the
+//!   shared `listener_angle_rad` transform (§41).
+//! - `occlusion.rs` — [`Occlusion`], [`AcousticTransmission`], per-object
+//!   low-pass state (§43–44).
+//! - `spread.rs` — angular-region spread sampling + energy-normalized
+//!   aggregation (§29–30).
 //! - `render.rs` — [`SpatialRenderer`] trait, [`RenderError`],
 //!   [`RendererKind`] (§22, §106).
 //! - `panner.rs` — [`BasicPanner`] (§24–30, §46, §56–57).
@@ -46,6 +54,8 @@
 //! - **Gain**: linear (1.0 = unity); dB only at the trim/calibration
 //!   boundary ([`LayoutCalibration`]).
 //! - **LFE**: an effects path, never a spatial pan target (spec Part X).
+//! - **Directivity angle**: 0 = the source faces the listener, π = facing
+//!   away (spec §41; see [`directivity::listener_angle_rad`]).
 //! - **Equal-power law**: `la² + lb² = 1` across a bracketing speaker pair
 //!   ([`BasicPanner`]); VBAP energy-normalizes solved triplet gains instead
 //!   ([`VbapRenderer`], §29).
@@ -60,21 +70,26 @@
 //! The spatial layer contains **no** Dolby/DTS codecs, bitstreams, metadata,
 //! or trademarks — it is an independent implementation (§3, §115).
 
+pub mod directivity;
 pub mod level;
 pub mod math;
 pub mod object;
+pub mod occlusion;
 pub mod panner;
 pub mod render;
 pub mod scene;
 pub mod speaker;
+pub mod spread;
 pub mod vbap;
 
+pub use directivity::{CustomDirectivity, Directivity};
 pub use level::{AirAbsorption, DistanceModel};
 pub use math::{Quat, Vec3};
 pub use object::{
     ObjectAudioRef, ObjectId, SpatialAudioObject, SpatialObjectStore, SpatialSourceType,
     MAX_SPATIAL_OBJECTS,
 };
+pub use occlusion::{AcousticTransmission, Occlusion};
 pub use panner::BasicPanner;
 pub use render::{RenderError, RendererKind, SpatialRenderer, VbapRenderer};
 pub use scene::{Listener, ListenerTransform, SpatialScene};

@@ -129,7 +129,7 @@ src/
 │                             #   (CorrectionNode — per-channel partitioned
 │                             #   convolution bank, post-aux/pre-EQ)
 │
-├── spatial/                  # ── Spatial audio (Phases 8–9, opt-in) ──
+├── spatial/                  # ── Spatial audio (Phases 8–10, opt-in) ──
 │   ├── math.rs               # Vec3 / Quat + the single documented coordinate
 │   │                         #   system (+X right, +Y front, +Z up; metres /
 │   │                         #   radians / linear gain) — no linear-algebra dep
@@ -143,6 +143,14 @@ src/
 │   │                         #   7.1.4 / custom), LayoutCalibration
 │   ├── level.rs              # DistanceModel (Linear/Inverse/InverseSquare/
 │   │                         #   InverseReference), AirAbsorption
+│   ├── directivity.rs        # Directivity (omni/cardioid/supercardioid/
+│   │                         #   custom 2° curve) + the shared listener-angle
+│   │                         #   transform (source orientation → curve)
+│   ├── occlusion.rs          # Occlusion → AcousticTransmission (attenuation +
+│   │                         #   cutoff + diffusion seam); per-object biquad
+│   │                         #   low-pass with smoothed block-rate cutoff
+│   ├── spread.rs             # Angular-region spread: fixed 3-ring sample
+│   │                         #   directions + energy-normalized aggregation
 │   ├── render.rs             # SpatialRenderer trait, RendererKind, RenderError
 │   ├── panner.rs             # BasicPanner — equal-power pair pans, per-path
 │   │                         #   coefficient smoothing, additive LFE send

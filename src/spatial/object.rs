@@ -10,18 +10,21 @@
 //! many instances; the actual per-block audio flows through the renderer's
 //! input planes.
 
+use super::directivity::Directivity;
 use super::level::DistanceModel;
-use super::math::Vec3;
+use super::math::{Quat, Vec3};
+use super::occlusion::Occlusion;
 use crate::AudioSource;
 
 /// Stable handle to an object within a [`SpatialObjectStore`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ObjectId(pub usize);
 
-/// Runtime classification of a spatial source (spec §31). This phase renders
-/// `Point` (and treats `Extended`/`Diffuse`/`Bed` as documented seams whose
-/// simplest forms are approximated); the full angular-region model for
-/// extended/diffuse sources is a later-phase enrichment.
+/// Runtime classification of a spatial source (spec §31). `Point` is fully
+/// rendered; `Extended` is approximated by the angular-region spread model
+/// ([`crate::spatial::spread`], §30); `Diffuse` / `Bed` are documented seams
+/// for the fields and beds phases. Classification does not change rendering
+/// yet — it is authored metadata the scene carries forward.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpatialSourceType {
     Point,
@@ -59,10 +62,19 @@ pub struct SpatialAudioObject {
     pub position: Vec3,
     /// Velocity (m/s); used for future Doppler (declared seam).
     pub velocity: Vec3,
+    /// World-space orientation; local `+Y` is the source's facing direction
+    /// (drives [`Directivity`] and future source-rotation behavior).
+    pub source_orientation: Quat,
     /// Linear gain before distance/panning (1.0 = unity).
     pub gain: f32,
-    /// Normalized angular spread in `[0,1]`: 0 = point, →1 = diffuse-ish.
+    /// Normalized angular spread in `[0,1]`: 0 = point, →1 = wide angular
+    /// region (spec §30).
     pub spread: f32,
+    /// Directional response: how output varies with the listener's angle
+    /// relative to the source's facing (spec §41).
+    pub directivity: Directivity,
+    /// Occlusion: broadband attenuation + low-pass roll-off (spec §43–44).
+    pub occlusion: Occlusion,
     /// Distance attenuation law.
     pub distance_model: DistanceModel,
     /// Distance reference (metres) for laws that use one.
@@ -84,8 +96,11 @@ impl SpatialAudioObject {
             source,
             position,
             velocity: Vec3::ZERO,
+            source_orientation: Quat::IDENTITY,
             gain: 1.0,
             spread: 0.0,
+            directivity: Directivity::default(),
+            occlusion: Occlusion::default(),
             distance_model: DistanceModel::InverseReference,
             reference_distance: 1.0,
             room_send: 0.0,

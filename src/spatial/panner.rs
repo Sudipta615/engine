@@ -36,10 +36,14 @@
 use crate::buffer::MAX_AUDIO_BLOCK_FRAMES;
 use crate::spatial::object::MAX_SPATIAL_OBJECTS;
 
+use super::directivity::listener_angle_rad;
 use super::level::AirAbsorption;
+use super::math::Vec3;
+use super::occlusion::OcclusionState;
 use super::render::{RenderError, SpatialRenderer};
 use super::scene::{ListenerTransform, SpatialScene};
 use super::speaker::SpeakerLayout;
+use super::spread::{add_gain, normalize_gains, ring_directions, MAX_SPREAD_GAINS, RING_SAMPLES};
 
 /// Default smoothing time constant (ms) for coefficient changes.
 pub const DEFAULT_SMOOTHING_MS: f32 = 24.0;
@@ -77,6 +81,8 @@ pub struct BasicPanner {
     air_absorption: AirAbsorption,
     /// Per-object LFE smoothed gain (bounded by MAX_OBJECTS).
     sm_lfe: Vec<f32>,
+    /// Per-object occlusion low-pass state (bounded by MAX_OBJECTS).
+    occ: Vec<OcclusionState>,
 
     sample_rate: f32,
     prepared: bool,
@@ -95,6 +101,7 @@ impl BasicPanner {
             smooth: coefficient_for_ms(smooth_ms),
             air_absorption: AirAbsorption::default(),
             sm_lfe: vec![0.0; MAX_SPATIAL_OBJECTS],
+            occ: vec![OcclusionState::default(); MAX_SPATIAL_OBJECTS],
             sample_rate: 44_100.0,
             prepared: false,
         }
@@ -167,17 +174,19 @@ impl BasicPanner {
         self.out_trim = out_trim;
         self.sm = vec![0.0; MAX_SPATIAL_OBJECTS * speaker_count.max(1)];
         self.sm_lfe = vec![0.0; MAX_SPATIAL_OBJECTS];
+        self.occ = vec![OcclusionState::default(); MAX_SPATIAL_OBJECTS];
         self.sample_rate = sample_rate as f32;
         self.prepared = true;
         Ok(())
     }
 
-    /// Solve the equal-power/pan coefficients for an object direction into
+    /// Solve the equal-power/pan coefficients for an object azimuth into
     /// a caller-provided scratch list of `(speaker_idx, coefficient)` pairs.
     /// The `level` of each pan speaker is folded in, so a coefficient already
     /// includes the per-speaker geometry×calibration multiplier. Callers pass
-    /// up to `self.pan.len().min(4)` pairs.
-    fn solve_pan(&self, azimuth: f32, spread: f32, out_pairs: &mut [(usize, f32)]) {
+    /// up to 4 pairs. Core solve only — spread is handled by
+    /// [`Self::solve_spread`].
+    fn solve_pan(&self, azimuth: f32, out_pairs: &mut [(usize, f32)]) {
         let n = self.pan.len();
         for p in out_pairs.iter_mut() {
             *p = (0, 0.0);
@@ -213,21 +222,36 @@ impl BasicPanner {
         // Equal-power law (spec §24): la = cos(t·π/2), lb = sin(t·π/2).
         let la = (t * std::f32::consts::FRAC_PI_2).cos();
         let lb = (t * std::f32::consts::FRAC_PI_2).sin();
-        let spread = spread.clamp(0.0, 1.0);
-        let core = 1.0 - spread;
-        if spread > 0.0 && n >= 3 {
-            // Widen across the two flanking speakers (spec §30).
-            let pa = self.pan[(best + n - 1) % n];
-            let pb = self.pan[(best + 2) % n];
-            let flank = spread * 0.5;
-            out_pairs[0] = (sa.idx, (la * core + flank) * sa.level);
-            out_pairs[1] = (sb.idx, (lb * core + flank) * sb.level);
-            out_pairs[2] = (pa.idx, flank * pa.level);
-            out_pairs[3] = (pb.idx, flank * pb.level);
-        } else {
-            out_pairs[0] = (sa.idx, la * core * sa.level);
-            out_pairs[1] = (sb.idx, lb * core * sb.level);
+        out_pairs[0] = (sa.idx, la * sa.level);
+        out_pairs[1] = (sb.idx, lb * sb.level);
+    }
+
+    /// Angular-region spread solve (spec §30): solve the exact direction
+    /// plus a fixed ring of samples around it at `spread × 60°`, aggregate
+    /// by speaker, and energy-normalise. `dir` is the listener-space 3D
+    /// direction (needed for the ring geometry; the panner consumes only
+    /// azimuths). Writes into `out` (sized [`MAX_SPREAD_GAINS`]).
+    fn solve_spread(&self, dir: Vec3, spread: f32, out: &mut [(usize, f32)]) {
+        let s = spread.clamp(0.0, 1.0);
+        let base_w = 1.0 - s;
+        let mut scratch = [(0usize, 0.0f32); 4];
+        let mut len = 0usize;
+        self.solve_pan(dir.azimuth_rad(), &mut scratch);
+        for &(spk, v) in scratch.iter() {
+            len = add_gain(out, len, spk, v * base_w);
         }
+        let mut ring = [Vec3::ZERO; RING_SAMPLES];
+        let n_ring = ring_directions(dir, s * super::spread::SPREAD_MAX_HALF_ANGLE_RAD, &mut ring);
+        if n_ring > 0 {
+            let ring_w = s / n_ring as f32;
+            for rd in ring.iter().take(n_ring) {
+                self.solve_pan(rd.azimuth_rad(), &mut scratch);
+                for &(spk, v) in scratch.iter() {
+                    len = add_gain(out, len, spk, v * ring_w);
+                }
+            }
+        }
+        normalize_gains(&mut out[..len]);
     }
 
     /// Render the current scene block into `out`.
@@ -242,7 +266,7 @@ impl BasicPanner {
         }
         let xf = ListenerTransform::from_listener(&scene.listener);
 
-        let mut pairs = [(0usize, 0.0f32); 4];
+        let mut pairs = [(0usize, 0.0f32); MAX_SPREAD_GAINS];
         // Iterate enabled objects in store order, zipping each with the
         // matching input plane by ordinal (`iter_enabled` yields `(slot, obj)`
         // and never allocates).
@@ -250,18 +274,37 @@ impl BasicPanner {
             let obj_idx = slot; // stable id = store slot
             let local = xf.apply_to_point(obj.position);
             let dist = local.length();
-            let dir = local.normalized();
-            let azimuth = dir.map(|d| d.azimuth_rad()).unwrap_or(0.0);
-            let elevation = dir.map(|d| d.elevation_rad()).unwrap_or(0.0);
+            let dir_v = local.normalized().unwrap_or(Vec3::Y);
+            let azimuth = dir_v.azimuth_rad();
+            let elevation = dir_v.elevation_rad();
 
             // Level chain (spec §68): source gain · distance · cos(elevation)
-            // off-plane term · pan coefficients.
+            // off-plane term · directivity · occlusion transmission · pan
+            // coefficients.
             let dist_gain = obj
                 .distance_model
                 .distance_gain(dist, obj.reference_distance);
-            let obj_gain = obj.gain * dist_gain * elevation.cos().clamp(0.0, 1.0);
+            let dir_gain = obj.directivity.gain_at(listener_angle_rad(
+                obj.source_orientation,
+                scene.listener.orientation,
+                local,
+            ));
+            let occ = obj.occlusion;
+            let (occ_gain, occ_coeffs) = if occ.amount > 0.0 {
+                let tr = occ.transmission(self.sample_rate);
+                let coeffs = self.occ[obj_idx].coeffs(tr.cutoff_hz, self.sample_rate, self.smooth);
+                (tr.gain(), Some(coeffs))
+            } else {
+                (1.0, None)
+            };
+            let obj_gain =
+                obj.gain * dist_gain * elevation.cos().clamp(0.0, 1.0) * dir_gain * occ_gain;
 
-            self.solve_pan(azimuth, obj.spread, &mut pairs);
+            if obj.spread > 0.0 {
+                self.solve_spread(dir_v, obj.spread, &mut pairs);
+            } else {
+                self.solve_pan(azimuth, &mut pairs);
+            }
 
             // Smooth each object→speaker path (spec §46) and store into the
             // flat matrix keyed by obj_idx. The stored value is the **total**
@@ -303,10 +346,16 @@ impl BasicPanner {
                 continue;
             }
             for frame in 0..frames {
-                let s = input[frame];
+                let mut s = input[frame];
+                // Occlusion low-passes the object input *before* panning
+                // (spec §43); the filtered sample feeds both the pan paths
+                // and the LFE send. Passthrough when not occluded.
+                if let Some(c) = occ_coeffs {
+                    s = self.occ[obj_idx].process(s, &c);
+                }
                 for &(spk, coeff) in pairs.iter() {
-                    // Skip zero-coefficient sentinel slots (only 2–4 of the
-                    // 4 pair entries are real); re-read the smoothed gain.
+                    // Skip zero-coefficient sentinel slots (only a few of the
+                    // entries are real); re-read the smoothed gain.
                     if coeff == 0.0 {
                         continue;
                     }

@@ -2,6 +2,73 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.13.0] — 2026-08-28
+
+Object behavior (roadmap Phase 10): directivity, occlusion, and a real
+angular-region spread model for the spatial layer. Sources can now be
+directional (omni / cardioid / supercardioid / arbitrary sampled curve),
+occluded (broadband attenuation + a genuine low-pass through the engine's
+biquad), and extended (an angular region sampled by a fixed ring of pan
+solves instead of the old nearest-speaker widening) — all evaluated in the
+renderer's level chain with the existing per-path smoothing, and all
+allocation-free on the hot path. The renderer change is backward-compatible:
+defaults (omnidirectional, no occlusion, spread 0) render bit-identically to
+3.12.0.
+
+### Added
+
+- **Directivity** (`spatial::directivity`): [`Directivity`] enum
+  (Omnidirectional / Cardioid / Supercardioid / Custom) evaluated at the
+  documented angle — 0 = the source faces the listener, π = facing away —
+  via the shared `listener_angle_rad` transform (`q_source⁻¹ ∘ q_listener`),
+  so both renderers can never disagree on the convention (§41).
+  `CustomDirectivity` is a fixed 91-sample curve (2° steps, linear
+  interpolation, clamped) — stack-copied, allocation-free on the render
+  path. `SpatialAudioObject` gains `source_orientation` (world-space quat;
+  local +Y is the facing) and `directivity`.
+- **Occlusion** (`spatial::occlusion`): [`Occlusion`] config (amount +
+  max attenuation + min cutoff) mapped to a structured
+  [`AcousticTransmission`] (`attenuation_db`, `cutoff_hz`, `diffusion` —
+  diffusion is a declared seam, §44) with the cutoff interpolated
+  exponentially in log-frequency. Applied as gain plus a real Butterworth
+  low-pass (engine biquad, Q = 0.707) with per-object filter state and
+  smoothed block-rate cutoff — an occluded source is quieter *and* duller,
+  before panning (§43), feeding both the pan paths and the LFE send.
+- **Angular-region spread** (`spatial::spread`): replaces the simplified
+  nearest-speaker widening in both renderers with the spec's recipe (§30) —
+  solve the exact direction (weight `1−s`) plus 3 ring samples at `s × 60°`
+  (weight `s/3`), aggregate by speaker, and energy-normalize (constant power
+  while the image widens, §29). Fixed sample count (4 solves, 12 entries),
+  deterministic, allocation-free.
+- **Realtime**: all three behaviors stay inside `process_block` with no
+  allocation — new `realtime_allocation` test exercising cardioid + custom
+  curves, occlusion filters, and wide spread together (10k blocks, 0 allocs).
+- **Public surface**: `Directivity`, `CustomDirectivity`, `Occlusion`,
+  `AcousticTransmission` exported from `spatial` and the `prelude`.
+- **Acceptance suite**: `tests/fidelity/spatial_object_behavior.rs` —
+  cardioid routing (facing vs. away), custom-curve routing, omni-default
+  regression guard, occlusion attenuation + low-pass measured on analytic
+  sines (10 kHz dies ≫ 100 Hz), monotonicity, bounded transmission,
+  spread widening (concentration index) with energy preservation, stereo
+  symmetry of a centered spread source, spread-sweep continuity, and
+  directivity+occlusion+spread composition.
+
+### Fixed
+
+- **VBAP planar-pair indexing**: the coplanar reduction stored *output*
+  channel indices in its azimuth-pair table but indexed `self.pan` with
+  them, panning out of bounds on any layout with an LFE gap (5.1, 7.1). The
+  pair table now stores pan-slot positions; the bug was latent because
+  earlier VBAP tests only used stereo/custom layouts where the indices
+  coincided.
+
+### Changed
+
+- The simplified spread (energy blended onto the nearest speaker) is
+  replaced by the angular-region model in both `BasicPanner` and
+  `VbapRenderer`.
+- `engine` and `config` versions remain synchronized at `3.13.0`.
+
 ## [3.12.0] — 2026-08-28
 
 3D VBAP-style object-to-speaker rendering (roadmap Phase 9): the spatial

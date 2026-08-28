@@ -44,12 +44,15 @@
 use crate::buffer::MAX_AUDIO_BLOCK_FRAMES;
 use crate::spatial::object::MAX_SPATIAL_OBJECTS;
 
+use super::directivity::listener_angle_rad;
 use super::level::AirAbsorption;
 use super::math::Vec3;
+use super::occlusion::OcclusionState;
 use super::panner::DEFAULT_SMOOTHING_MS;
 use super::render::{RenderError, SpatialRenderer};
 use super::scene::{ListenerTransform, SpatialScene};
 use super::speaker::SpeakerLayout;
+use super::spread::{add_gain, normalize_gains, ring_directions, MAX_SPREAD_GAINS, RING_SAMPLES};
 
 /// Determinant threshold below which a speaker triplet is degenerate
 /// (near-coplanar / near-collinear). Controls the geometry acceptance test.
@@ -103,6 +106,8 @@ pub struct VbapRenderer {
     /// Per-(object,speaker) smoothed total gains, flat `MAX_OBJECTS × count`.
     sm: Vec<f32>,
     sm_lfe: Vec<f32>,
+    /// Per-object occlusion low-pass state (bounded by MAX_OBJECTS).
+    occ: Vec<OcclusionState>,
     smooth: f32,
     air_absorption: AirAbsorption,
     sample_rate: f32,
@@ -127,6 +132,7 @@ impl VbapRenderer {
             out_trim: Vec::new(),
             sm: vec![0.0; MAX_SPATIAL_OBJECTS * 16],
             sm_lfe: vec![0.0; MAX_SPATIAL_OBJECTS],
+            occ: vec![OcclusionState::default(); MAX_SPATIAL_OBJECTS],
             smooth: one_pole_factor(smooth_ms),
             air_absorption: AirAbsorption::default(),
             sample_rate: 44_100.0,
@@ -207,9 +213,10 @@ impl VbapRenderer {
     }
 
     /// Solve panning coefficients for a listener-space unit direction into
-    /// a caller-provided `(oz speaker index, coefficient)` list (≤ 3 entries,
-    /// plus room for a spread-fallback entry). `out_gains` is zeroed first.
-    fn solve(&self, direction: Vec3, spread: f32, out_gains: &mut [(usize, f32)]) {
+    /// a caller-provided `(speaker index, coefficient)` list (≤ 3 entries).
+    /// `out_gains` is zeroed first. Core solve only — spread is handled by
+    /// [`Self::solve_spread`].
+    fn solve(&self, direction: Vec3, out_gains: &mut [(usize, f32)]) {
         for p in out_gains.iter_mut() {
             *p = (0, 0.0);
         }
@@ -224,30 +231,37 @@ impl VbapRenderer {
             let sp = self.pan[0];
             out_gains[0] = (sp.idx, sp.level);
         }
-        // Simplified spread (spec §30): blend `spread` of the energy onto the
-        // nearest speaker to the direction (a direction-preserving widening),
-        // scaling the core down by `(1 - spread)`.
-        let spread = spread.clamp(0.0, 1.0);
-        if spread > 0.0 && self.pan.len() >= 2 {
-            let core = 1.0 - spread;
-            for g in out_gains.iter_mut() {
-                g.1 *= core;
-            }
-            let nearest = self.nearest_speaker(direction);
-            // Add the spread portion to the nearest speaker slot.
-            let mut found = false;
-            for g in out_gains.iter_mut() {
-                if g.0 == nearest.idx {
-                    g.1 += spread * nearest.level;
-                    found = true;
-                    break;
+    }
+
+    /// Angular-region spread solve (spec §30): solve the exact direction
+    /// plus a fixed ring of samples around it at `spread × 60°`, aggregate
+    /// by speaker, and energy-normalise. Writes into `out_gains` (sized
+    /// [`MAX_SPREAD_GAINS`]).
+    fn solve_spread(&self, direction: Vec3, spread: f32, out_gains: &mut [(usize, f32)]) {
+        let s = spread.clamp(0.0, 1.0);
+        let base_w = 1.0 - s;
+        let mut scratch = [(0usize, 0.0f32); 4];
+        let mut len = 0usize;
+        self.solve(direction, &mut scratch);
+        for &(spk, v) in scratch.iter() {
+            len = add_gain(out_gains, len, spk, v * base_w);
+        }
+        let mut ring = [Vec3::ZERO; RING_SAMPLES];
+        let n_ring = ring_directions(
+            direction,
+            s * super::spread::SPREAD_MAX_HALF_ANGLE_RAD,
+            &mut ring,
+        );
+        if n_ring > 0 {
+            let ring_w = s / n_ring as f32;
+            for rd in ring.iter().take(n_ring) {
+                self.solve(*rd, &mut scratch);
+                for &(spk, v) in scratch.iter() {
+                    len = add_gain(out_gains, len, spk, v * ring_w);
                 }
             }
-            if !found {
-                // Nearest speaker wasn't in the (non-empty) set; append.
-                out_gains[out_gains.len() - 1] = (nearest.idx, spread * nearest.level);
-            }
         }
+        normalize_gains(&mut out_gains[..len]);
     }
 
     fn nearest_speaker(&self, direction: Vec3) -> &PanSpeaker {
@@ -401,7 +415,7 @@ impl VbapRenderer {
             *sample = 0.0;
         }
         let xf = ListenerTransform::from_listener(&scene.listener);
-        let mut gains = [(0usize, 0.0f32); 4];
+        let mut gains = [(0usize, 0.0f32); MAX_SPREAD_GAINS];
         for (obj_ordinal, (slot, obj)) in scene.objects.iter_enabled().enumerate() {
             let obj_idx = slot;
             let local = xf.apply_to_point(obj.position);
@@ -409,13 +423,31 @@ impl VbapRenderer {
             let dir = local.normalized().unwrap_or(Vec3::Y);
 
             // Level chain (spec §68): VBAP places full 3D, so no off-plane
-            // `cos(elevation)` term — distance models amplitude only.
+            // `cos(elevation)` term — distance · directivity · occlusion
+            // transmission model amplitude only.
             let dist_gain = obj
                 .distance_model
                 .distance_gain(dist, obj.reference_distance);
-            let obj_gain = obj.gain * dist_gain;
+            let dir_gain = obj.directivity.gain_at(listener_angle_rad(
+                obj.source_orientation,
+                scene.listener.orientation,
+                local,
+            ));
+            let occ = obj.occlusion;
+            let (occ_gain, occ_coeffs) = if occ.amount > 0.0 {
+                let tr = occ.transmission(self.sample_rate);
+                let coeffs = self.occ[obj_idx].coeffs(tr.cutoff_hz, self.sample_rate, self.smooth);
+                (tr.gain(), Some(coeffs))
+            } else {
+                (1.0, None)
+            };
+            let obj_gain = obj.gain * dist_gain * dir_gain * occ_gain;
 
-            self.solve(dir, obj.spread, &mut gains);
+            if obj.spread > 0.0 {
+                self.solve_spread(dir, obj.spread, &mut gains);
+            } else {
+                self.solve(dir, &mut gains);
+            }
 
             // Smooth per-object→speaker paths (spec §46) and store totals.
             let row = obj_idx * n_spk;
@@ -451,7 +483,13 @@ impl VbapRenderer {
                 continue;
             }
             for frame in 0..frames {
-                let s = input[frame];
+                let mut s = input[frame];
+                // Occlusion low-passes the object input *before* panning
+                // (spec §43); the filtered sample feeds both the pan paths
+                // and the LFE send. Passthrough when not occluded.
+                if let Some(c) = occ_coeffs {
+                    s = self.occ[obj_idx].process(s, &c);
+                }
                 for &(spk, coeff) in gains.iter() {
                     if coeff == 0.0 {
                         continue;
@@ -522,10 +560,13 @@ fn classify(pan: &[PanSpeaker]) -> (PanMode, Vec<Triplet>, Vec<(usize, usize, f3
     if !triplets.is_empty() {
         return (PanMode::ThreeDim, triplets, Vec::new());
     }
-    // Coplanar / pair layout: build the horizontal azimuth-pair ring.
+    // Coplanar / pair layout: build the horizontal azimuth-pair ring. The
+    // pairs store **pan-slot positions** (not output indices), so solvers can
+    // index `pan[..]` directly; output indices come from `PanSpeaker.idx`.
     let mut sorted: Vec<(usize, f32)> = pan
         .iter()
-        .map(|sp| (sp.idx, sp.dir.azimuth_rad()))
+        .enumerate()
+        .map(|(pos, sp)| (pos, sp.dir.azimuth_rad()))
         .collect();
     sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     let mut pairs: Vec<(usize, usize, f32)> = Vec::with_capacity(sorted.len());

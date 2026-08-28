@@ -52,9 +52,10 @@ pub mod prelude {
         sink::{DacSink, NoopSink, SampleSink, VecSink},
         source::AudioSource,
         spatial::{
-            AirAbsorption, BasicPanner, DistanceModel, LayoutCalibration, Listener, ObjectAudioRef,
-            ObjectId, Quat, RenderError, RendererKind, SpatialAudioObject, SpatialObjectStore,
-            SpatialRenderer, SpatialScene, Speaker, SpeakerId, SpeakerLayout, VbapRenderer, Vec3,
+            AcousticTransmission, AirAbsorption, BasicPanner, CustomDirectivity, Directivity,
+            DistanceModel, LayoutCalibration, Listener, ObjectAudioRef, ObjectId, Occlusion, Quat,
+            RenderError, RendererKind, SpatialAudioObject, SpatialObjectStore, SpatialRenderer,
+            SpatialScene, Speaker, SpeakerId, SpeakerLayout, VbapRenderer, Vec3,
         },
     };
     pub use config::{AudioBackend, ChannelPolicy, ResamplerQuality};

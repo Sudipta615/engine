@@ -612,3 +612,74 @@ fn realtime_spatial_vbap_does_not_allocate() {
         "steady-state VBAP processing allocated on the audio path"
     );
 }
+
+/// Object behavior (Phase 5, spec §30/§41/§43–44) must uphold the same
+/// zero-allocation contract: directivity curve evaluation (stack-copied
+/// table), the per-object occlusion biquad (preallocated state, block-rate
+/// coefficients), and the angular-region spread solve (fixed ring samples)
+/// all run inside `process_block` with no allocation.
+#[test]
+fn realtime_spatial_object_behavior_does_not_allocate() {
+    let mut scene = SpatialScene::new(48_000);
+    // Objects exercising every behavior: cardioid directivity (one yawed to
+    // face the listener), heavy occlusion, wide spread, and combinations.
+    let mut samples = [1.0f32; engine::spatial::directivity::DIRECTIVITY_TABLE_LEN];
+    samples[90] = 0.0; // side null on a custom curve
+    let custom = engine::spatial::CustomDirectivity::from_samples(&samples).unwrap();
+    for (i, pos) in [
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(0.0, -1.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.5),
+        Vec3::new(0.0, 0.0, -1.0),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let id = scene.create_audio_object(*pos).expect("add object");
+        let obj = scene.object_mut(id).unwrap();
+        obj.directivity = match i {
+            0 => engine::spatial::Directivity::Cardioid,
+            1 => custom.clone().into_directivity(),
+            _ => engine::spatial::Directivity::Supercardioid,
+        };
+        obj.spread = 0.3 + 0.2 * i as f32;
+        obj.occlusion = engine::spatial::Occlusion {
+            amount: 0.2 + 0.2 * i as f32,
+            ..Default::default()
+        };
+        if i == 0 {
+            obj.source_orientation =
+                engine::spatial::Quat::from_euler_rad(std::f32::consts::PI, 0.0, 0.0);
+        }
+    }
+
+    let layout = SpeakerLayout::seven_point_one_four();
+    let mut vbap = VbapRenderer::new();
+    vbap.prepare(&layout, 48_000).unwrap();
+
+    const FRAMES: usize = 128;
+    let inputs: Vec<Vec<f32>> = (0..4).map(|_| vec![0.3f32; FRAMES]).collect();
+    let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
+    let mut out = vec![0.0f32; 12 * FRAMES];
+
+    // Warm up the smoothing state (incl. occlusion cutoff + filter state).
+    vbap.process_block(&scene, &input_refs, FRAMES, &mut out)
+        .unwrap();
+    out.fill(0.0);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for _ in 0..10_000 {
+        vbap.process_block(&scene, &input_refs, FRAMES, &mut out)
+            .unwrap();
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocations = THREAD_ALLOCS.with(|c| c.get());
+
+    assert_eq!(
+        allocations, 0,
+        "steady-state object behavior processing allocated on the audio path"
+    );
+}

@@ -522,10 +522,63 @@ coverage determinism, degenerate coplanar geometry, custom asymmetric 3D
 arrays, and a full-circle continuity sweep; plus the unit suite in
 `src/spatial/vbap.rs`.
 
-**Unblocks (Horizon).** Object behavior (distance models are already
-live; directivity/Doppler/occlusion next), spread refinement (angular-region
-sampling instead of the simplified nearest-speaker widening), beds/fields
+**Unblocks (Horizon).** Object behavior (done — Phase 10), beds/fields
 hybrid mixing, Ambisonics/HOA, room/reflections, HRTF/SOFA/binaural, head
 tracking, scene file format, and eventually a `SpatialNode` in the
 production graph.
+
+---
+
+## Phase 10 — Object behavior: directivity, occlusion, spread (v3.13.0) — **Implemented**
+
+**Intent.** Give objects the behavior of real sources: they can be
+directional (a voice or a loudspeaker, spec §41), occluded by walls
+(§43–44), and extended rather than points (§30). All three plug into the
+renderer's level chain *before* panning, reuse the existing per-path
+smoothing, and stay allocation-free. Defaults are unchanged — existing
+scenes render bit-identically.
+
+### Key mechanisms
+
+- **`spatial::directivity`** — [`Directivity`]
+  (Omnidirectional/Cardioid/Supercardioid/Custom) evaluated at the
+  documented angle (0 = facing the listener, π = away) via the shared
+  `listener_angle_rad` transform `q_source⁻¹ ∘ q_listener`. `CustomDirectivity`
+  is a fixed 91-sample 2° curve with linear interpolation — stack-copied,
+  no allocation. Objects gain `source_orientation` (+Y = facing).
+- **`spatial::occlusion`** — [`Occlusion`] (amount + max attenuation +
+  min cutoff) → structured [`AcousticTransmission`] (`attenuation_db` /
+  `cutoff_hz` / `diffusion`, with diffusion as the §44 seam). Cutoff is
+  exponential in log-frequency; the gain plus a real Butterworth biquad
+  (Q = 0.707, block-rate coefficients, smoothed cutoff, per-object state)
+  makes occluded sources quieter *and* duller, feeding pan paths and the
+  LFE send (§43).
+- **`spatial::spread`** — the spec's angular-region recipe (§30): one solve
+  on the exact direction (weight `1−s`) + 3 ring samples at `s × 60°`
+  (weight `s/3`), aggregated by speaker and energy-normalized (§29). Fixed
+  sample count (4 solves / 12 entries) — deterministic and allocation-free.
+  Replaces the nearest-speaker widening in both `BasicPanner` and
+  `VbapRenderer`.
+
+**Correctness note (latent fix).** The VBAP coplanar reduction stored
+*output* channel indices in its azimuth-pair table but indexed `self.pan`
+with them — out of bounds on any layout with an LFE gap (5.1/7.1). Latent
+because prior VBAP tests used only stereo/custom layouts. The pair table now
+stores pan-slot positions; the new 5.1 acceptance tests pin it.
+
+**Acceptance (spec-first).** `tests/fidelity/spatial_object_behavior.rs`
+— cardioid and custom-curve routing, omni-default regression guard,
+occlusion attenuation + real low-pass measured on analytic sines
+(10 kHz dies ≫ 100 Hz), monotonicity, bounded transmission, spread widening
+(concentration index) with energy preservation, stereo symmetry of a
+centered spread source, spread-sweep continuity, and composition; plus unit
+suites in the three new modules and a `realtime_allocation` test running all
+behaviors together.
+
+**Unblocks (Horizon).** Beds/fields hybrid mixing (diffuse *fields* are
+the natural completion of large spread), Ambisonics/HOA, room/reflections
+(occlusion's `AcousticTransmission` is the transmission seam), HRTF/SOFA/
+binaural, Doppler (per-object `velocity` + `source_orientation` are the
+seams), head tracking, scene file format, and eventually a `SpatialNode` in
+the production graph.
 
