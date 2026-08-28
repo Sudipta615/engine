@@ -129,7 +129,7 @@ src/
 │                             #   (CorrectionNode — per-channel partitioned
 │                             #   convolution bank, post-aux/pre-EQ)
 │
-├── spatial/                  # ── Spatial audio (Phase 8, opt-in) ──
+├── spatial/                  # ── Spatial audio (Phases 8–9, opt-in) ──
 │   ├── math.rs               # Vec3 / Quat + the single documented coordinate
 │   │                         #   system (+X right, +Y front, +Z up; metres /
 │   │                         #   radians / linear gain) — no linear-algebra dep
@@ -144,12 +144,20 @@ src/
 │   ├── level.rs              # DistanceModel (Linear/Inverse/InverseSquare/
 │   │                         #   InverseReference), AirAbsorption
 │   ├── render.rs             # SpatialRenderer trait, RendererKind, RenderError
-│   └── panner.rs             # BasicPanner — equal-power pair pans, per-path
-│                             #   coefficient smoothing, additive LFE send
-│                             #   (LFE is not a pan target), simplified spread,
-│                             #   cos(elevation) off-plane term; writes into a
-│                             #   caller-supplied interleaved buffer so the
-│                             #   steady-state hot path allocates nothing.
+│   ├── panner.rs             # BasicPanner — equal-power pair pans, per-path
+│   │                         #   coefficient smoothing, additive LFE send
+│   │                         #   (LFE is not a pan target), simplified spread,
+│   │                         #   cos(elevation) off-plane term; writes into a
+│   │                         #   caller-supplied interleaved buffer so the
+│   │                         #   steady-state hot path allocates nothing.
+│   └── vbap.rs               # VbapRenderer — 3-triplet VBAP (3D layouts),
+│                             #   2D azimuth-pair reduction (coplanar), and a
+│                             #   deterministic nearest-speaker out-of-
+│                             #   coverage fallback; geometry preprocessed at
+│                             #   prepare (per-triplet inverses + Delaunay
+│                             #   empty-triangle region filter), allocation-
+│                             #   free render path with max-min-gain triplet
+│                             #   selection and energy normalization.
 │                             #   Beds/fields/room/HRTF/binaural are declared
 │                             #   seams for later phases (spec Part XXVI).
 │

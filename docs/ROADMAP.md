@@ -463,9 +463,69 @@ isolation, per-speaker calibration trim, custom layouts, and bounded air
 absorption.
 
 **Unblocks (Horizon).** The next spatial phases in the spec's dependency
-order: 3D VBAP geometry (speaker-pair/triplet solver + out-of-coverage
-fallback), object behavior (directivity/Doppler/occlusion), beds/fields,
-Ambisonics/HOA, room/reflections, HRTF/SOFA/binaural, head tracking, scene
-file format, and eventually a `SpatialNode` in the production graph. The
-scene/level/render layer is the stable substrate those build on.
+order: 3D VBAP geometry (done — Phase 9), object behavior
+(directivity/Doppler/occlusion), beds/fields, Ambisonics/HOA,
+room/reflections, HRTF/SOFA/binaural, head tracking, scene file format, and
+eventually a `SpatialNode` in the production graph. The scene/level/render
+layer is the stable substrate those build on.
+
+---
+
+## Phase 9 — 3D VBAP renderer (v3.12.0) — **Implemented**
+
+**Intent.** Give the spatial layer its first serious object-to-speaker
+renderer: vector-based amplitude panning computed from actual speaker
+geometry (spec Part V §25–29), with reduced-dimension handling for
+coplanar layouts, a deterministic out-of-coverage fallback, and
+preprocessed panning regions so coefficients are continuous under motion.
+Same opt-in surface as Phase 8: hosts render a `SpatialScene` through
+`VbapRenderer` into a normal interleaved multichannel buffer.
+
+### Key mechanisms
+
+- **`spatial::vbap::VbapRenderer`** — solves an object's listener-space
+  direction as a non-negative combination of the surrounding speakers.
+  `PanMode` classifies the layout at `prepare`: `ThreeDim` (≥1 valid
+  triplet), `Planar` (coplanar speakers reduce to a 2D equal-power
+  azimuth-pair ring, §26/§27), or `Single`.
+- **Geometry preprocessing (§21)** — normalized speaker directions,
+  loudspeaker-basis inverses for every valid triplet (adjugate/det,
+  `|det| > ε` guards), the azimuth-pair ring, and a **Delaunay-style
+  empty-triangle filter**: a triplet is a valid panning region only if no
+  other speaker lies inside it or on its boundary. This is what makes the
+  triangle set a proper tessellation (spec's "panning regions /
+  convex-hull relationships") without pulling in a convex-hull library.
+- **Coefficient solver** — among enclosing triplets, pick the most balanced
+  (largest minimum coefficient; tightest-norm tie-break), then
+  energy-normalize (constant power while moving). Full 3D placement: no
+  `cos(elevation)` term (that was a BasicPanner azimuth-only hack).
+- **Out-of-coverage fallback (§28)** — no enclosing triplet (below the
+  floor, above the rig) → direction-preserving nearest-speaker fallback;
+  deterministic, finite, never silent, never pollutes state.
+- **Realtime discipline** — triangulation/inverse work is control-path;
+  `process_block` reuses the panner's per-(object,speaker) smoothing,
+  additive LFE send, and caller buffer: zero allocations (new
+  `realtime_allocation` test).
+
+**Correctness note (front-centre regression).** An over-complete triangle
+enumeration places the 7.1.4 Centre speaker exactly on the FL–FR base edge
+of `{FL, FR, height}`; a direction on that edge then snapped between a
+phantom FL/FR pair and the real centre speaker (a knife-edge
+discontinuity). The empty-triangle filter removes such triangles, so the
+front axis renders through the real Centre speaker and gains move
+continuously.
+
+**Acceptance (spec-first).** `tests/fidelity/spatial_vbap.rs` covers layout
+classification, energy preservation over a sphere sweep, left/right 3D
+symmetry, overhead→height routing, the front-centre regression, out-of-
+coverage determinism, degenerate coplanar geometry, custom asymmetric 3D
+arrays, and a full-circle continuity sweep; plus the unit suite in
+`src/spatial/vbap.rs`.
+
+**Unblocks (Horizon).** Object behavior (distance models are already
+live; directivity/Doppler/occlusion next), spread refinement (angular-region
+sampling instead of the simplified nearest-speaker widening), beds/fields
+hybrid mixing, Ambisonics/HOA, room/reflections, HRTF/SOFA/binaural, head
+tracking, scene file format, and eventually a `SpatialNode` in the
+production graph.
 

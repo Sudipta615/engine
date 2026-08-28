@@ -29,7 +29,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use engine::dsp::graph::DspGraph;
 use engine::dsp::loudness::LoudnessMetadata;
 use engine::dsp::pipeline::DspPipeline;
-use engine::spatial::{BasicPanner, SpatialRenderer, SpatialScene, SpeakerLayout, Vec3};
+use engine::spatial::{
+    BasicPanner, SpatialRenderer, SpatialScene, SpeakerLayout, VbapRenderer, Vec3,
+};
 
 /// Write a short 16-bit stereo WAV whose left channel is a single impulse
 /// (sample 0 = 1.0, rest silence); right channel silent. Used as the aux
@@ -547,5 +549,66 @@ fn realtime_spatial_panner_does_not_allocate() {
     assert_eq!(
         allocations, 0,
         "steady-state spatial panner processing allocated on the audio path"
+    );
+}
+
+/// The VBAP renderer (Phase 4, spec Part V §25–29) must uphold the same
+/// zero-allocation contract: `process_block` solves against the precomputed
+/// triangle table, reuses its per-(object,speaker) smoothing state, and
+/// never allocates — including the out-of-coverage nearest-speaker fallback
+/// and the LFE send path.
+///
+/// Scene construction, the 7.1.4 layout, and `prepare` (triangulation +
+/// Delaunay region filter) are all control-path, run before the measurement
+/// window.
+#[test]
+fn realtime_spatial_vbap_does_not_allocate() {
+    let mut scene = SpatialScene::new(48_000);
+    // Spread objects across the sphere: covered directions, an overhead
+    // object, and one below the floor (out-of-coverage fallback).
+    for pos in [
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.5),
+        Vec3::new(-1.0, 0.0, 0.0),
+        Vec3::new(0.0, -1.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        Vec3::new(0.0, 0.0, -1.0),
+    ] {
+        scene.create_audio_object(pos).expect("add object");
+    }
+    // One object with an LFE send (exercises the additive LFE path).
+    let lfe_obj = scene
+        .create_audio_object(Vec3::new(0.0, 1.0, 0.0))
+        .expect("add LFE-send object");
+    scene.object_mut(lfe_obj).unwrap().lfe_send = 0.5;
+
+    let layout = SpeakerLayout::seven_point_one_four();
+    let mut vbap = VbapRenderer::new();
+    vbap.prepare(&layout, 48_000).unwrap();
+
+    const FRAMES: usize = 128;
+    let inputs: Vec<Vec<f32>> = (0..7).map(|_| vec![0.3f32; FRAMES]).collect();
+    let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
+    let mut out = vec![0.0f32; 12 * FRAMES];
+
+    // Warm up the smoothing state before arming the allocator.
+    vbap.process_block(&scene, &input_refs, FRAMES, &mut out)
+        .unwrap();
+    out.fill(0.0);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for _ in 0..10_000 {
+        vbap.process_block(&scene, &input_refs, FRAMES, &mut out)
+            .unwrap();
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocations = THREAD_ALLOCS.with(|c| c.get());
+
+    assert_eq!(
+        allocations, 0,
+        "steady-state VBAP processing allocated on the audio path"
     );
 }

@@ -13,9 +13,11 @@
 //! and writes a normal interleaved multichannel PCM buffer the engine's
 //! existing output core can deliver.
 //!
-//! This phase ships the **equal-power [`BasicPanner`]** and the full scene /
-//! speaker / listener / object data model. The conventional PCM & DSP path is
-//! untouched; spatial rendering is opt-in.
+//! This layer ships the full scene / speaker / listener / object data model
+//! plus two renderers: the **equal-power [`BasicPanner`]** and the 3D
+//! **VBAP-style [`VbapRenderer`]** (speaker-geometry triangulation, 2D
+//! reduction for coplanar layouts, out-of-coverage fallback). The
+//! conventional PCM & DSP path is untouched; spatial rendering is opt-in.
 //!
 //! ## Module map
 //!
@@ -31,6 +33,8 @@
 //! - `render.rs` — [`SpatialRenderer`] trait, [`RenderError`],
 //!   [`RendererKind`] (§22, §106).
 //! - `panner.rs` — [`BasicPanner`] (§24–30, §46, §56–57).
+//! - `vbap.rs` — [`VbapRenderer`]: 3-triplet VBAP, Delaunay region
+//!   preprocessor, out-of-coverage fallback (§21, §25–29).
 //!
 //! ## Conventions (documented, spec §18 & §153)
 //!
@@ -42,13 +46,15 @@
 //! - **Gain**: linear (1.0 = unity); dB only at the trim/calibration
 //!   boundary ([`LayoutCalibration`]).
 //! - **LFE**: an effects path, never a spatial pan target (spec Part X).
-//! - **Equal-power law**: `la² + lb² = 1` across a bracketing speaker pair.
+//! - **Equal-power law**: `la² + lb² = 1` across a bracketing speaker pair
+//!   ([`BasicPanner`]); VBAP energy-normalizes solved triplet gains instead
+//!   ([`VbapRenderer`], §29).
 //!
 //! ## Room / beds / fields / binaural — future seams
 //!
 //! Beds, diffuse fields, the room, Ambisonics/HOA, HRTF/binaural, head
-//! tracking and the scene file format are explicitly **not** part of this
-//! phase (per the spec's dependency order, Part XXVI); the data model is
+//! tracking and the scene file format are explicitly **not** part of these
+//! phases (per the spec's dependency order, Part XXVI); the data model is
 //! shaped so they slot in without redesign (§136).
 //!
 //! The spatial layer contains **no** Dolby/DTS codecs, bitstreams, metadata,
@@ -61,6 +67,7 @@ pub mod panner;
 pub mod render;
 pub mod scene;
 pub mod speaker;
+pub mod vbap;
 
 pub use level::{AirAbsorption, DistanceModel};
 pub use math::{Quat, Vec3};
@@ -69,6 +76,6 @@ pub use object::{
     MAX_SPATIAL_OBJECTS,
 };
 pub use panner::BasicPanner;
-pub use render::{RenderError, RendererKind, SpatialRenderer};
+pub use render::{RenderError, RendererKind, SpatialRenderer, VbapRenderer};
 pub use scene::{Listener, ListenerTransform, SpatialScene};
 pub use speaker::{LayoutCalibration, Speaker, SpeakerId, SpeakerLayout};

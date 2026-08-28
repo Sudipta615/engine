@@ -2,6 +2,67 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.12.0] — 2026-08-28
+
+3D VBAP-style object-to-speaker rendering (roadmap Phase 9): the spatial
+layer's first serious object renderer. A `spatial::vbap::VbapRenderer`
+solves an object's listener-space direction as a non-negative combination of
+its geometrically surrounding speakers — a full 3-triplet solve on 3D
+layouts (7.1.4, custom arrays), a 2D equal-power azimuth-pair reduction for
+coplanar layouts (stereo, 5.1, 7.1), and a deterministic nearest-speaker
+fallback out of coverage. The triangulation is precomputed at `prepare`
+(including the Delaunay empty-triangle filter so no speaker lies on another
+triangle's edge and moving objects never snap between region solutions), the
+render path is allocation-free, and the front-centre direction in 7.1.4 is
+rendered by the real Center speaker — not a phantom stereo pair.
+
+### Added
+
+- **`VbapRenderer`** (`spatial::vbap`): computes panning coefficients from
+  actual speaker geometry (§25), with `PanMode` classification
+  (`ThreeDim` / `Planar` / `Single`) resolving degenerate and reduced-dimension
+  layouts (§27) at `prepare` time.
+- **Geometry preprocessing** (§21): normalized speaker directions, the
+  loudspeaker-basis inverses for every valid triplet, the horizontal
+  azimuth-pair ring for planar layouts, and a Delaunay-style empty-triangle
+  filter that rejects triangles containing another speaker — eliminating
+  knife-edge discontinuities (e.g. the front-centre speaker lying on the
+  FL–FR base edge of `{FL, FR, height}`) without a full convex-hull
+  library.
+- **Coefficient solver**: max-min-gain triplet selection (most-balanced
+  enclosing triangle, tightest-norm tie-break), energy normalization
+  (constant power across movement), and 3D placement with no off-plane
+  `cos(elevation)` hack — distance and level chain identical to the
+  `BasicPanner`.
+- **Out-of-coverage fallback** (§28): no enclosing triplet (below the
+  floor, above the rig) → deterministic direction-preserving nearest-speaker
+  fallback; never silent, never NaN, never state-polluting.
+- **Realtime discipline** (§71–75): all triangulation/inverse work happens
+  in `prepare`; `process_block` reuses the same per-(object,speaker) one-pole
+  smoothing, additive LFE send, and caller-supplied interleaved output as
+  the panner — zero allocations in steady state (new `realtime_allocation`
+  test).
+- **Public surface**: `VbapRenderer` re-exported from `spatial` and the
+  `prelude`, `RendererKind::Vbap`, and public `PanMode` introspection.
+- **Acceptance suites**: `tests/fidelity/spatial_vbap.rs` — layout
+  classification, energy preservation over a sphere sweep, left/right
+  symmetry in 3D, overhead-to-height routing, the front-centre regression
+  (real Center speaker, no phantom pair), out-of-coverage determinism,
+  degenerate coplanar geometry, custom asymmetric 3D layouts, and a
+  full-circle continuity sweep.
+
+### Fixed
+
+- The spatial layer's over-complete triangle enumeration could place a
+  speaker exactly on another triangle's boundary, so a direction on that
+  edge flipped between wildly different coefficient vectors (front-centre
+  phantom-pair snap). The empty-triangle filter restores continuous,
+  uniquely-tessellated panning regions.
+
+### Changed
+
+- `engine` and `config` versions remain synchronized at `3.12.0`.
+
 ## [3.11.0] — 2026-08-28
 
 Spatial audio foundation (roadmap Phase 8): an independent, opt-in spatial

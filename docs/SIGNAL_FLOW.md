@@ -159,14 +159,17 @@ device's actual crystal (offset reported in ppm) instead of its nominal
 clock. Same-rate endpoints reuse the master's already-limited block
 untouched.
 
-### Spatial rendering (opt-in, v3.11.0)
+### Spatial rendering (opt-in, v3.11.0 → v3.12.0)
 
 ```
 SpatialScene (world space: listener + objects)
         │  per-block object audio planes + scene
         ▼
-BasicPanner::process_block  (equal-power pair pans, coefficient
-        │                     smoothing, additive LFE send)
+renderer::process_block  (BasicPanner — equal-power pair pans, or
+        │                  VbapRenderer — 3-triplet VBAP on 3D layouts,
+        │                  2D pair reduction on coplanar layouts,
+        │                  nearest-speaker out-of-coverage fallback)
+        │   coefficient smoothing, additive LFE send
         ▼
 interleaved multichannel PCM (frames × layout channels)
         │
@@ -176,15 +179,19 @@ output domain ──▶ existing ring / endpoint path
 
 Spatial rendering is **opt-in**: the conventional decode loop and DSP graph are
 untouched. A host builds a `SpatialScene` of objects (world positions, gains,
-spread, LFE send), prepares a `BasicPanner` on a `SpeakerLayout` (stereo / 5.1 /
-7.1 / 7.1.4 / custom), and renders decoded object planes into a caller-supplied
-interleaved multichannel buffer that can be pushed through the existing output
-core (`SampleSink::push_frames_interleaved`). The pipeline order is:
-`listener-space transform → distance model → pan coefficients (equal-power) →
+spread, LFE send), prepares a renderer — `BasicPanner` (equal-power pairs) or
+`VbapRenderer` (3-triplet VBAP for 3D layouts, 2D pair reduction for coplanar
+ones, nearest-speaker out-of-coverage fallback) — on a `SpeakerLayout`
+(stereo / 5.1 / 7.1 / 7.1.4 / custom), and renders decoded object planes into a
+caller-supplied interleaved multichannel buffer that can be pushed through the
+existing output core (`SampleSink::push_frames_interleaved`). The pipeline
+order is: `listener-space transform → distance model → pan coefficients
+(BasicPanner equal-power or VBAP basis solve with energy normalization) →
 coefficient smoothing → LFE send → channel calibration trim`. The scene/level
-model and renderer live in `crate::spatial` (see [`ARCHITECTURE.md`](ARCHITECTURE.md));
-`tests/fidelity/spatial_panner.rs` pins the contract and `realtime_allocation`
-verifies the render path allocates nothing in steady state.
+model and renderers live in `crate::spatial` (see
+[`ARCHITECTURE.md`](ARCHITECTURE.md)); `tests/fidelity/spatial_panner.rs` and
+`tests/fidelity/spatial_vbap.rs` pin the contracts and `realtime_allocation`
+verifies both render paths allocate nothing in steady state.
 
 ### Loudness analysis
 

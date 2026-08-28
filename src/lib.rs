@@ -54,7 +54,7 @@ pub mod prelude {
         spatial::{
             AirAbsorption, BasicPanner, DistanceModel, LayoutCalibration, Listener, ObjectAudioRef,
             ObjectId, Quat, RenderError, RendererKind, SpatialAudioObject, SpatialObjectStore,
-            SpatialRenderer, SpatialScene, Speaker, SpeakerId, SpeakerLayout, Vec3,
+            SpatialRenderer, SpatialScene, Speaker, SpeakerId, SpeakerLayout, VbapRenderer, Vec3,
         },
     };
     pub use config::{AudioBackend, ChannelPolicy, ResamplerQuality};
