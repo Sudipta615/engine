@@ -16,10 +16,13 @@
 //! This layer ships the full scene / speaker / listener / object data model,
 //! two renderers — the **equal-power [`BasicPanner`]** and the 3D
 //! **VBAP-style [`VbapRenderer`]** (speaker-geometry triangulation, 2D
-//! reduction for coplanar layouts, out-of-coverage fallback) — and object
-//! behavior: **directivity** ([`Directivity`]), **occlusion**
-//! ([`Occlusion`]), and **angular-region spread** ([`spread`]). The
-//! conventional PCM & DSP path is untouched; spatial rendering is opt-in.
+//! reduction for coplanar layouts, out-of-coverage fallback) — object
+//! behavior (**directivity** [`Directivity`], **occlusion** [`Occlusion`],
+//! **angular-region spread** [`spread`]), and the three content classes
+//! mixed by the hybrid renderer: **objects** ([`SpatialAudioObject`]),
+//! **beds** ([`SpatialBed`], channel-based), and **fields** ([`SpatialField`],
+//! diffuse). The conventional PCM & DSP path is untouched; spatial rendering
+//! is opt-in.
 //!
 //! ## Module map
 //!
@@ -38,8 +41,13 @@
 //!   low-pass state (§43–44).
 //! - `spread.rs` — angular-region spread sampling + energy-normalized
 //!   aggregation (§29–30).
-//! - `render.rs` — [`SpatialRenderer`] trait, [`RenderError`],
-//!   [`RendererKind`] (§22, §106).
+//! - `bed.rs` — [`SpatialBed`] (channel-based content) routed by semantic
+//!   role, [`SpatialBedStore`] (§13.1).
+//! - `field.rs` — [`SpatialField`] (diffuse content) with equal-power spread
+//!   + per-speaker decorrelation ([`DiffuseFieldMixer`], §13.3).
+//! - `render.rs` — [`SpatialRenderer`] trait (incl. [`HybridBlockInputs`] /
+//!   `process_hybrid_block`), [`RenderError`], [`RendererKind`] (§22, §37,
+//!   §106).
 //! - `panner.rs` — [`BasicPanner`] (§24–30, §46, §56–57).
 //! - `vbap.rs` — [`VbapRenderer`]: 3-triplet VBAP, Delaunay region
 //!   preprocessor, out-of-coverage fallback (§21, §25–29).
@@ -60,17 +68,20 @@
 //!   ([`BasicPanner`]); VBAP energy-normalizes solved triplet gains instead
 //!   ([`VbapRenderer`], §29).
 //!
-//! ## Room / beds / fields / binaural — future seams
+//! ## Room / binaural — future seams
 //!
-//! Beds, diffuse fields, the room, Ambisonics/HOA, HRTF/binaural, head
-//! tracking and the scene file format are explicitly **not** part of these
-//! phases (per the spec's dependency order, Part XXVI); the data model is
-//! shaped so they slot in without redesign (§136).
+//! The room (early reflections + late reverb), Ambisonics/HOA encoding of
+//! fields, HRTF/binaural, head tracking and the scene file format are
+//! explicitly **not** part of these phases (per the spec's dependency order,
+//! Part XXVI); the data model is shaped so they slot in without redesign
+//! (§136).
 //!
 //! The spatial layer contains **no** Dolby/DTS codecs, bitstreams, metadata,
 //! or trademarks — it is an independent implementation (§3, §115).
 
+pub mod bed;
 pub mod directivity;
+pub mod field;
 pub mod level;
 pub mod math;
 pub mod object;
@@ -82,7 +93,9 @@ pub mod speaker;
 pub mod spread;
 pub mod vbap;
 
+pub use bed::{BedId, SpatialBed, SpatialBedStore, MAX_BEDS};
 pub use directivity::{CustomDirectivity, Directivity};
+pub use field::{FieldId, SpatialField, SpatialFieldStore, MAX_FIELDS};
 pub use level::{AirAbsorption, DistanceModel};
 pub use math::{Quat, Vec3};
 pub use object::{
@@ -91,6 +104,6 @@ pub use object::{
 };
 pub use occlusion::{AcousticTransmission, Occlusion};
 pub use panner::BasicPanner;
-pub use render::{RenderError, RendererKind, SpatialRenderer, VbapRenderer};
+pub use render::{HybridBlockInputs, RenderError, RendererKind, SpatialRenderer, VbapRenderer};
 pub use scene::{Listener, ListenerTransform, SpatialScene};
 pub use speaker::{LayoutCalibration, Speaker, SpeakerId, SpeakerLayout};

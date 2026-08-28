@@ -683,3 +683,65 @@ fn realtime_spatial_object_behavior_does_not_allocate() {
         "steady-state object behavior processing allocated on the audio path"
     );
 }
+
+/// Hybrid beds & fields (Phase 6, spec §13/§37) must uphold the same
+/// zero-allocation contract inside `process_hybrid_block`: bed routing is a
+/// role-table scan, and the diffuse field mixer reads/writes preallocated
+/// per-speaker delay rings with a fixed stack-array plane list — no `Vec`
+/// growth anywhere on the hot path.
+#[test]
+fn realtime_spatial_hybrid_does_not_allocate() {
+    let mut scene = SpatialScene::new(48_000);
+    // Objects with behaviors.
+    let obj = scene.create_audio_object(Vec3::new(0.0, 1.0, 0.0)).unwrap();
+    scene.object_mut(obj).unwrap().directivity = engine::spatial::Directivity::Cardioid;
+    scene.object_mut(obj).unwrap().spread = 0.5;
+    // Two beds (5.1 + stereo) and two fields.
+    scene
+        .create_bed(engine::decode::ChannelLayout::FivePointOne)
+        .unwrap();
+    scene
+        .create_bed(engine::decode::ChannelLayout::Stereo)
+        .unwrap();
+    scene.create_field().unwrap();
+    scene.create_field().unwrap();
+
+    let layout = SpeakerLayout::seven_point_one_four();
+    let mut vbap = VbapRenderer::new();
+    vbap.prepare(&layout, 48_000).unwrap();
+
+    const FRAMES: usize = 128;
+    let object_planes: Vec<Vec<f32>> = vec![vec![0.3f32; FRAMES]];
+    let object_refs: Vec<&[f32]> = object_planes.iter().map(|v| v.as_slice()).collect();
+    let bed_planes: Vec<Vec<f32>> = (0..8).map(|_| vec![0.2f32; FRAMES]).collect();
+    let bed_refs: Vec<&[f32]> = bed_planes.iter().map(|v| v.as_slice()).collect();
+    let field_planes: Vec<Vec<f32>> = (0..2).map(|_| vec![0.1f32; FRAMES]).collect();
+    let field_refs: Vec<&[f32]> = field_planes.iter().map(|v| v.as_slice()).collect();
+    let inputs = engine::spatial::render::HybridBlockInputs {
+        objects: &object_refs,
+        beds: &bed_refs,
+        fields: &field_refs,
+    };
+    let mut out = vec![0.0f32; 12 * FRAMES];
+
+    // Warm up smoothing + field delay rings before arming the allocator.
+    vbap.process_hybrid_block(&scene, &inputs, FRAMES, &mut out)
+        .unwrap();
+    out.fill(0.0);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for _ in 0..10_000 {
+        vbap.process_hybrid_block(&scene, &inputs, FRAMES, &mut out)
+            .unwrap();
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocations = THREAD_ALLOCS.with(|c| c.get());
+
+    assert_eq!(
+        allocations, 0,
+        "steady-state hybrid (objects + beds + fields) processing allocated on the audio path"
+    );
+}

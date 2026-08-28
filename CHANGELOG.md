@@ -2,6 +2,60 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.14.0] — 2026-08-28
+
+Hybrid beds & fields (roadmap Phase 11): the spatial scene's second and
+third content classes. A `SpatialScene` now carries **beds** (channel-based
+content that already has a spatial structure — 5.1 music, a 7.1 effects bed)
+and **fields** (positionless diffuse environments — rain, ambience, crowds)
+alongside objects, and both renderers mix all three through one
+`process_hybrid_block` into a single interleaved buffer (spec §37's spatial
+mixer). The object-only `process_block` and the trait's default hybrid
+behavior keep every existing caller working unchanged.
+
+### Added
+
+- **Beds** (`spatial::bed`): [`SpatialBed`] authored with a semantic
+  [`ChannelLayout`](crate::decode::ChannelLayout) (roles cached at
+  construction, control path) and routed by **semantic role** onto the
+  matching output speaker — never by numeric position — with calibration
+  trim and authored LFE included; channels with no matching output speaker
+  drop cleanly (full BS.775 rematrixing remains the conventional PCM path's
+  job). Bounded [`SpatialBedStore`] with stable [`BedId`]s (≤ 16).
+- **Fields** (`spatial::field`): [`SpatialField`] — a diffuse source spread
+  with equal power (`1/√N`) across every pan speaker and **decorrelated per
+  speaker** through a deterministic delay line (2.0–10.25 ms, all distinct
+  for ≤ 12 speakers), so it reads as surrounding ambience rather than a
+  phantom image. LFE never receives field energy. Bounded
+  [`SpatialFieldStore`] with stable [`FieldId`]s (≤ 16).
+- **Hybrid mixer**: `SpatialRenderer::process_hybrid_block` takes a
+  [`HybridBlockInputs`] struct (object planes + bed-major bed planes + field
+  planes) and sums objects → beds → fields into the caller's interleaved
+  buffer; the trait default forwards to the object path so third-party
+  renderers keep working, and `process_block` now delegates to the hybrid
+  path with empty bed/field planes. Both `BasicPanner` and `VbapRenderer`
+  implement the full hybrid path.
+- **Realtime**: bed routing is a role-table scan; the field mixer reads/writes
+  preallocated per-speaker delay rings with a fixed stack-array plane list —
+  `process_hybrid_block` is allocation-free (new `realtime_allocation` test
+  running objects + two beds + two fields together, 10k blocks, 0 allocs).
+- **Public surface**: `SpatialBed`, `SpatialBedStore`, `SpatialField`,
+  `SpatialFieldStore`, `BedId`, `FieldId`, `HybridBlockInputs` exported from
+  `spatial` and the `prelude`; scene helpers `create_bed` / `create_field`.
+- **Acceptance suite**: `tests/fidelity/spatial_hybrid.rs` — 5.1 bed routing
+  by semantic role, 7.1-bed-on-5.1 channel dropping, field equal-power
+  spread with distinct decorrelation arrivals and silent LFE, deterministic
+  finite objects+beds+fields mixing, missing-plane tolerance, and the
+  panner's hybrid mix.
+
+### Fixed
+
+- n/a
+
+### Changed
+
+- `engine` and `config` versions remain synchronized at `3.14.0`.
+
 ## [3.13.0] — 2026-08-28
 
 Object behavior (roadmap Phase 10): directivity, occlusion, and a real

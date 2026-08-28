@@ -34,13 +34,16 @@
 //! callback: at most `MAX_SPATIAL_OBJECTS` objects × 4 speaker paths × block.
 
 use crate::buffer::MAX_AUDIO_BLOCK_FRAMES;
+use crate::decode::ChannelId;
 use crate::spatial::object::MAX_SPATIAL_OBJECTS;
 
+use super::bed::render_beds;
 use super::directivity::listener_angle_rad;
+use super::field::DiffuseFieldMixer;
 use super::level::AirAbsorption;
 use super::math::Vec3;
 use super::occlusion::OcclusionState;
-use super::render::{RenderError, SpatialRenderer};
+use super::render::{HybridBlockInputs, RenderError, SpatialRenderer};
 use super::scene::{ListenerTransform, SpatialScene};
 use super::speaker::SpeakerLayout;
 use super::spread::{add_gain, normalize_gains, ring_directions, MAX_SPREAD_GAINS, RING_SAMPLES};
@@ -83,6 +86,10 @@ pub struct BasicPanner {
     sm_lfe: Vec<f32>,
     /// Per-object occlusion low-pass state (bounded by MAX_OBJECTS).
     occ: Vec<OcclusionState>,
+    /// Output-speaker semantic roles (index → ChannelId) for bed routing.
+    bed_roles: Vec<(usize, ChannelId)>,
+    /// Diffuse-field mixer (per-speaker decorrelation delay rings).
+    fields: DiffuseFieldMixer,
 
     sample_rate: f32,
     prepared: bool,
@@ -102,6 +109,8 @@ impl BasicPanner {
             air_absorption: AirAbsorption::default(),
             sm_lfe: vec![0.0; MAX_SPATIAL_OBJECTS],
             occ: vec![OcclusionState::default(); MAX_SPATIAL_OBJECTS],
+            bed_roles: Vec::new(),
+            fields: DiffuseFieldMixer::new(),
             sample_rate: 44_100.0,
             prepared: false,
         }
@@ -175,6 +184,13 @@ impl BasicPanner {
         self.sm = vec![0.0; MAX_SPATIAL_OBJECTS * speaker_count.max(1)];
         self.sm_lfe = vec![0.0; MAX_SPATIAL_OBJECTS];
         self.occ = vec![OcclusionState::default(); MAX_SPATIAL_OBJECTS];
+        self.bed_roles = layout
+            .speakers
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, s)| s.role.map(|r| (idx, r)))
+            .collect();
+        self.fields.prepare(layout, sample_rate);
         self.sample_rate = sample_rate as f32;
         self.prepared = true;
         Ok(())
@@ -254,12 +270,18 @@ impl BasicPanner {
         normalize_gains(&mut out[..len]);
     }
 
-    /// Render the current scene block into `out`.
+    /// Render the current scene's objects into `out`.
     ///
     /// Allocation-free after `prepare`: no `Vec` growth here — per-object
     /// state is keyed by the stable store slot and reuses preallocated
     /// buffers (realtime discipline, spec §71–75).
-    fn render(&mut self, scene: &SpatialScene, inputs: &[&[f32]], frames: usize, out: &mut [f32]) {
+    fn render_objects(
+        &mut self,
+        scene: &SpatialScene,
+        inputs: &[&[f32]],
+        frames: usize,
+        out: &mut [f32],
+    ) {
         let n_spk = self.speaker_count;
         for sample in out[..n_spk * frames].iter_mut() {
             *sample = 0.0;
@@ -387,6 +409,21 @@ impl SpatialRenderer for BasicPanner {
         frames: usize,
         out: &mut [f32],
     ) -> Result<(), RenderError> {
+        let inputs = HybridBlockInputs {
+            objects: object_inputs,
+            beds: &[],
+            fields: &[],
+        };
+        self.process_hybrid_block(scene, &inputs, frames, out)
+    }
+
+    fn process_hybrid_block(
+        &mut self,
+        scene: &SpatialScene,
+        inputs: &HybridBlockInputs<'_>,
+        frames: usize,
+        out: &mut [f32],
+    ) -> Result<(), RenderError> {
         if !self.prepared {
             return Err(RenderError::InvalidLayout);
         }
@@ -403,7 +440,19 @@ impl SpatialRenderer for BasicPanner {
                 got: out.len(),
             });
         }
-        self.render(scene, object_inputs, frames, out);
+        // Hybrid spatial mixer (spec §37): objects → beds → fields all sum
+        // into the same interleaved output.
+        self.render_objects(scene, inputs.objects, frames, out);
+        render_beds(
+            scene,
+            inputs.beds,
+            frames,
+            out,
+            &self.bed_roles,
+            &self.out_trim,
+        );
+        self.fields
+            .render(scene, inputs.fields, frames, out, &self.out_trim);
         Ok(())
     }
 }

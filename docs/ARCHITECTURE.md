@@ -129,7 +129,7 @@ src/
 │                             #   (CorrectionNode — per-channel partitioned
 │                             #   convolution bank, post-aux/pre-EQ)
 │
-├── spatial/                  # ── Spatial audio (Phases 8–10, opt-in) ──
+├── spatial/                  # ── Spatial audio (Phases 8–11, opt-in) ──
 │   ├── math.rs               # Vec3 / Quat + the single documented coordinate
 │   │                         #   system (+X right, +Y front, +Z up; metres /
 │   │                         #   radians / linear gain) — no linear-algebra dep
@@ -151,7 +151,14 @@ src/
 │   │                         #   low-pass with smoothed block-rate cutoff
 │   ├── spread.rs             # Angular-region spread: fixed 3-ring sample
 │   │                         #   directions + energy-normalized aggregation
-│   ├── render.rs             # SpatialRenderer trait, RendererKind, RenderError
+│   ├── bed.rs                # SpatialBed (channel-based content): semantic-
+│   │                         #   role routing onto matching output speakers,
+│   │                         #   bounded store, allocation-free render
+│   ├── field.rs              # SpatialField (diffuse content): equal-power
+│   │                         #   spread across pan speakers + per-speaker
+│   │                         #   decorrelation delay rings (DiffuseFieldMixer)
+│   ├── render.rs             # SpatialRenderer trait (incl. HybridBlockInputs /
+│   │                         #   process_hybrid_block), RendererKind, RenderError
 │   ├── panner.rs             # BasicPanner — equal-power pair pans, per-path
 │   │                         #   coefficient smoothing, additive LFE send
 │   │                         #   (LFE is not a pan target), simplified spread,

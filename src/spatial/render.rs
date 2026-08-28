@@ -62,8 +62,26 @@ impl From<RenderGeometryError> for RenderError {
     }
 }
 
+/// Per-block input planes for the hybrid path (spec §37): object audio,
+/// bed audio, and field audio. Plane-count conventions:
+///
+/// - `objects`: one mono plane per **enabled** object in store order.
+/// - `beds`: bed-major — `ordinal × bed_channels + c` is enabled bed
+///   `ordinal`'s channel `c` (channels follow the bed's authored
+///   [`ChannelLayout`](crate::decode::ChannelLayout)).
+/// - `fields`: one mono plane per **enabled** field in store order.
+///
+/// Callers with no audio for a class pass an empty slice; the renderer
+/// writes silence for that class.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HybridBlockInputs<'a> {
+    pub objects: &'a [&'a [f32]],
+    pub beds: &'a [&'a [f32]],
+    pub fields: &'a [&'a [f32]],
+}
+
 /// A spatial renderer. Implementations must be realtime-safe after `prepare`
-/// and must never allocate/lock in `process_block`.
+/// and must never allocate/lock in `process_block`/`process_hybrid_block`.
 pub trait SpatialRenderer: Send {
     /// Preprocess static speaker geometry and allocate persistent scratch.
     /// Control-path only — never called from the audio thread (spec §74).
@@ -89,6 +107,23 @@ pub trait SpatialRenderer: Send {
         frames: usize,
         out: &mut [f32],
     ) -> Result<(), RenderError>;
+
+    /// Render a full hybrid block — objects, beds, and fields together into
+    /// one interleaved buffer (spec §37's spatial mixer).
+    ///
+    /// The default implementation forwards to [`Self::process_block`] with
+    /// the object planes (beds/fields ignored), so renderers that predate
+    /// beds/fields keep working unchanged; renderers that support them
+    /// override this method.
+    fn process_hybrid_block(
+        &mut self,
+        scene: &SpatialScene,
+        inputs: &HybridBlockInputs<'_>,
+        frames: usize,
+        out: &mut [f32],
+    ) -> Result<(), RenderError> {
+        self.process_block(scene, inputs.objects, frames, out)
+    }
 }
 
 /// Direction/distance helper shared by renderers: split a listener-space

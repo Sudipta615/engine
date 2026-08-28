@@ -1,16 +1,20 @@
 //! The spatial scene (spec Part III §12, §16–18).
 //!
 //! The scene is **independent of the output speaker count**: it holds the
-//! listener and a store of authored objects, each in world space. Rendering
-//! transforms each object into listener space, then a renderer places it on
-//! whatever layout is active.
+//! listener and the three authored content classes — objects (world-space,
+//! transformed into listener space for rendering), beds (channel-based),
+//! and fields (diffuse) — and a renderer places them on whatever layout is
+//! active.
 //!
 //! Listener orientation is a first-class transform (spec §48): world-fixed
 //! objects appear to move exactly as the listener rotates, which is the
 //! foundation for head tracking / VR later.
 
+use super::bed::{BedId, SpatialBed, SpatialBedStore};
+use super::field::{FieldId, SpatialField, SpatialFieldStore};
 use super::math::{Quat, Vec3};
 use super::object::{ObjectAudioRef, ObjectId, SpatialAudioObject, SpatialObjectStore};
+use crate::decode::ChannelLayout;
 
 /// The listener: the reference frame for spatial perception.
 #[derive(Debug, Clone, PartialEq)]
@@ -88,16 +92,20 @@ impl ListenerTransform {
     }
 }
 
-/// The scene: listener + objects (+ future beds/fields/room, declared seams).
-///
-/// Beds, fields and the room are **documented future seams** (spec §13, §49)
-/// and deliberately not fields of this struct yet, so the scene model does
-/// not need to change when they land (spec §136). The renderer reads the
-/// scene read-only.
+/// The scene: listener + objects + beds + fields (+ future room, declared
+/// seam). The three content classes (spec §13) are independent of the output
+/// speaker count: objects are point/extended sources, beds are channel-based
+/// content, fields are diffuse environments. The room is a **documented
+/// future seam** (§49) and deliberately not a field yet (spec §136). The
+/// renderer reads the scene read-only.
 #[derive(Debug, Clone)]
 pub struct SpatialScene {
     pub listener: Listener,
     pub objects: SpatialObjectStore,
+    /// Channel-based beds (spec §13.1).
+    pub beds: SpatialBedStore,
+    /// Diffuse fields (spec §13.3).
+    pub fields: SpatialFieldStore,
     pub sample_rate: u32,
 }
 
@@ -106,6 +114,8 @@ impl SpatialScene {
         Self {
             listener: Listener::default(),
             objects: SpatialObjectStore::new(),
+            beds: SpatialBedStore::new(),
+            fields: SpatialFieldStore::new(),
             sample_rate,
         }
     }
@@ -129,6 +139,34 @@ impl SpatialScene {
 
     pub fn object_mut(&mut self, id: ObjectId) -> Option<&mut SpatialAudioObject> {
         self.objects.get_mut(id)
+    }
+
+    /// Create a channel-based bed (spec §13.1) and return its stable id.
+    pub fn create_bed(&mut self, layout: ChannelLayout) -> Option<BedId> {
+        let id = BedId(self.beds.len());
+        self.beds.add(SpatialBed::new(id, layout))
+    }
+
+    pub fn bed(&self, id: BedId) -> Option<&SpatialBed> {
+        self.beds.get(id)
+    }
+
+    pub fn bed_mut(&mut self, id: BedId) -> Option<&mut SpatialBed> {
+        self.beds.get_mut(id)
+    }
+
+    /// Create a diffuse field (spec §13.3) and return its stable id.
+    pub fn create_field(&mut self) -> Option<FieldId> {
+        let id = FieldId(self.fields.len());
+        self.fields.add(SpatialField::new(id))
+    }
+
+    pub fn field(&self, id: FieldId) -> Option<&SpatialField> {
+        self.fields.get(id)
+    }
+
+    pub fn field_mut(&mut self, id: FieldId) -> Option<&mut SpatialField> {
+        self.fields.get_mut(id)
     }
 }
 

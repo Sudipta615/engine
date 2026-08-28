@@ -122,9 +122,11 @@ impl CustomDirectivity {
             *dst = src.clamp(0.0, 1.0);
         }
         Some(Self { table })
-    }    /// Set the gain at an angle in degrees (writes the nearest sample).
+    }
+    /// Set the gain at an angle in degrees (writes the nearest sample).
     pub fn set(&mut self, angle_deg: f32, gain: f32) {
-        let idx = ((angle_deg.clamp(0.0, 180.0) / 2.0).round() as usize).min(DIRECTIVITY_TABLE_LEN - 1);
+        let idx =
+            ((angle_deg.clamp(0.0, 180.0) / 2.0).round() as usize).min(DIRECTIVITY_TABLE_LEN - 1);
         self.table[idx] = gain.clamp(0.0, 1.0);
     }
 

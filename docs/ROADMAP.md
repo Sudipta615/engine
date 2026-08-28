@@ -575,10 +575,58 @@ centered spread source, spread-sweep continuity, and composition; plus unit
 suites in the three new modules and a `realtime_allocation` test running all
 behaviors together.
 
-**Unblocks (Horizon).** Beds/fields hybrid mixing (diffuse *fields* are
-the natural completion of large spread), Ambisonics/HOA, room/reflections
-(occlusion's `AcousticTransmission` is the transmission seam), HRTF/SOFA/
-binaural, Doppler (per-object `velocity` + `source_orientation` are the
-seams), head tracking, scene file format, and eventually a `SpatialNode` in
-the production graph.
+**Unblocks (Horizon).** Beds/fields hybrid mixing (done — Phase 11),
+Ambisonics/HOA, room/reflections (occlusion's `AcousticTransmission` is the
+transmission seam), HRTF/SOFA/binaural, Doppler (per-object `velocity` +
+`source_orientation` are the seams), head tracking, scene file format, and
+eventually a `SpatialNode` in the production graph.
+
+---
+
+## Phase 11 — Hybrid beds & fields (v3.14.0) — **Implemented**
+
+**Intent.** Complete the scene's three content classes (spec §13): objects
+(point/extended), beds (channel-based), and fields (diffuse). A `SpatialScene`
+now carries all three, and the renderers mix them through one
+`process_hybrid_block` into a single interleaved buffer — the spec's spatial
+mixer (§37) — while the object-only path and the trait's default hybrid
+behavior keep every existing caller unchanged.
+
+### Key mechanisms
+
+- **`spatial::bed`** — [`SpatialBed`] is authored content with a semantic
+  [`ChannelLayout`] (roles cached once at construction, control path).
+  Routing is by **semantic role** onto the matching output speaker
+  (`render_beds`), with calibration trim and the authored LFE channel;
+  unmatched channels drop cleanly. Bounded store, stable [`BedId`]s (≤ 16).
+  Full BS.775 rematrixing stays the conventional PCM path's job — the bed
+  path routes by identity.
+- **`spatial::field`** — [`SpatialField`] is a positionless diffuse source:
+  equal power (`1/√N`) across every pan speaker, decorrelated per speaker
+  through a deterministic 2.0–10.25 ms delay (distinct for ≤ 12 speakers),
+  LFE never involved. [`DiffuseFieldMixer`] owns preallocated per-speaker
+  rings written at a shared cursor; per-block work is a fixed stack-array
+  plane list + one accumulate + one delayed read per speaker.
+- **Hybrid mixer** — `SpatialRenderer::process_hybrid_block(scene,
+  &HybridBlockInputs { objects, beds, fields }, frames, out)`; the trait
+  default forwards to `process_block`, `process_block` delegates to the
+  hybrid path with empty bed/field planes, and both `BasicPanner` and
+  `VbapRenderer` implement the full mix (objects → beds → fields).
+
+**Realtime discipline.** Bed routing is a linear scan of the small role
+table; the field mixer never allocates (verified by the new
+`realtime_allocation` hybrid test running objects + beds + fields, 10k
+blocks, 0 allocs).
+
+**Acceptance (spec-first).** `tests/fidelity/spatial_hybrid.rs` — 5.1 bed
+routing by semantic role, 7.1-bed-on-5.1 dropping, field equal-power spread
+with distinct decorrelation arrivals and silent LFE, deterministic finite
+objects+beds+fields mixing, missing-plane tolerance, and the panner's
+hybrid mix; plus unit suites in `bed.rs`/`field.rs`.
+
+**Unblocks (Horizon).** Ambisonics/HOA (fields gain a proper encoded
+representation), room/reflections (occlusion's `AcousticTransmission` is
+the transmission seam), HRTF/SOFA/binaural, Doppler (per-object `velocity`
++ `source_orientation` are the seams), head tracking, scene file format, and
+eventually a `SpatialNode` in the production graph.
 

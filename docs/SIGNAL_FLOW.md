@@ -159,17 +159,20 @@ device's actual crystal (offset reported in ppm) instead of its nominal
 clock. Same-rate endpoints reuse the master's already-limited block
 untouched.
 
-### Spatial rendering (opt-in, v3.11.0 → v3.12.0)
+### Spatial rendering (opt-in, v3.11.0 → v3.14.0)
 
 ```
-SpatialScene (world space: listener + objects)
-        │  per-block object audio planes + scene
+SpatialScene (world space: listener + objects + beds + fields)
+        │  per-block object / bed / field audio planes + scene
         ▼
-renderer::process_block  (BasicPanner — equal-power pair pans, or
-        │                  VbapRenderer — 3-triplet VBAP on 3D layouts,
-        │                  2D pair reduction on coplanar layouts,
-        │                  nearest-speaker out-of-coverage fallback)
-        │   coefficient smoothing, additive LFE send
+renderer::process_hybrid_block  (BasicPanner — equal-power pair pans, or
+        │                         VbapRenderer — 3-triplet VBAP on 3D
+        │                         layouts, 2D pair reduction on coplanar,
+        │                         nearest-speaker out-of-coverage fallback)
+        │   objects: level chain (distance · directivity · occlusion) →
+        │            pan solves (spread-aware) → smoothing → LFE send
+        │   beds:    semantic-role routing onto matching speakers
+        │   fields:  equal-power diffuse spread + per-speaker decorrelation
         ▼
 interleaved multichannel PCM (frames × layout channels)
         │
@@ -189,11 +192,14 @@ order is: `listener-space transform → distance model → directivity (source
 facing vs. listener angle) → occlusion (attenuation + low-pass) → pan
 coefficients (BasicPanner equal-power or VBAP basis solve with energy
 normalization; angular-region spread samples the direction cap) →
-coefficient smoothing → LFE send → channel calibration trim`. The scene/level
-model and renderers live in `crate::spatial` (see
-[`ARCHITECTURE.md`](ARCHITECTURE.md)); `tests/fidelity/spatial_panner.rs`,
-`tests/fidelity/spatial_vbap.rs`, and
-`tests/fidelity/spatial_object_behavior.rs` pin the contracts and
+coefficient smoothing → LFE send → channel calibration trim`. Beds route by
+semantic role onto matching speakers and fields spread diffusely with
+per-speaker decorrelation; all three classes sum into the same buffer via
+`process_hybrid_block` (the spatial mixer). The scene/level model and
+renderers live in `crate::spatial` (see [`ARCHITECTURE.md`](ARCHITECTURE.md));
+`tests/fidelity/spatial_panner.rs`, `tests/fidelity/spatial_vbap.rs`,
+`tests/fidelity/spatial_object_behavior.rs`, and
+`tests/fidelity/spatial_hybrid.rs` pin the contracts and
 `realtime_allocation` verifies the render paths allocate nothing in steady
 state.
 
