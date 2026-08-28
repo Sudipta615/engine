@@ -883,3 +883,108 @@ fn realtime_spatial_room_does_not_allocate() {
         "steady-state room (reflections + late field) processing allocated on the audio path"
     );
 }
+
+/// The binaural renderer (Phase 9, spec Part VII §47–48) must uphold the
+/// same zero-allocation contract inside `process_hybrid_block`: the per-ear
+/// ITD rings, the head-shadow shelves, the room's reflection taps, and the
+/// virtual-ring diffuse path are all preallocated flat at `prepare` — the
+/// measured loop runs the *worst case* (order-2 room, occluded, spread,
+/// directional, a bed, a field, and the late field) with no `Vec` growth.
+#[test]
+fn realtime_spatial_binaural_does_not_allocate() {
+    let mut scene = SpatialScene::new(48_000);
+    scene.listener.set_position(Vec3::new(6.0, 5.0, 1.5));
+    scene.room = engine::spatial::Room {
+        enabled: true,
+        width: 12.0,
+        depth: 10.0,
+        height: 3.0,
+        absorption: 0.3,
+        reflection_order: 2, // worst case: 24 image sources per object
+        rt60_ms: 800.0,
+        late_mix: 0.7,
+        speed_of_sound: 343.0,
+    };
+    // Participating objects exercising every head-model path: cardioid
+    // directivity, occlusion, spread, LFE send, room send.
+    let mut samples = [1.0f32; engine::spatial::directivity::DIRECTIVITY_TABLE_LEN];
+    samples[45] = 0.0;
+    let custom = engine::spatial::CustomDirectivity::from_samples(&samples).unwrap();
+    for (i, pos) in [
+        Vec3::new(1.0, 5.0, 1.5),
+        Vec3::new(11.0, 5.0, 1.5),
+        Vec3::new(6.0, 1.0, 1.5),
+        Vec3::new(6.0, 9.0, 1.5),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let id = scene.create_audio_object(*pos).expect("add object");
+        let obj = scene.object_mut(id).unwrap();
+        obj.room_send = 1.0;
+        obj.spread = 0.4 + 0.1 * i as f32;
+        obj.lfe_send = 0.3;
+        obj.occlusion = engine::spatial::Occlusion {
+            amount: 0.2 + 0.2 * i as f32,
+            ..Default::default()
+        };
+        obj.directivity = if i == 0 {
+            engine::spatial::Directivity::Cardioid
+        } else {
+            custom.clone().into_directivity()
+        };
+    }
+    scene
+        .create_bed(engine::decode::ChannelLayout::Stereo)
+        .unwrap();
+    scene.create_field().unwrap();
+
+    let layout = SpeakerLayout::stereo();
+    let mut renderer = engine::spatial::BinauralRenderer::new(0.0);
+    renderer.prepare(&layout, 48_000).unwrap();
+
+    const FRAMES: usize = 128;
+    let object_planes: Vec<Vec<f32>> = (0..4).map(|_| vec![0.3f32; FRAMES]).collect();
+    let object_refs: Vec<&[f32]> = object_planes.iter().map(|v| v.as_slice()).collect();
+    let bed_planes: Vec<Vec<f32>> = (0..2).map(|_| vec![0.2f32; FRAMES]).collect();
+    let bed_refs: Vec<&[f32]> = bed_planes.iter().map(|v| v.as_slice()).collect();
+    let field_planes: Vec<Vec<f32>> = vec![vec![0.1f32; FRAMES]];
+    let field_refs: Vec<&[f32]> = field_planes.iter().map(|v| v.as_slice()).collect();
+    let inputs = engine::spatial::render::HybridBlockInputs {
+        objects: &object_refs,
+        beds: &bed_refs,
+        fields: &field_refs,
+    };
+    let mut out = vec![0.0f32; 2 * FRAMES];
+
+    // Warm up: fill the ITD rings, converge shelf smoothing + reflection
+    // taps, ring the tail, and fill the virtual-ring delay lines before
+    // arming the allocator.
+    renderer
+        .process_hybrid_block(&scene, &inputs, FRAMES, &mut out)
+        .unwrap();
+    out.fill(0.0);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    // Sweep the listener yaw every block to exercise the per-frame head
+    // cue updates (ITD glides through the fractional delay lines).
+    for block in 0..10_000 {
+        let yaw = block as f32 * 0.001;
+        scene
+            .listener
+            .set_orientation(Quat::from_euler_rad(yaw, 0.0, 0.0));
+        renderer
+            .process_hybrid_block(&scene, &inputs, FRAMES, &mut out)
+            .unwrap();
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocations = THREAD_ALLOCS.with(|c| c.get());
+
+    assert_eq!(
+        allocations, 0,
+        "steady-state binaural processing allocated on the audio path"
+    );
+}

@@ -129,7 +129,7 @@ src/
 │                             #   (CorrectionNode — per-channel partitioned
 │                             #   convolution bank, post-aux/pre-EQ)
 │
-├── spatial/                  # ── Spatial audio (Phases 8–13, opt-in) ──
+├── spatial/                  # ── Spatial audio (Phases 8–14, opt-in) ──
 │   ├── math.rs               # Vec3 / Quat + the single documented coordinate
 │   │                         #   system (+X right, +Y front, +Z up; metres /
 │   │                         #   radians / linear gain) — no linear-algebra dep
@@ -168,10 +168,21 @@ src/
 │   ├── room.rs               # Room acoustics: Room (box + absorption +
 │   │                         #   order + RT60), image-source enumeration,
 │   │                         #   EarlyReflections (per-object delay rings +
-│   │                         #   tap smoothing), RoomLateField (Schroeder
+│   │                         #   tap smoothing + the binaural ring
+│   │                         #   primitives), RoomLateField (Schroeder
 │   │                         #   tail encoding into the ambisonic bus)
+│   ├── hrtf.rs               # Binaural head model: Woodworth ITD,
+│   │                         #   Duda-Martens head-shadow shelf (α = 1.05 +
+│   │                         #   0.95·sinφ, first-order, DC=1), fractional-
+│   │                         #   delay ring read
+│   ├── binaural.rs           # BinauralRenderer — the whole hybrid scene
+│   │                         #   through the head model: objects (per-ear
+│   │                         #   ITD + shadow, spread blurs cues), beds
+│   │                         #   (semantic-role fold, LFE at 1/√2), fields
+│   │                         #   + late field via a virtual 8-speaker ring
 │   ├── render.rs             # SpatialRenderer trait (incl. HybridBlockInputs /
-│   │                         #   process_hybrid_block), RendererKind, RenderError
+│   │                         #   process_hybrid_block), RendererKind (Basic /
+│   │                         #   Vbap / Ambisonic / Binaural), RenderError
 │   ├── panner.rs             # BasicPanner — equal-power pair pans, per-path
 │   │                         #   coefficient smoothing, additive LFE send
 │   │                         #   (LFE is not a pan target), simplified spread,
@@ -186,8 +197,9 @@ src/
 │                             #   empty-triangle region filter), allocation-
 │                             #   free render path with max-min-gain triplet
 │                             #   selection and energy normalization.
-│                             #   Beds/fields/room/HRTF/binaural are declared
-│                             #   seams for later phases (spec Part XXVI).
+│                             #   Higher-order ambisonics, full spectral
+│                             #   HRTFs and head tracking are declared seams
+│                             #   for later phases (spec Part XXVI).
 │
 ├── output/                   # ── Output backends ──
 │   ├── mod.rs                # Module wiring + re-exports

@@ -2,6 +2,66 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.17.0] — 2026-08-28
+
+Binaural rendering (roadmap Phase 14, spec Part VII §47–48, §62, §136):
+the spatial layer gains a **head model** — a `BinauralRenderer` that
+renders the entire hybrid scene (objects, beds, fields, and the room's
+reflections) to two ears using the documented Woodworth interaural time
+difference and a Duda-Martens head-shadow shelf, with no speaker array.
+A new `spatial::hrtf` module ships the open model (ITD formula, `α`
+coefficient, a first-order shelf filter, and the fractional-delay ring read
+that makes ITD changes glide); `spatial::binaural` assembles the renderer:
+objects through the shared level chain then per-ear delay + shadow (spread
+blurs the interaural cues instead of moving the image), beds folded by
+semantic role (LFE at `1/√2`), and diffuse content (fields + the room's
+late field) decoded onto a virtual 8-speaker ring before the head model —
+surrounding ambience, not a phantom. `RendererKind::Binaural` joins
+`Basic` / `Vbap` / `Ambisonic`; `prepare` requires exactly two enabled
+non-LFE speakers (stereo/headphone layouts).
+
+### Added
+
+- **`spatial::hrtf`** — `woodworth_itd_sec` (front 0 → ear-axis maximum
+  `(a/c)(π/2+1)` → rear 0, the documented front/back cone ambiguity),
+  `head_shadow_alpha` (`1.05 + 0.95·sinφ`: ≈ 2.0 at the ear, ≈ 0.1
+  shadowed), `Ear`, the `HeadShadow` first-order shelf (DC gain exactly 1,
+  HF asymptote exactly α, one-pole-smoothed α), and the fractional
+  `read_delayed` ring read — all pinned by unit tests.
+- **`spatial::binaural::BinauralRenderer`** — full hybrid rendering to a
+  stereo interleaved buffer: the object level chain (distance ·
+  directivity · occlusion) then per-(direction, ear) Woodworth delay +
+  shadow shelf; angular-region spread renders every sampled direction with
+  its own cues; the LFE send and bed-LFE role fold at `1/√2`; beds route
+  by semantic-role azimuth; fields and the room's late field decode onto a
+  virtual 8-speaker ring (`√N`-compensated, decorrelated) and are
+  head-modeled per virtual speaker; room image sources are binauralized at
+  `excess_path + ITD(ear)` with per-(image, ear) shadow and smoothed tap
+  gain.
+- **`RendererKind::Binaural`** — non-exhaustive enum extension; the
+  previously-declared `RenderError::HrtfUnavailable` seam is now real.
+- **`EarlyReflections` binaural primitives** — `cursor_at`, `store`,
+  `read_delayed` (fractional), `add_send` for the renderer's own head-model
+  taps.
+
+### Tests
+
+- Unit suites in `hrtf.rs` (Woodworth closed form, per-ear delay rules, α
+  complement, shelf DC/Nyquist/α=1 pins, fractional interpolation) and
+  `binaural.rs` (stereo-layout enforcement, front unity, exact ear swap
+  under mirror symmetry, LFE fold, spread's effective-ITD shrinkage).
+- Acceptance suite `tests/fidelity/spatial_binaural.rs` (11 tests): the
+  Woodworth closed form at the public API, front-center unity and balance,
+  hard-right ITD + head shadow measured on impulse argmax, mirror
+  symmetry, bed role/LFE folds, diffuse equal-ear-energy fields with
+  decorrelation, the 280-sample room reflection arriving one ITD later at
+  the contralateral ear, listener-rotation image motion, spread's effective
+  ITD reduction, deterministic finite full-hybrid rendering, and layout
+  validation.
+- `realtime_allocation`: new `realtime_spatial_binaural_does_not_allocate`
+  — order-2 room, occluded/directional/spread/LFE objects, a bed, a field,
+  and a sweeping listener yaw; 10k blocks, **zero allocations**.
+
 ## [3.16.0] — 2026-08-28
 
 Room acoustics (roadmap Phase 13): the spatial scene gains an acoustic

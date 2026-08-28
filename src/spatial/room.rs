@@ -391,6 +391,38 @@ impl EarlyReflections {
         self.block_write = (self.block_write + frames) % self.ring_len;
     }
 
+    /// The ring cursor for `frame` of the current block (binaural mode;
+    /// see the renderer's module docs).
+    pub fn cursor_at(&self, frame: usize) -> usize {
+        (self.block_write + frame) % self.ring_len
+    }
+
+    /// Store one sample in an object's ring at an explicit cursor (binaural
+    /// mode).
+    pub fn store(&mut self, obj_slot: usize, cursor: usize, sample: f32) {
+        self.ring[obj_slot * self.ring_len + cursor] = sample;
+    }
+
+    /// Fractional (linearly interpolated) delayed read from an object's ring
+    /// (binaural mode). `delay_samples` is clamped to `[0, ring_len − 1]` so
+    /// any delay (room excess path + ITD) stays in bounds; the interpolation
+    /// keeps moving sources' ITDs continuous.
+    pub fn read_delayed(&self, obj_slot: usize, cursor: usize, delay_samples: f32) -> f32 {
+        let rl = self.ring_len;
+        let d = delay_samples.clamp(0.0, (rl - 1) as f32);
+        let i = d.floor() as usize;
+        let f = d - i as f32;
+        let row = obj_slot * rl;
+        let a = self.ring[row + (cursor + rl - i) % rl];
+        let b = self.ring[row + (cursor + rl - i - 1) % rl];
+        a + f * (b - a)
+    }
+
+    /// Accumulate one sample into the room-send plane (binaural mode).
+    pub fn add_send(&mut self, frame: usize, v: f32) {
+        self.send[frame] += v;
+    }
+
     /// The accumulated room-send plane (one sample per frame of the block).
     pub fn send(&self) -> &[f32] {
         &self.send

@@ -18,19 +18,21 @@ use super::speaker::{RenderGeometryError, SpeakerLayout};
 use super::SpatialScene;
 
 pub use super::ambisonic::AmbisonicRenderer;
+pub use super::binaural::BinauralRenderer;
 pub use super::panner::BasicPanner;
 pub use super::vbap::VbapRenderer;
 
 /// Which renderer a host selects. `Basic` is the equal-power panner, `Vbap`
-/// the VBAP-style object renderer, `Ambisonic` the FOA-bus decoder; a
-/// Binaural renderer is a documented later-phase seam (spec §23, §136)
-/// added to this enum without breaking existing match arms.
+/// the VBAP-style object renderer, `Ambisonic` the FOA-bus decoder, and
+/// `Binaural` the head-model renderer (spec §23, §47–48, §136). The enum is
+/// non-exhaustive so renderers can be added without breaking host matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RendererKind {
     Basic,
     Vbap,
     Ambisonic,
+    Binaural,
 }
 
 /// Typed render error (spec §106). Invalid geometry must surface as an error

@@ -732,7 +732,66 @@ monotonicity, and deterministic finite hybrid rendering; plus unit suites
 in `room.rs` / `field.rs` (including an RT60 measurement of the tail within
 ±15%).
 
-**Unblocks (Horizon).** Higher orders, HRTF/SOFA/binaural (the late field's
-decode seam generalizes to per-ear filters), head tracking, scene file
-format, and eventually a `SpatialNode` in the production graph.
+**Unblocks (Horizon).** Higher orders, HRTF/SOFA/binaural (done —
+Phase 14), head tracking, scene file format, and eventually a `SpatialNode`
+in the production graph.
+
+## Phase 14 — Binaural rendering: head model + HRTF cues (v3.17.0) — **Implemented**
+
+**Intent.** Render the *whole hybrid scene* — objects, beds, fields, and
+room — straight to headphones (spec Part VII §47–48, §62, §136) with a
+real head model instead of a speaker array: the Woodworth interaural time
+difference plus a Duda-Martens head-shadow shelf. The output is always two
+ears; the "pan" *is* the head.
+
+### Key mechanisms
+
+- **`spatial::hrtf`** — the documented head model: `woodworth_itd_sec`
+  (`(a/c)(sinθ + θ)` to the ear axis, `(a/c)(π − θ + sinθ)` behind, zero
+  again straight back — the front/back cone ambiguity), `head_shadow_alpha`
+  (`α = 1.05 + 0.95·sinφ`, ≈ 2.0 at the ear, ≈ 0.1 shadowed), a
+  first-order `HeadShadow` shelf (bilinear Duda-Martens; DC gain exactly
+  1, HF asymptote exactly α, block-smoothed α), and the fractional
+  `read_delayed` ring read that makes ITD changes glide as sources move.
+- **`spatial::binaural::BinauralRenderer`** — every content class through
+  the head model:
+  - *Objects* — the shared level chain (distance · directivity ·
+    occlusion) then two ear paths: contralateral delay (fractional ITD
+    ring) + per-(direction, ear) shadow shelf. LFE send folds at `1/√2`.
+    Spread samples the exact + ring directions, each with its own cues —
+    widening blurs the interaural cues instead of moving the image.
+  - *Beds* — semantic-role fold: FL → −30° cues, SL → −110°, …; the LFE
+    role folds at `1/√2` to both ears.
+  - *Fields + room late field* — diffuse content decodes onto a **virtual
+    8-speaker ring** (ambisonic bus + `√N` compensation + the field
+    mixer's per-speaker decorrelation), then each virtual speaker is
+    head-modeled — surrounding ambience, not a phantom.
+  - *Room* — image sources are binauralized: each ear hears a reflection
+    at `excess_path + ITD(ear)` through its own (image, ear) shelf and
+    smoothed tap gain.
+- `RendererKind::Binaural` joins `Basic` / `Vbap` / `Ambisonic` (the
+  `HrtfUnavailable` error variant was already declared); `prepare` requires
+  exactly two enabled non-LFE speakers (stereo/headphone layouts).
+
+**Realtime discipline.** All per-path state (per-object ITD rings, shadow
+shelves, reflection tap gains, the virtual ring's delay lines) is
+preallocated flat at `prepare`; the per-frame hot path is bounded
+arithmetic. New `realtime_allocation` test: order-2 room, occluded +
+cardioid/custom + spread + LFE-send objects, a bed, a field, and a
+sweeping listener yaw — 10k blocks, 0 allocs.
+
+**Acceptance (spec-first).** `tests/fidelity/spatial_binaural.rs` — the
+Woodworth closed form at the public API, front-center unity and balance,
+hard-right ITD + head shadow measured on impulse argmax, exact ear swap
+under mirror symmetry, bed role/LFE folds, diffuse equal-ear-energy fields
+with decorrelation, the 280-sample room reflection arriving `ITD` later at
+the contralateral ear, listener-rotation image motion, spread's effective
+ITD shrinkage, and deterministic finite full-hybrid rendering; plus unit
+suites in `hrtf.rs` / `binaural.rs` (shelf DC/Nyquist/α=1 pins,
+fractional-delay interpolation, spread centroid metric).
+
+**Unblocks (Horizon).** Higher orders, full spectral HRTFs (the model is
+azimuth-only today — elevation cues are the documented seam), head
+**tracking, scene file format, and eventually a `SpatialNode` in the
+production graph.
 

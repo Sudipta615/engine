@@ -14,18 +14,21 @@
 //! existing output core can deliver.
 //!
 //! This layer ships the full scene / speaker / listener / object data model,
-//! three renderers — the **equal-power [`BasicPanner`]**, the 3D
+//! four renderers — the **equal-power [`BasicPanner`]**, the 3D
 //! **VBAP-style [`VbapRenderer`]** (speaker-geometry triangulation, 2D
-//! reduction for coplanar layouts, out-of-coverage fallback), and the
+//! reduction for coplanar layouts, out-of-coverage fallback), the
 //! **ambisonic path** ([`AmbisonicRenderer`]: a documented FOA bus — ACN /
 //! SN3D — encoded by any spatial source and decoded onto any layout, Part
-//! VI) — object behavior (**directivity** [`Directivity`], **occlusion**
-//! [`Occlusion`], **angular-region spread** [`spread`]), and the three
-//! content classes mixed by the hybrid renderer: **objects**
-//! ([`SpatialAudioObject`]), **beds** ([`SpatialBed`], channel-based), and
-//! **fields** ([`SpatialField`], diffuse — encoded into the ambisonic bus
-//! and decoded with the `√N` diffuse compensation). The conventional PCM &
-//! DSP path is untouched; spatial rendering is opt-in.
+//! VI), and the **binaural renderer** ([`BinauralRenderer`]: a head model —
+//! Woodworth ITD + Duda-Martens head shadow, Part VII) that renders the
+//! whole hybrid scene straight to headphones — object behavior
+//! (**directivity** [`Directivity`], **occlusion** [`Occlusion`],
+//! **angular-region spread** [`spread`]), and the three content classes
+//! mixed by the hybrid renderer: **objects** ([`SpatialAudioObject`]), **beds**
+//! ([`SpatialBed`], channel-based), and **fields** ([`SpatialField`],
+//! diffuse — encoded into the ambisonic bus and decoded with the `√N`
+//! diffuse compensation). The conventional PCM & DSP path is untouched;
+//! spatial rendering is opt-in.
 //!
 //! ## Module map
 //!
@@ -57,10 +60,16 @@
 //!   `process_hybrid_block`), [`RenderError`], [`RendererKind`] (§22, §37,
 //!   §106).
 //! - `room.rs` — [`Room`] (spec §49): image-source early reflections
-//!   ([`EarlyReflections`], per-object delay rings + tap smoothing) and the
-//!   [`RoomLateField`] Schroeder tail whose output encodes into the
-//!   ambisonic bus (§55); occlusion's `AcousticTransmission` is the
-//!   transmission seam (§43–44).
+//!   ([`EarlyReflections`], per-object delay rings + tap smoothing + the
+//!   binaural ring primitives) and the [`RoomLateField`] Schroeder tail
+//!   whose output encodes into the ambisonic bus (§55); occlusion's
+//!   `AcousticTransmission` is the transmission seam (§43–44).
+//! - `hrtf.rs` — the binaural head model ([`hrtf`]): Woodworth ITD,
+//!   Duda-Martens head-shadow shelf, fractional-delay ring read (§47–48,
+//!   §62).
+//! - `binaural.rs` — [`BinauralRenderer`]: the whole hybrid scene through
+//!   the head model, with a virtual 8-speaker ring for diffuse content
+//!   (Part VII).
 //! - `panner.rs` — [`BasicPanner`] (§24–30, §46, §56–57).
 //! - `vbap.rs` — [`VbapRenderer`]: 3-triplet VBAP, Delaunay region
 //!   preprocessor, out-of-coverage fallback (§21, §25–29).
@@ -81,21 +90,31 @@
 //!   ([`BasicPanner`]); VBAP energy-normalizes solved triplet gains instead
 //!   ([`VbapRenderer`], §29).
 //!
-//! ## Binaural — future seams
+//! ## Binaural rendering
 //!
-//! Higher-order Ambisonics (the order-1 basis + per-order decoder weights
-//! are the documented §34 extension), HRTF/binaural, head tracking and the
-//! scene file format are explicitly **not** part of these phases (per the
-//! spec's dependency order, Part XXVI); the data model is shaped so they
-//! slot in without redesign (§136).
+//! The binaural path (Part VII) renders the full hybrid scene — objects,
+//! beds, fields, and the room's reflections — to two ears through the
+//! documented head model: Woodworth ITD + a Duda-Martens head-shadow shelf
+//! ([`hrtf`]), with diffuse content decoded onto a virtual 8-speaker ring
+//! before the head model. It is azimuth-only by design (no elevation
+//! spectral cues yet — the documented HRTF seam, §136); mirror symmetry is
+//! the exact invariant, not constant power (the head diffracts).
+//!
+//! Still future: higher-order Ambisonics (the order-1 basis + per-order
+//! decoder weights are the documented §34 extension), full spectral HRTFs,
+//! head tracking and the scene file format (per the spec's dependency
+//! order, Part XXVI); the data model is shaped so they slot in without
+//! redesign (§136).
 //!
 //! The spatial layer contains **no** Dolby/DTS codecs, bitstreams, metadata,
 //! or trademarks — it is an independent implementation (§3, §115).
 
 pub mod ambisonic;
 pub mod bed;
+pub mod binaural;
 pub mod directivity;
 pub mod field;
+pub mod hrtf;
 pub mod level;
 pub mod math;
 pub mod object;
@@ -112,8 +131,13 @@ pub use ambisonic::{
     encode_plane_wave, rotate_bus_frame, sh_foa, AmbisonicDecoder, AmbisonicRenderer, DecoderPolicy,
 };
 pub use bed::{BedId, SpatialBed, SpatialBedStore, MAX_BEDS};
+pub use binaural::{BinauralRenderer, VIRTUAL_RING_SPEAKERS};
 pub use directivity::{CustomDirectivity, Directivity};
 pub use field::{FieldId, SpatialField, SpatialFieldStore, MAX_FIELDS};
+pub use hrtf::{
+    ear_delay_sec, head_shadow_alpha, max_itd_sec, woodworth_itd_sec, Ear, HeadShadow,
+    DEFAULT_HEAD_RADIUS, DEFAULT_SPEED_OF_SOUND,
+};
 pub use level::{AirAbsorption, DistanceModel};
 pub use math::{Quat, Vec3};
 pub use object::{

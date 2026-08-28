@@ -29,9 +29,7 @@ from C, C++, Python, C#, Node.js, and any language that can call C.
 | **Real-time safety** | **Zero heap allocations** on the decode/DSP hot path (verified by `tests/fidelity/realtime_allocation.rs`), cache-padded lock-free SPSC ring buffers, no locks anywhere on the audio path. |
 | **Gapless + crossfade transitions** | Sample-accurate **gapless**, customizable **crossfade** (constant-power / linear / exponential / logarithmic / S-curve), fade, and stop transitions between tracks — all as mix-bus envelopes. |
 | **Audiophile codecs + 1-bit DSD** | FLAC, ALAC, WAV, AIFF, APE, WavPack, TTA, Opus, Ogg Vorbis, AAC, MP3 — plus native **DSD (DSF/DFF)** up to DSD512 over Native wire and DoP. |
-| **Immersive multichannel** | Mono → 7.1.4 (12 ch) and custom layouts up to 16 channels, with active bass management, per-channel distance delays, routing matrices, and per-channel EQ. |
-| **Spatial audio (opt-in)** | An independent spatial scene layer (`spatial/`): world-space **objects** (with directivity, occlusion, angular-region spread), channel-based **beds**, diffuse **fields**, and a **room** (image-source early reflections + a Schroeder late field on the ambisonic bus), mixed through one hybrid renderer — equal-power `BasicPanner`, 3D **VBAP** (triplet solves, 2D reduction, out-of-coverage fallback), or the **ambisonic** path (FOA bus encode → decode to any layout, Basic/Max-rE policies) — so the *same* scene renders to stereo, 5.1, 7.1, 7.1.4, or any custom array into a normal multichannel buffer; conventional PCM/DSP untouched (opt in via `ChannelPolicy::SpatialRender`).
-| **Isolated client handle** | `EngineHandle` is a `Clone + Send` bridge over a lock-free command channel and atomic telemetry — the realtime thread is never blocked by the host. |
+| **Immersive multichannel** | Mono → 7.1.4 (12 ch) and custom layouts up to 16 channels, with active bass management, per-channel distance delays, routing matrices, and per-channel EQ. || **Spatial audio (opt-in)** | An independent spatial scene layer (`spatial/`): world-space **objects** (with directivity, occlusion, angular-region spread), channel-based **beds**, diffuse **fields**, and a **room** (image-source early reflections + a Schroeder late field on the ambisonic bus), mixed through one hybrid renderer — equal-power `BasicPanner`, 3D **VBAP** (triplet solves, 2D reduction, out-of-coverage fallback), the **ambisonic** path (FOA bus encode → decode to any layout, Basic/Max-rE policies), or the **binaural** path (a Woodworth-ITD + Duda-Martens head model rendering the whole scene to headphones) — so the *same* scene renders to stereo, 5.1, 7.1, 7.1.4, any custom array, or two ears; conventional PCM/DSP untouched (opt in via `ChannelPolicy::SpatialRender`). | **Isolated client handle** | `EngineHandle` is a `Clone + Send` bridge over a lock-free command channel and atomic telemetry — the realtime thread is never blocked by the host. |
 | **Real-time analyzer** | Lock-free peak / RMS / dominant-frequency and FFT spectrum taps published in every telemetry snapshot. |
 | **Loudness & tags** | EBU R128 / ReplayGain measurement, normalization, and **tag write-back** (`tag-write`) in FLAC/MP3/M4A/WAV/AIFF/APE/WavPack; AcoustID **fingerprinting** (`fingerprint`). |
 | **System-audio capture** | WASAPI loopback recording of the system mix straight to a float32 WAV (Windows). |
@@ -453,14 +451,16 @@ cross-target compile check of the native WASAPI/ASIO backends. Always re-run `ca
 │   │   │                      #   split into construction/plan/swap/access/controls/
 │   │   │                      #   lifecycle/process/limiter/report + nodes/)
 │   │   └── resampler/         # Rubato-based resampling
-│   ├── spatial/               # Speaker-independent spatial layer (Phases 8–13):
+│   ├── spatial/               # Speaker-independent spatial layer (Phases 8–14):
 │   │                          #   math/ (Vec3+Quat+coords), scene/object/speaker/
 │   │                          #   level/render + panner/ (BasicPanner) +
 │   │                          #   vbap/ (3-triplet VBAP) + directivity/,
 │   │                          #   occlusion/, spread/ (object behavior) +
 │   │                          #   bed/ (channel-based), field/ (diffuse) +
 │   │                          #   ambisonic/ (FOA bus, decoder, renderer) +
-│   │                          #   room/ (reflections + late field)
+│   │                          #   room/ (reflections + late field) +
+│   │                          #   hrtf/ (Woodworth ITD + Duda-Martens head
+│   │                          #   shadow) + binaural/ (head-model renderer)
 │   ├── output/                # ALSA / WASAPI / ASIO / CoreAudio / CPAL + endpoint.rs
 │   │                          #   (per-endpoint worker + drift correction), device
 │   │                          #   monitor, output profiles, WAV writer, loopback

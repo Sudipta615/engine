@@ -159,7 +159,7 @@ device's actual crystal (offset reported in ppm) instead of its nominal
 clock. Same-rate endpoints reuse the master's already-limited block
 untouched.
 
-### Spatial rendering (opt-in, v3.11.0 → v3.16.0)
+### Spatial rendering (opt-in, v3.11.0 → v3.17.0)
 
 ```
 SpatialScene (world space: listener + objects + beds + fields)
@@ -189,6 +189,23 @@ AmbisonicRenderer: per-frame listener rotation → decode matrix
         │            (Basic sampling or Max-rE policy) → calibration
         ▼
 interleaved multichannel PCM
+
+Binaural path (opt-in, v3.17.0) — the head model, no speaker array
+        │  full hybrid scene (objects + beds + fields + room)
+        ▼
+BinauralRenderer (stereo/headphone layout, exactly 2 ears)
+        │   objects: level chain → per-(direction, ear) Woodworth ITD
+        │            (fractional delay) + Duda-Martens shadow shelf;
+        │            spread samples each ring direction with its own cues;
+        │            LFE send folds at 1/√2
+        │   beds:    semantic-role azimuth fold (FL → −30°, SL → −110°, …;
+        │            LFE role folds at 1/√2)
+        │   room:    image reflections at excess_path + ITD(ear), per-image
+        │            shadow; late field → Schroeder tail → virtual ring
+        │   fields:  ambisonic W encode → √N compensation → virtual 8-
+        │            speaker ring (decorrelated) → per-speaker ITD + shadow
+        ▼
+interleaved stereo PCM (L, R ears)
 ```
 
 Spatial rendering is **opt-in**: the conventional decode loop and DSP graph are
@@ -215,7 +232,15 @@ semantic role onto matching speakers; fields encode into the ambisonic bus
 (`W` only — perfectly diffuse — with the `√N` diffuse compensation) and
 decode onto every pan speaker with per-speaker decorrelation; all three
 classes sum into the same buffer via `process_hybrid_block` (the spatial
-mixer). A host that already has an ambisonic bus can skip the scene and
+mixer). Alternatively the same hybrid scene renders **binaurally**
+(`BinauralRenderer`, stereo/headphone layout): the head model replaces the
+speaker array — every object/bed path becomes a contralateral-ear Woodworth
+delay plus a Duda-Martens shadow shelf (per direction/ear), the LFE folds
+at `1/√2`, and diffuse content (fields + the room's late field) decodes
+onto a virtual 8-speaker ring (ambisonic bus + `√N` compensation + the
+field mixer's decorrelation) before each virtual speaker is head-modeled.
+Mirror symmetry is the exact invariant; the head diffracts (no
+constant-power law). A host that already has an ambisonic bus can skip the scene and
 feed `AmbisonicRenderer` directly: the renderer rotates each frame by the
 listener orientation (world-fixed fields) and applies the decode matrix
 (`Basic` sampling or `MaxRe` policy) plus calibration. The scene/level model

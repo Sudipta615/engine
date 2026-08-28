@@ -52,13 +52,14 @@ pub mod prelude {
         sink::{DacSink, NoopSink, SampleSink, VecSink},
         source::AudioSource,
         spatial::{
-            encode_plane_wave, rotate_bus_frame, sh_foa, AcousticTransmission, AirAbsorption,
-            AmbisonicDecoder, AmbisonicRenderer, BasicPanner, BedId, CustomDirectivity,
-            DecoderPolicy, Directivity, DistanceModel, FieldId, HybridBlockInputs,
-            LayoutCalibration, Listener, ObjectAudioRef, ObjectId, Occlusion, Quat, RenderError,
-            RendererKind, Room, SpatialAudioObject, SpatialBed, SpatialBedStore, SpatialField,
-            SpatialFieldStore, SpatialObjectStore, SpatialRenderer, SpatialScene, Speaker,
-            SpeakerId, SpeakerLayout, VbapRenderer, Vec3,
+            encode_plane_wave, head_shadow_alpha, rotate_bus_frame, sh_foa, woodworth_itd_sec,
+            AcousticTransmission, AirAbsorption, AmbisonicDecoder, AmbisonicRenderer, BasicPanner,
+            BedId, BinauralRenderer, CustomDirectivity, DecoderPolicy, Directivity, DistanceModel,
+            Ear, FieldId, HeadShadow, HybridBlockInputs, LayoutCalibration, Listener,
+            ObjectAudioRef, ObjectId, Occlusion, Quat, RenderError, RendererKind, Room,
+            SpatialAudioObject, SpatialBed, SpatialBedStore, SpatialField, SpatialFieldStore,
+            SpatialObjectStore, SpatialRenderer, SpatialScene, Speaker, SpeakerId, SpeakerLayout,
+            VbapRenderer, Vec3,
         },
     };
     pub use config::{AudioBackend, ChannelPolicy, ResamplerQuality};
