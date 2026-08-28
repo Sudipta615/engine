@@ -14,15 +14,18 @@
 //! existing output core can deliver.
 //!
 //! This layer ships the full scene / speaker / listener / object data model,
-//! two renderers — the **equal-power [`BasicPanner`]** and the 3D
+//! three renderers — the **equal-power [`BasicPanner`]**, the 3D
 //! **VBAP-style [`VbapRenderer`]** (speaker-geometry triangulation, 2D
-//! reduction for coplanar layouts, out-of-coverage fallback) — object
-//! behavior (**directivity** [`Directivity`], **occlusion** [`Occlusion`],
-//! **angular-region spread** [`spread`]), and the three content classes
-//! mixed by the hybrid renderer: **objects** ([`SpatialAudioObject`]),
-//! **beds** ([`SpatialBed`], channel-based), and **fields** ([`SpatialField`],
-//! diffuse). The conventional PCM & DSP path is untouched; spatial rendering
-//! is opt-in.
+//! reduction for coplanar layouts, out-of-coverage fallback), and the
+//! **ambisonic path** ([`AmbisonicRenderer`]: a documented FOA bus — ACN /
+//! SN3D — encoded by any spatial source and decoded onto any layout, Part
+//! VI) — object behavior (**directivity** [`Directivity`], **occlusion**
+//! [`Occlusion`], **angular-region spread** [`spread`]), and the three
+//! content classes mixed by the hybrid renderer: **objects**
+//! ([`SpatialAudioObject`]), **beds** ([`SpatialBed`], channel-based), and
+//! **fields** ([`SpatialField`], diffuse — encoded into the ambisonic bus
+//! and decoded with the `√N` diffuse compensation). The conventional PCM &
+//! DSP path is untouched; spatial rendering is opt-in.
 //!
 //! ## Module map
 //!
@@ -43,8 +46,13 @@
 //!   aggregation (§29–30).
 //! - `bed.rs` — [`SpatialBed`] (channel-based content) routed by semantic
 //!   role, [`SpatialBedStore`] (§13.1).
-//! - `field.rs` — [`SpatialField`] (diffuse content) with equal-power spread
-//!   + per-speaker decorrelation ([`DiffuseFieldMixer`], §13.3).
+//! - `field.rs` — [`SpatialField`] (diffuse content) encoded into the
+//!   ambisonic bus + decoded with `√N` compensation, per-speaker
+//!   decorrelation ([`AmbisonicFieldMixer`], §13.3, §33).
+//! - `ambisonic.rs` — the FOA core: [`sh_foa`] SH basis, plane-wave
+//!   encoder, order-1 bus rotation, [`DecoderPolicy`] (Basic / Max-rE),
+//!   [`AmbisonicDecoder`], and the [`AmbisonicRenderer`] (Part VI §32–37,
+//!   §55).
 //! - `render.rs` — [`SpatialRenderer`] trait (incl. [`HybridBlockInputs`] /
 //!   `process_hybrid_block`), [`RenderError`], [`RendererKind`] (§22, §37,
 //!   §106).
@@ -70,8 +78,9 @@
 //!
 //! ## Room / binaural — future seams
 //!
-//! The room (early reflections + late reverb), Ambisonics/HOA encoding of
-//! fields, HRTF/binaural, head tracking and the scene file format are
+//! The room (early reflections + late reverb), higher-order Ambisonics (the
+//! order-1 basis + per-order decoder weights are the documented §34
+//! extension), HRTF/binaural, head tracking and the scene file format are
 //! explicitly **not** part of these phases (per the spec's dependency order,
 //! Part XXVI); the data model is shaped so they slot in without redesign
 //! (§136).
@@ -79,6 +88,7 @@
 //! The spatial layer contains **no** Dolby/DTS codecs, bitstreams, metadata,
 //! or trademarks — it is an independent implementation (§3, §115).
 
+pub mod ambisonic;
 pub mod bed;
 pub mod directivity;
 pub mod field;
@@ -93,6 +103,9 @@ pub mod speaker;
 pub mod spread;
 pub mod vbap;
 
+pub use ambisonic::{
+    encode_plane_wave, rotate_bus_frame, sh_foa, AmbisonicDecoder, AmbisonicRenderer, DecoderPolicy,
+};
 pub use bed::{BedId, SpatialBed, SpatialBedStore, MAX_BEDS};
 pub use directivity::{CustomDirectivity, Directivity};
 pub use field::{FieldId, SpatialField, SpatialFieldStore, MAX_FIELDS};

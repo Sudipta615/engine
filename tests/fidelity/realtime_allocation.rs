@@ -30,7 +30,8 @@ use engine::dsp::graph::DspGraph;
 use engine::dsp::loudness::LoudnessMetadata;
 use engine::dsp::pipeline::DspPipeline;
 use engine::spatial::{
-    BasicPanner, SpatialRenderer, SpatialScene, SpeakerLayout, VbapRenderer, Vec3,
+    BasicPanner, DecoderPolicy, Quat, SpatialRenderer, SpatialScene, SpeakerLayout, VbapRenderer,
+    Vec3,
 };
 
 /// Write a short 16-bit stereo WAV whose left channel is a single impulse
@@ -743,5 +744,60 @@ fn realtime_spatial_hybrid_does_not_allocate() {
     assert_eq!(
         allocations, 0,
         "steady-state hybrid (objects + beds + fields) processing allocated on the audio path"
+    );
+}
+
+/// The ambisonic renderer (Phase 7, spec Part VI §32–37) must uphold the
+/// same zero-allocation contract: the per-frame listener rotation (stack
+/// frame + `rotate_bus_frame`) and the decode matrix multiplication all run
+/// on preallocated scratch — no `Vec` growth on the hot path. The field
+/// mixer's bus path (encode → decode → decorrelation rings) is exercised by
+/// `realtime_spatial_hybrid_does_not_allocate` above, which now rides the
+/// same ambisonic pipeline.
+#[test]
+fn realtime_ambisonic_renderer_does_not_allocate() {
+    let layout = SpeakerLayout::seven_point_one_four();
+    let mut renderer = engine::spatial::AmbisonicRenderer::new(DecoderPolicy::MaxRe);
+    renderer.prepare(&layout, 48_000).unwrap();
+
+    const FRAMES: usize = 128;
+    // A world-encoded bus: constant front plane wave [W, Y, Z, X].
+    let mut frame = [0.0f32; 4];
+    engine::spatial::ambisonic::encode_plane_wave(Vec3::Y, 1.0, &mut frame);
+    let planes: Vec<Vec<f32>> = frame.iter().map(|&c| vec![c; FRAMES]).collect();
+    let input_refs: Vec<&[f32]> = planes.iter().map(|v| v.as_slice()).collect();
+    let mut out = vec![0.0f32; 12 * FRAMES];
+    let mut scene = SpatialScene::new(48_000);
+
+    // Warm up (incl. the bus scratch) before arming the allocator.
+    scene
+        .listener
+        .set_orientation(Quat::from_euler_rad(0.0, 0.0, 0.0));
+    renderer
+        .process_block(&scene, &input_refs, FRAMES, &mut out)
+        .unwrap();
+    out.fill(0.0);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    // Sweep the listener yaw every block to exercise the per-frame bus
+    // rotation on the hot path.
+    for block in 0..10_000 {
+        let yaw = block as f32 * 0.001;
+        scene
+            .listener
+            .set_orientation(Quat::from_euler_rad(yaw, 0.0, 0.0));
+        renderer
+            .process_block(&scene, &input_refs, FRAMES, &mut out)
+            .unwrap();
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocations = THREAD_ALLOCS.with(|c| c.get());
+
+    assert_eq!(
+        allocations, 0,
+        "steady-state ambisonic renderer processing allocated on the audio path"
     );
 }

@@ -2,32 +2,38 @@
 //!
 //! Rain, wind, forest ambience, crowds, ocean: content that must **not** be
 //! forced into a point-source model. A field is positionless; its mono input
-//! is spread across every pan speaker with equal power (`1/√N` per speaker)
-//! and decorrelated per speaker through a short deterministic delay line, so
-//! it reads as surrounding ambience instead of a phantom image.
+//! is encoded into the **ambisonic bus** (Part VI) and decoded onto every
+//! pan speaker, then decorrelated per speaker through a short deterministic
+//! delay line, so it reads as surrounding ambience instead of a phantom
+//! image. The pipeline is the spec's field path (§33, §37, §55):
 //!
-//! This is the spec's *spatial mixer → speaker* path for fields (§37), the
-//! natural completion of large object spread. Ambisonic field encoding is a
-//! later phase (Part VI); this phase renders diffuse fields directly.
+//! ```text
+//! field → ambisonic encoder (W) → ambisonic bus → decoder → speakers
+//! ```
+//!
+//! A perfectly diffuse field has no net direction, so it encodes to the
+//! `W` channel only; the FOA decoder then delivers equal power (`1/√N`)
+//! to every pan speaker, and the per-speaker delays add diffuseness.
 //!
 //! ## Decorrelation (documented)
 //!
-//! Speaker `k` delays the mixed field by `2.0 + ((k·5) mod 12) · 0.75` ms
-//! (2.0–10.25 ms, all distinct for up to 12 speakers — 5 is coprime with
-//! 12). The pattern is deterministic, so renders are reproducible, and the
-//! same delay applies to every field (all fields' contributions are summed
-//! into the same per-speaker line before the delay — decorrelation is
-//! between speakers, which is what diffuseness needs).
+//! Speaker `k` delays the **decoded** signal by `2.0 + ((k·5) mod 12) · 0.75`
+//! ms (2.0–10.25 ms, all distinct for up to 12 speakers — 5 is coprime with
+//! 12). The pattern is deterministic, so renders are reproducible.
 //!
 //! ## Realtime discipline
 //!
-//! [`DiffuseFieldMixer::render`] is allocation-free: the ring buffers are
-//! preallocated at `prepare` (per-speaker, sized to the maximum delay),
-//! enabled-field planes are hoisted into a fixed stack array per block, and
-//! per-sample work is one accumulate + one delayed read.
+//! [`AmbisonicFieldMixer::render`] is allocation-free: the FOA bus and the
+//! decoded scratch are preallocated at `prepare` (bounded by
+//! `MAX_AUDIO_BLOCK_FRAMES`), enabled-field planes are hoisted into a fixed
+//! stack array per block, and per-sample work is one encode + one decode +
+//! one delayed read.
 
+use super::ambisonic::{AmbisonicDecoder, DecoderPolicy, AMBISONIC_CHANNELS};
+use super::render::RenderError;
 use super::scene::SpatialScene;
 use super::speaker::SpeakerLayout;
+use crate::buffer::MAX_AUDIO_BLOCK_FRAMES;
 
 /// Hard ceiling on fields per scene (render path stays bounded).
 pub const MAX_FIELDS: usize = 16;
@@ -124,65 +130,85 @@ impl SpatialFieldStore {
     }
 }
 
-/// Renderer-owned diffuse-field mixer: per-speaker decorrelation delay rings
-/// (one shared ring buffer per pan speaker, written at a common cursor and
-/// read at each speaker's own delay).
+/// Renderer-owned diffuse-field mixer (spec §33, §37, §55): encodes the
+/// scene's fields into the **ambisonic bus** (a perfectly diffuse field has
+/// no net direction, so it lands on the `W` channel only), decodes through
+/// the real [`AmbisonicDecoder`] onto every pan speaker, then decorrelates
+/// per speaker through a short deterministic delay line so the result reads
+/// as surrounding ambience rather than a phantom image.
+///
+/// ```text
+/// field → ambisonic encoder (W) → bus → AmbisonicDecoder → speakers
+///                                                        → per-speaker delay
+/// ```
+///
+/// ## Diffuse compensation (§36)
+///
+/// The sampling decoder maps a unit `W` to `1/N` per speaker (total energy
+/// `1/N`). A diffuse field must instead decode at **unit energy** whatever
+/// the layout size, so the encoder boosts `W` by `√N` — the classic
+/// diffuse-field compensation — and the decoded per-speaker amplitude
+/// becomes `1/√N`, the equal-power spread. With `N` speakers that is
+/// `N · (1/√N)² = 1` total energy.
 #[derive(Debug)]
-pub struct DiffuseFieldMixer {
+pub struct AmbisonicFieldMixer {
+    /// The real decode stage: diffuse bus → pan speakers.
+    decoder: AmbisonicDecoder,
+    /// Per-block FOA bus scratch (`[W, Y, Z, X]` interleaved).
+    bus: Vec<f32>,
+    /// Diffuse compensation `√N` folded in at `prepare`.
+    diffuse_boost: f32,
     /// Flat `speakers × delay_len` ring storage.
     delay: Vec<f32>,
     delay_len: usize,
     write_pos: usize,
     /// Per-speaker decorrelation delay in samples (distinct, deterministic).
     delay_samples: Vec<usize>,
-    /// Pan (enabled, non-LFE) speaker output indices.
+    /// Pan (enabled, non-LFE) speaker output indices, in decode order.
     speakers: Vec<usize>,
-    /// Equal-power spread factor `1/√N` for the field's speakers.
-    n_pan_inv: f32,
     sample_rate: f32,
     prepared: bool,
 }
 
-impl Default for DiffuseFieldMixer {
+impl Default for AmbisonicFieldMixer {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl DiffuseFieldMixer {
+impl AmbisonicFieldMixer {
     pub fn new() -> Self {
         Self {
+            decoder: AmbisonicDecoder::new(DecoderPolicy::Basic),
+            bus: vec![0.0; AMBISONIC_CHANNELS * MAX_AUDIO_BLOCK_FRAMES],
+            diffuse_boost: 1.0,
             delay: Vec::new(),
             delay_len: 1,
             write_pos: 0,
             delay_samples: Vec::new(),
             speakers: Vec::new(),
-            n_pan_inv: 1.0,
             sample_rate: 48_000.0,
             prepared: false,
         }
     }
 
-    /// Control-path setup: select the pan speakers (enabled, non-LFE), size
-    /// the ring buffers to the maximum decorrelation delay, and assign each
-    /// speaker its deterministic delay.
-    pub fn prepare(&mut self, layout: &SpeakerLayout, sample_rate: u32) {
+    /// Control-path setup: prepare the decode matrix, size the ring buffers
+    /// to the maximum decorrelation delay, and assign each speaker its
+    /// deterministic delay.
+    pub fn prepare(&mut self, layout: &SpeakerLayout, sample_rate: u32) -> Result<(), RenderError> {
+        self.decoder.prepare(layout, sample_rate)?;
         self.speakers.clear();
+        self.speakers.extend_from_slice(self.decoder.speakers());
         self.delay_samples.clear();
-        for (idx, s) in layout.speakers.iter().enumerate() {
-            if s.is_lfe || !s.enabled {
-                continue;
-            }
-            let k = self.speakers.len();
+        for k in 0..self.speakers.len() {
             // Deterministic, distinct delays: (k·5 mod 12) permutes 0..11.
             let delay_ms = 2.0 + ((k * 5) % 12) as f32 * 0.75;
             self.delay_samples
                 .push(((delay_ms / 1000.0) * sample_rate as f32).round().max(1.0) as usize);
-            self.speakers.push(idx);
         }
         self.sample_rate = sample_rate as f32;
         let n = self.speakers.len().max(1);
-        self.n_pan_inv = 1.0 / (n as f32).sqrt();
+        self.diffuse_boost = (n as f32).sqrt();
         self.delay_len = self
             .delay_samples
             .iter()
@@ -194,6 +220,7 @@ impl DiffuseFieldMixer {
         self.delay.resize(n * self.delay_len, 0.0);
         self.write_pos = 0;
         self.prepared = true;
+        Ok(())
     }
 
     /// Mix all enabled fields into `out` (interleaved `frames × speakers`).
@@ -209,7 +236,7 @@ impl DiffuseFieldMixer {
         out: &mut [f32],
         out_trim: &[f32],
     ) {
-        if !self.prepared || frames == 0 {
+        if !self.prepared || frames == 0 || frames > MAX_AUDIO_BLOCK_FRAMES {
             return;
         }
         let n = self.speakers.len();
@@ -222,7 +249,7 @@ impl DiffuseFieldMixer {
         let mut n_planes = 0usize;
         for (ordinal, (_, field)) in scene.fields.iter_enabled().enumerate() {
             if let Some(input) = field_inputs.get(ordinal) {
-                let g = field.gain * self.n_pan_inv;
+                let g = field.gain;
                 if g != 0.0 && !input.is_empty() && n_planes < MAX_FIELDS {
                     planes[n_planes] = (g, input);
                     n_planes += 1;
@@ -232,25 +259,35 @@ impl DiffuseFieldMixer {
         if n_planes == 0 {
             return;
         }
+        // Encode: a perfectly diffuse field lands on W only (spec §33).
+        for f in 0..frames {
+            let mut w = 0.0f32;
+            for &(g, input) in planes[..n_planes].iter() {
+                if let Some(&s) = input.get(f) {
+                    w += s * g;
+                }
+            }
+            self.bus[f * AMBISONIC_CHANNELS] = w * self.diffuse_boost;
+            self.bus[f * AMBISONIC_CHANNELS + 1] = 0.0;
+            self.bus[f * AMBISONIC_CHANNELS + 2] = 0.0;
+            self.bus[f * AMBISONIC_CHANNELS + 3] = 0.0;
+        }
+        // Decode into the ring at a common cursor, then read each speaker's
+        // decorrelated value into the output.
         let dl = self.delay_len;
         let mut w = self.write_pos;
+        let mut row = [0.0f32; MAX_FIELD_SPEAKERS];
         for f in 0..frames {
-            // Accumulate all fields into this frame's write slot.
+            let frame = [
+                self.bus[f * AMBISONIC_CHANNELS],
+                self.bus[f * AMBISONIC_CHANNELS + 1],
+                self.bus[f * AMBISONIC_CHANNELS + 2],
+                self.bus[f * AMBISONIC_CHANNELS + 3],
+            ];
+            self.decoder.decode_frame(&frame, &mut row);
             let slot = w;
-            for k in 0..n {
-                self.delay[k * dl + slot] = 0.0;
-            }
-            for &(g, input) in planes[..n_planes].iter() {
-                if f >= input.len() {
-                    continue;
-                }
-                let s = input[f] * g;
-                if s == 0.0 {
-                    continue;
-                }
-                for k in 0..n {
-                    self.delay[k * dl + slot] += s;
-                }
+            for (k, &v) in row.iter().enumerate().take(n) {
+                self.delay[k * dl + slot] = v;
             }
             // Read each speaker's decorrelated value into the output.
             for (k, &spk) in self.speakers.iter().enumerate() {
@@ -269,10 +306,13 @@ impl DiffuseFieldMixer {
     }
 }
 
+/// Pan-speaker ceiling for the field decorrelation rings (arbitrary arrays
+/// in practice stay well below this; the stack row is bounded by it).
+const MAX_FIELD_SPEAKERS: usize = 64;
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spatial::math::Vec3;
     use crate::spatial::scene::SpatialScene;
 
     #[test]
@@ -292,8 +332,8 @@ mod tests {
     #[test]
     fn delays_are_distinct_and_deterministic() {
         let layout = crate::spatial::speaker::SpeakerLayout::seven_point_one_four();
-        let mut m = DiffuseFieldMixer::new();
-        m.prepare(&layout, 48_000);
+        let mut m = AmbisonicFieldMixer::new();
+        m.prepare(&layout, 48_000).unwrap();
         assert_eq!(m.speakers.len(), 11, "7.1.4 → 11 pan speakers");
         let mut seen = std::collections::HashSet::new();
         for &d in &m.delay_samples {
@@ -307,10 +347,13 @@ mod tests {
     #[test]
     fn impulse_field_spreads_equal_power_at_distinct_delays() {
         // An impulse field must deliver 1/√N to every pan speaker, each at
-        // its own decorrelation delay — and nothing to the LFE.
+        // its own decorrelation delay — and nothing to the LFE. The impulse
+        // rides the ambisonic bus (W → decoder → ring), so this also pins
+        // the diffuse-compensation scaling: decoded per-speaker amplitude
+        // must be exactly 1/√N.
         let layout = crate::spatial::speaker::SpeakerLayout::seven_point_one_four();
-        let mut m = DiffuseFieldMixer::new();
-        m.prepare(&layout, 48_000);
+        let mut m = AmbisonicFieldMixer::new();
+        m.prepare(&layout, 48_000).unwrap();
         let n = m.speakers.len();
         let per = 1.0 / (n as f32).sqrt();
 
@@ -350,8 +393,8 @@ mod tests {
     #[test]
     fn field_gain_scales_energy() {
         let layout = crate::spatial::speaker::SpeakerLayout::five_point_one();
-        let mut m = DiffuseFieldMixer::new();
-        m.prepare(&layout, 48_000);
+        let mut m = AmbisonicFieldMixer::new();
+        m.prepare(&layout, 48_000).unwrap();
         let mut scene = SpatialScene::new(48_000);
         let id = scene.create_field().unwrap();
         scene.field_mut(id).unwrap().gain = 0.5;
@@ -367,6 +410,5 @@ mod tests {
             let got = out[m.delay_samples[k] * 6 + spk];
             assert!((got - per).abs() < 1e-4, "gain-scaled {got} vs {per}");
         }
-        let _ = Vec3::ZERO;
     }
 }

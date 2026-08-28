@@ -159,7 +159,7 @@ device's actual crystal (offset reported in ppm) instead of its nominal
 clock. Same-rate endpoints reuse the master's already-limited block
 untouched.
 
-### Spatial rendering (opt-in, v3.11.0 → v3.14.0)
+### Spatial rendering (opt-in, v3.11.0 → v3.15.0)
 
 ```
 SpatialScene (world space: listener + objects + beds + fields)
@@ -172,34 +172,49 @@ renderer::process_hybrid_block  (BasicPanner — equal-power pair pans, or
         │   objects: level chain (distance · directivity · occlusion) →
         │            pan solves (spread-aware) → smoothing → LFE send
         │   beds:    semantic-role routing onto matching speakers
-        │   fields:  equal-power diffuse spread + per-speaker decorrelation
+        │   fields:  ambisonic encode (W) → bus → decode → decorrelation
         ▼
 interleaved multichannel PCM (frames × layout channels)
         │
         ▼
 output domain ──▶ existing ring / endpoint path
+
+Ambisonic bus path (opt-in, v3.15.0)
+        │  FOA bus planes [W, Y, Z, X] (world orientation)
+        ▼
+AmbisonicRenderer: per-frame listener rotation → decode matrix
+        │            (Basic sampling or Max-rE policy) → calibration
+        ▼
+interleaved multichannel PCM
 ```
 
 Spatial rendering is **opt-in**: the conventional decode loop and DSP graph are
 untouched. A host builds a `SpatialScene` of objects (world positions, gains,
-spread, LFE send), prepares a renderer — `BasicPanner` (equal-power pairs) or
+spread, LFE send), prepares a renderer — `BasicPanner` (equal-power pairs),
 `VbapRenderer` (3-triplet VBAP for 3D layouts, 2D pair reduction for coplanar
-ones, nearest-speaker out-of-coverage fallback) — on a `SpeakerLayout`
-(stereo / 5.1 / 7.1 / 7.1.4 / custom), and renders decoded object planes into a
-caller-supplied interleaved multichannel buffer that can be pushed through the
-existing output core (`SampleSink::push_frames_interleaved`). The pipeline
+ones, nearest-speaker out-of-coverage fallback), or `AmbisonicRenderer` (a
+FOA bus decoded to any layout) — on a `SpeakerLayout` (stereo / 5.1 / 7.1 /
+7.1.4 / custom), and renders decoded object planes into a caller-supplied
+interleaved multichannel buffer that can be pushed through the existing
+output core (`SampleSink::push_frames_interleaved`). The object pipeline
 order is: `listener-space transform → distance model → directivity (source
 facing vs. listener angle) → occlusion (attenuation + low-pass) → pan
 coefficients (BasicPanner equal-power or VBAP basis solve with energy
 normalization; angular-region spread samples the direction cap) →
 coefficient smoothing → LFE send → channel calibration trim`. Beds route by
-semantic role onto matching speakers and fields spread diffusely with
-per-speaker decorrelation; all three classes sum into the same buffer via
-`process_hybrid_block` (the spatial mixer). The scene/level model and
-renderers live in `crate::spatial` (see [`ARCHITECTURE.md`](ARCHITECTURE.md));
-`tests/fidelity/spatial_panner.rs`, `tests/fidelity/spatial_vbap.rs`,
-`tests/fidelity/spatial_object_behavior.rs`, and
-`tests/fidelity/spatial_hybrid.rs` pin the contracts and
+semantic role onto matching speakers; fields encode into the ambisonic bus
+(`W` only — perfectly diffuse — with the `√N` diffuse compensation) and
+decode onto every pan speaker with per-speaker decorrelation; all three
+classes sum into the same buffer via `process_hybrid_block` (the spatial
+mixer). A host that already has an ambisonic bus can skip the scene and
+feed `AmbisonicRenderer` directly: the renderer rotates each frame by the
+listener orientation (world-fixed fields) and applies the decode matrix
+(`Basic` sampling or `MaxRe` policy) plus calibration. The scene/level model
+and renderers live in `crate::spatial` (see
+[`ARCHITECTURE.md`](ARCHITECTURE.md)); `tests/fidelity/spatial_panner.rs`,
+`tests/fidelity/spatial_vbap.rs`, `tests/fidelity/spatial_object_behavior.rs`,
+`tests/fidelity/spatial_hybrid.rs`, and
+`tests/fidelity/spatial_ambisonic.rs` pin the contracts and
 `realtime_allocation` verifies the render paths allocate nothing in steady
 state.
 

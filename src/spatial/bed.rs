@@ -326,7 +326,11 @@ mod tests {
         let refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
         let mut out = vec![0.0f32; 6];
         render_beds(&scene, &refs, 1, &mut out, &roles, &out_trim);
-        assert!((out[0] - 0.5 * 0.25).abs() < 1e-5, "FL gain × trim {}", out[0]);
+        assert!(
+            (out[0] - 0.5 * 0.25).abs() < 1e-5,
+            "FL gain × trim {}",
+            out[0]
+        );
         assert!((out[1] - 0.5).abs() < 1e-5, "FR gain only {}", out[1]);
     }
 }

@@ -129,7 +129,7 @@ src/
 │                             #   (CorrectionNode — per-channel partitioned
 │                             #   convolution bank, post-aux/pre-EQ)
 │
-├── spatial/                  # ── Spatial audio (Phases 8–11, opt-in) ──
+├── spatial/                  # ── Spatial audio (Phases 8–12, opt-in) ──
 │   ├── math.rs               # Vec3 / Quat + the single documented coordinate
 │   │                         #   system (+X right, +Y front, +Z up; metres /
 │   │                         #   radians / linear gain) — no linear-algebra dep
@@ -154,9 +154,17 @@ src/
 │   ├── bed.rs                # SpatialBed (channel-based content): semantic-
 │   │                         #   role routing onto matching output speakers,
 │   │                         #   bounded store, allocation-free render
-│   ├── field.rs              # SpatialField (diffuse content): equal-power
-│   │                         #   spread across pan speakers + per-speaker
-│   │                         #   decorrelation delay rings (DiffuseFieldMixer)
+│   ├── field.rs              # SpatialField (diffuse content): encoded into
+│   │                         #   the ambisonic bus (W only) + decoded onto
+│   │                         #   every pan speaker (√N diffuse compensation),
+│   │                         #   decorrelated per speaker via delay rings
+│   │                         #   (AmbisonicFieldMixer)
+│   ├── ambisonic.rs          # Ambisonics/HOA core: ACN/SN3D conventions,
+│   │                         #   sh_foa SH basis, encode_plane_wave, order-1
+│   │                         #   rotate_bus_frame, DecoderPolicy (Basic /
+│   │                         #   MaxRe), AmbisonicDecoder (per-speaker
+│   │                         #   matrix), AmbisonicRenderer (listener-
+│   │                         #   rotated FOA-bus decode to any layout)
 │   ├── render.rs             # SpatialRenderer trait (incl. HybridBlockInputs /
 │   │                         #   process_hybrid_block), RendererKind, RenderError
 │   ├── panner.rs             # BasicPanner — equal-power pair pans, per-path

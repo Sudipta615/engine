@@ -602,11 +602,13 @@ behavior keep every existing caller unchanged.
   Full BS.775 rematrixing stays the conventional PCM path's job — the bed
   path routes by identity.
 - **`spatial::field`** — [`SpatialField`] is a positionless diffuse source:
-  equal power (`1/√N`) across every pan speaker, decorrelated per speaker
-  through a deterministic 2.0–10.25 ms delay (distinct for ≤ 12 speakers),
-  LFE never involved. [`DiffuseFieldMixer`] owns preallocated per-speaker
-  rings written at a shared cursor; per-block work is a fixed stack-array
-  plane list + one accumulate + one delayed read per speaker.
+  encoded into the ambisonic bus (Phase 12) and decoded onto every pan
+  speaker with the `√N` diffuse compensation — equal power (`1/√N`),
+  decorrelated per speaker through a deterministic 2.0–10.25 ms delay
+  (distinct for ≤ 12 speakers), LFE never involved.
+  [`AmbisonicFieldMixer`] owns the preallocated per-block bus scratch and
+  per-speaker rings; per-block work is a fixed stack-array plane list +
+  one encode + one decode + one delayed read per speaker.
 - **Hybrid mixer** — `SpatialRenderer::process_hybrid_block(scene,
   &HybridBlockInputs { objects, beds, fields }, frames, out)`; the trait
   default forwards to `process_block`, `process_block` delegates to the
@@ -624,9 +626,61 @@ with distinct decorrelation arrivals and silent LFE, deterministic finite
 objects+beds+fields mixing, missing-plane tolerance, and the panner's
 hybrid mix; plus unit suites in `bed.rs`/`field.rs`.
 
-**Unblocks (Horizon).** Ambisonics/HOA (fields gain a proper encoded
-representation), room/reflections (occlusion's `AcousticTransmission` is
-the transmission seam), HRTF/SOFA/binaural, Doppler (per-object `velocity`
-+ `source_orientation` are the seams), head tracking, scene file format, and
-eventually a `SpatialNode` in the production graph.
+**Unblocks (Horizon).** Ambisonics/HOA (done — Phase 12), room/reflections
+(occlusion's `AcousticTransmission` is the transmission seam),
+HRTF/SOFA/binaural, Doppler (per-object `velocity` + `source_orientation`
+are the seams), head tracking, scene file format, and eventually a
+`SpatialNode` in the production graph.
+
+## Phase 12 — Ambisonics / HOA (v3.15.0) — **Implemented**
+
+**Intent.** Give the spatial layer a real sound-field representation (spec
+Part VI §32–37, §55): a direction-independent **ambisonic bus** that any
+spatial source encodes into and any speaker layout decodes from, so the same
+encoded field renders to stereo, 5.1, 7.1.4, or a custom array without
+re-authoring. The diffuse-field path (Phase 11) is upgraded to ride the
+encode → bus → decode pipeline, and a standalone `AmbisonicRenderer`
+services hosts that want to feed a FOA bus directly.
+
+### Key mechanisms
+
+- **FOA math core** (`spatial::ambisonic`) — documented conventions: ACN
+  ordering `[W, Y, Z, X]`, SN3D normalization (`W = 1`, first order =
+  `√3` × direction), real SH basis (`sh_foa`), plane-wave encoder
+  (`encode_plane_wave`, defensive normalization — a zero direction encodes
+  silence, never NaN), and order-1 bus rotation (`rotate_bus_frame`: `W`
+  invariant, `X Y Z` rotate like direction vectors, §34).
+- **Decoder** (`AmbisonicDecoder`) — `DecoderPolicy::Basic` is the sampling
+  decoder `D = Y(S)ᵀ/N` (a plane wave from `d` lands on speaker `s` as
+  `(1 + 3·cosθ)/N`); `DecoderPolicy::MaxRe` applies the documented FOA
+  `a1 = √3/2` weights to narrow the lobe. `prepare` builds the per-speaker
+  matrix and rejects empty / LFE-only layouts; `process_bus` (and the
+  per-frame `decode_frame`) are allocation-free.
+- **`AmbisonicRenderer`** (§23) — decodes a 4-plane `[W, Y, Z, X]` bus via
+  `process_block`, applying the listener orientation per frame (world-
+  encoded fields stay world-fixed, §48) and per-speaker calibration.
+  `RendererKind::Ambisonic`.
+- **Field-path upgrade** — `AmbisonicFieldMixer` replaces
+  `DiffuseFieldMixer`: field → encoder (`W` only) → bus → decoder →
+  per-speaker decorrelation rings. The `√N` **diffuse compensation** (the
+  sampling decoder maps unit `W` to `1/N` per speaker, energy `1/N`; a
+  diffuse field must decode at unit energy, so `W` is boosted by `√N`)
+  keeps the Phase-11 equal-power `1/√N` behavior and unit energy exactly.
+
+**Realtime discipline.** The renderer's per-frame rotation and the
+decode matrix run on preallocated scratch; the field mixer's bus scratch
+and rings are preallocated at `prepare` — new `realtime_allocation` test
+(10k blocks, rotating listener, MaxRe, 7.1.4, 0 allocs).
+
+**Acceptance (spec-first).** `tests/fidelity/spatial_ambisonic.rs` —
+SN3D/ACN convention pins, plane-wave round-trip to stereo / 5.1 / 7.1.4
+from one bus (speaker independence), max-rE lobe narrowing, world-fixed
+listener rotation, W-only equal-power decode with silent LFE, a 720-step
+rotation continuity sweep, and determinism / unprepared-use rejection; plus
+unit suites in `ambisonic.rs` / `field.rs`.
+
+**Unblocks (Horizon).** Higher orders (order-N SH basis + per-order decoder
+weights + full rotation — the documented §34 extension), room/reflections
+(late field encodes into the bus), HRTF/SOFA/binaural, head tracking, scene
+file format, and eventually a `SpatialNode` in the production graph.
 

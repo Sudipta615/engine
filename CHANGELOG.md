@@ -2,6 +2,70 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.15.0] — 2026-08-28
+
+Ambisonics / First-Order Ambisonics (roadmap Phase 12): the engine's
+sound-field representation. A `spatial::ambisonic` module brings a
+documented FOA core — ACN ordering `[W, Y, Z, X]`, SN3D normalization, real
+spherical-harmonic basis, plane-wave encoder, order-1 bus rotation, and a
+sampling ("basic") decoder with a max-rE policy — plus a standalone
+`AmbisonicRenderer` that decodes a 4-plane FOA bus onto *any* speaker
+layout, so the same encoded bus renders to stereo, 5.1, 7.1.4, or a custom
+array without re-authoring. The diffuse-field path now genuinely rides the
+pipeline: `AmbisonicFieldMixer` encodes fields into a per-block FOA bus
+(perfectly diffuse → `W` only), decodes through the real matrix, and
+keeps the per-speaker decorrelation delays — the `√N` diffuse compensation
+restores unit energy for diffuse content.
+
+### Added
+
+- **FOA math core** (`spatial::ambisonic`): `sh_foa` real-SH basis and
+  `encode_plane_wave` (defensive normalization; a zero direction encodes
+  silence, never NaN), `rotate_bus_frame` (order-1 rotation: `W` invariant,
+  `X Y Z` rotate like direction vectors), `channel_count` / `AMBISONIC_ORDER`
+  so higher orders are a table + rotation extension (§34).
+- **Decoder** (`AmbisonicDecoder`): `DecoderPolicy::Basic` — the sampling
+  decoder `D = Y(S)ᵀ/N`, so a plane wave from `d` lands on speaker `s` as
+  `(1 + 3·cosθ)/N` — and `DecoderPolicy::MaxRe` (documented FOA `a1 = √3/2`
+  lobe narrowing). `prepare` builds the per-speaker matrix and rejects
+  empty / LFE-only layouts; `process_bus` and the per-frame `decode_frame`
+  are allocation-free.
+- **Standalone `AmbisonicRenderer`** (§23): decodes an interleaved `[W, Y,
+  Z, X]` bus (four planes via `process_block`) into the active layout,
+  applying the listener's orientation per frame (so a world-encoded field
+  stays world-fixed as the listener turns, §48) and per-speaker
+  calibration. Registered as `RendererKind::Ambisonic`.
+- **Diffuse-field upgrade** (`AmbisonicFieldMixer`, replaces
+  `DiffuseFieldMixer`): the field path now goes field → encoder → FOA bus →
+  decoder → per-speaker decorrelation rings. `W` is boosted by `√N` (the
+  documented diffuse compensation) so a diffuse field decodes at unit
+  energy with the equal-power `1/√N` spread, exactly preserving the
+  previous phase's behavior; LFE never receives field energy.
+- **Realtime**: bus encode/decode and listener rotation run on preallocated
+  scratch — new `realtime_allocation` test (10k blocks, rotating listener,
+  `MaxRe`, 7.1.4, 0 allocs); the field mixer's bus path is exercised by the
+  existing hybrid zero-alloc test.
+- **Public surface**: `AmbisonicDecoder`, `AmbisonicRenderer`,
+  `DecoderPolicy`, `sh_foa`, `encode_plane_wave`, `rotate_bus_frame`
+  exported from `spatial` and the `prelude`; `RendererKind::Ambisonic`.
+- **Acceptance suite**: `tests/fidelity/spatial_ambisonic.rs` — SN3D/ACN
+  convention pins, plane-wave round-trip to stereo / 5.1 / 7.1.4 from one
+  bus (speaker independence), max-rE lobe narrowing, world-fixed listener
+  rotation, W-only equal-power decode with silent LFE, a 720-step rotation
+  continuity sweep, and determinism / unprepared-use rejection.
+
+### Fixed
+
+- n/a
+
+### Changed
+
+- `DiffuseFieldMixer` → `AmbisonicFieldMixer`; `prepare` now returns
+  `Result` (a degenerate layout surfaces as an error instead of silently
+  disabling fields). Field behavior is unchanged (equal power, distinct
+  deterministic delays, silent LFE, unit energy).
+- `engine` and `config` versions remain synchronized at `3.15.0`.
+
 ## [3.14.0] — 2026-08-28
 
 Hybrid beds & fields (roadmap Phase 11): the spatial scene's second and

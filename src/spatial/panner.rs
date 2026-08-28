@@ -39,7 +39,7 @@ use crate::spatial::object::MAX_SPATIAL_OBJECTS;
 
 use super::bed::render_beds;
 use super::directivity::listener_angle_rad;
-use super::field::DiffuseFieldMixer;
+use super::field::AmbisonicFieldMixer;
 use super::level::AirAbsorption;
 use super::math::Vec3;
 use super::occlusion::OcclusionState;
@@ -89,7 +89,7 @@ pub struct BasicPanner {
     /// Output-speaker semantic roles (index → ChannelId) for bed routing.
     bed_roles: Vec<(usize, ChannelId)>,
     /// Diffuse-field mixer (per-speaker decorrelation delay rings).
-    fields: DiffuseFieldMixer,
+    fields: AmbisonicFieldMixer,
 
     sample_rate: f32,
     prepared: bool,
@@ -110,7 +110,7 @@ impl BasicPanner {
             sm_lfe: vec![0.0; MAX_SPATIAL_OBJECTS],
             occ: vec![OcclusionState::default(); MAX_SPATIAL_OBJECTS],
             bed_roles: Vec::new(),
-            fields: DiffuseFieldMixer::new(),
+            fields: AmbisonicFieldMixer::new(),
             sample_rate: 44_100.0,
             prepared: false,
         }
@@ -190,7 +190,7 @@ impl BasicPanner {
             .enumerate()
             .filter_map(|(idx, s)| s.role.map(|r| (idx, r)))
             .collect();
-        self.fields.prepare(layout, sample_rate);
+        self.fields.prepare(layout, sample_rate)?;
         self.sample_rate = sample_rate as f32;
         self.prepared = true;
         Ok(())

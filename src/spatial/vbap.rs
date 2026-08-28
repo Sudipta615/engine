@@ -47,7 +47,7 @@ use crate::spatial::object::MAX_SPATIAL_OBJECTS;
 
 use super::bed::render_beds;
 use super::directivity::listener_angle_rad;
-use super::field::DiffuseFieldMixer;
+use super::field::AmbisonicFieldMixer;
 use super::level::AirAbsorption;
 use super::math::Vec3;
 use super::occlusion::OcclusionState;
@@ -114,7 +114,7 @@ pub struct VbapRenderer {
     /// Output-speaker semantic roles (index → ChannelId) for bed routing.
     bed_roles: Vec<(usize, ChannelId)>,
     /// Diffuse-field mixer (per-speaker decorrelation delay rings).
-    fields: DiffuseFieldMixer,
+    fields: AmbisonicFieldMixer,
     smooth: f32,
     air_absorption: AirAbsorption,
     sample_rate: f32,
@@ -141,7 +141,7 @@ impl VbapRenderer {
             sm_lfe: vec![0.0; MAX_SPATIAL_OBJECTS],
             occ: vec![OcclusionState::default(); MAX_SPATIAL_OBJECTS],
             bed_roles: Vec::new(),
-            fields: DiffuseFieldMixer::new(),
+            fields: AmbisonicFieldMixer::new(),
             smooth: one_pole_factor(smooth_ms),
             air_absorption: AirAbsorption::default(),
             sample_rate: 44_100.0,
@@ -224,7 +224,7 @@ impl VbapRenderer {
             .enumerate()
             .filter_map(|(idx, s)| s.role.map(|r| (idx, r)))
             .collect();
-        self.fields.prepare(layout, sample_rate);
+        self.fields.prepare(layout, sample_rate)?;
         self.prepared = true;
         Ok(())
     }
