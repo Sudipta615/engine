@@ -53,6 +53,7 @@ use super::math::Vec3;
 use super::occlusion::OcclusionState;
 use super::panner::DEFAULT_SMOOTHING_MS;
 use super::render::{HybridBlockInputs, RenderError, SpatialRenderer};
+use super::room::{EarlyReflections, ListenerImage, RoomLateField, MAX_IMAGES};
 use super::scene::{ListenerTransform, SpatialScene};
 use super::speaker::SpeakerLayout;
 use super::spread::{add_gain, normalize_gains, ring_directions, MAX_SPREAD_GAINS, RING_SAMPLES};
@@ -115,6 +116,12 @@ pub struct VbapRenderer {
     bed_roles: Vec<(usize, ChannelId)>,
     /// Diffuse-field mixer (per-speaker decorrelation delay rings).
     fields: AmbisonicFieldMixer,
+    /// Room early reflections (per-object delay rings + tap smoothing).
+    room_er: EarlyReflections,
+    /// Room late field (Schroeder tail feeding the ambisonic bus).
+    room_late: RoomLateField,
+    /// Block-sized scratch for the late-field plane.
+    late_scratch: Vec<f32>,
     smooth: f32,
     air_absorption: AirAbsorption,
     sample_rate: f32,
@@ -142,6 +149,9 @@ impl VbapRenderer {
             occ: vec![OcclusionState::default(); MAX_SPATIAL_OBJECTS],
             bed_roles: Vec::new(),
             fields: AmbisonicFieldMixer::new(),
+            room_er: EarlyReflections::new(),
+            room_late: RoomLateField::new(),
+            late_scratch: vec![0.0; MAX_AUDIO_BLOCK_FRAMES],
             smooth: one_pole_factor(smooth_ms),
             air_absorption: AirAbsorption::default(),
             sample_rate: 44_100.0,
@@ -225,6 +235,9 @@ impl VbapRenderer {
             .filter_map(|(idx, s)| s.role.map(|r| (idx, r)))
             .collect();
         self.fields.prepare(layout, sample_rate)?;
+        self.room_er
+            .prepare(speaker_count, sample_rate, self.smooth);
+        self.room_late.prepare(sample_rate);
         self.prepared = true;
         Ok(())
     }
@@ -444,6 +457,24 @@ impl SpatialRenderer for VbapRenderer {
             &self.bed_roles,
             &self.out_trim,
         );
+        // Room late field (spec §55): the Schroeder tail encodes into the
+        // ambisonic bus and decodes as a diffuse source. Skipped when the
+        // room is off or the wet mix is zero (bit-exact).
+        if scene.room.enabled && scene.room.late_mix > 0.0 {
+            let n = self.room_late.process(
+                &scene.room,
+                self.room_er.send(),
+                frames,
+                &mut self.late_scratch,
+            );
+            self.fields.render_extra(
+                &self.late_scratch[..n],
+                scene.room.late_mix,
+                frames,
+                out,
+                &self.out_trim,
+            );
+        }
         self.fields
             .render(scene, inputs.fields, frames, out, &self.out_trim);
         Ok(())
@@ -465,7 +496,14 @@ impl VbapRenderer {
             *sample = 0.0;
         }
         let xf = ListenerTransform::from_listener(&scene.listener);
+        let room = &scene.room;
+        let room_on = room.enabled && room.reflection_order >= 1;
+        if room_on {
+            self.room_er.begin_block(frames);
+        }
         let mut gains = [(0usize, 0.0f32); MAX_SPREAD_GAINS];
+        let mut rpairs = [(0usize, 0.0f32); MAX_SPREAD_GAINS];
+        let mut imgs = [ListenerImage::ZERO; MAX_IMAGES];
         for (obj_ordinal, (slot, obj)) in scene.objects.iter_enabled().enumerate() {
             let obj_idx = slot;
             let local = xf.apply_to_point(obj.position);
@@ -528,6 +566,38 @@ impl VbapRenderer {
                 self.sm[row + lfe] = next_lfe;
             }
 
+            // Room path (spec §49): early reflections as virtual sources +
+            // room-send accumulation for the late field. The tap list is
+            // cleared for every object when the room is active (even at
+            // room_send 0) so stale taps from a previous block never fire.
+            if room_on {
+                self.room_er.begin_object(obj_idx);
+            }
+            if room_on && obj.room_send > 0.0 {
+                let n_img = self.room_er.images_for_object(
+                    room,
+                    scene.listener.position,
+                    obj.position,
+                    &mut imgs,
+                );
+                for (img_i, img) in imgs.iter().take(n_img).enumerate() {
+                    let ldir = xf.apply_to_direction(img.dir);
+                    let dg = obj
+                        .distance_model
+                        .distance_gain(img.dist, obj.reference_distance);
+                    self.solve(ldir, &mut rpairs);
+                    for &(spk, g) in rpairs.iter() {
+                        if g == 0.0 {
+                            continue;
+                        }
+                        let target = obj.gain * obj.room_send * img.coeff * dg * g;
+                        if target != 0.0 {
+                            self.room_er.add_tap(obj_idx, img_i, spk, img.delay, target);
+                        }
+                    }
+                }
+            }
+
             let input = inputs.get(obj_ordinal).copied().unwrap_or(&[]);
             if input.len() < frames {
                 continue;
@@ -555,7 +625,23 @@ impl VbapRenderer {
                         out[frame * n_spk + lfe] += s * g;
                     }
                 }
+                // Room: store this frame in the object's reflection ring,
+                // fire the delayed taps, and accumulate the late-field send.
+                if room_on {
+                    self.room_er.object_frame(
+                        obj_idx,
+                        s,
+                        obj.gain * obj.room_send,
+                        frame,
+                        n_spk,
+                        out,
+                        &self.out_trim,
+                    );
+                }
             }
+        }
+        if room_on {
+            self.room_er.end_block(frames);
         }
     }
 }

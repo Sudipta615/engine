@@ -681,6 +681,58 @@ unit suites in `ambisonic.rs` / `field.rs`.
 
 **Unblocks (Horizon).** Higher orders (order-N SH basis + per-order decoder
 weights + full rotation — the documented §34 extension), room/reflections
-(late field encodes into the bus), HRTF/SOFA/binaural, head tracking, scene
-file format, and eventually a `SpatialNode` in the production graph.
+(done — Phase 13), HRTF/SOFA/binaural, head tracking, scene file format, and
+eventually a `SpatialNode` in the production graph.
+
+## Phase 13 — Room acoustics: reflections + late field (v3.16.0) — **Implemented**
+
+**Intent.** Give the scene an acoustic space (spec §49): participating
+objects become small acoustic events — image-source early reflections plus
+a Schroeder late field whose output **encodes into the ambisonic bus** (§55)
+and decodes as a diffuse source. Occlusion's `AcousticTransmission` is the
+transmission seam (§43–44). Opt-in at both levels: `Room::default()` is
+disabled (bit-exact) and objects participate via their `room_send` — the
+seam the scene model declared at Phase 8.
+
+### Key mechanisms
+
+- **`spatial::room::Room`** — axis-aligned box (width/depth/height), one
+  wall absorption coefficient (per-wall is a documented seam), reflection
+  order (1 | 2), late RT60, late wet mix. Stored on `SpatialScene`.
+- **Image sources** (`image_sources`) — BFS reflection across the six
+  walls with deduplication: order 1 → 6 images, order 2 → 24 distinct
+  (two crossings on one axis, one each on two). Each image carries the
+  product of the crossed walls' `(1 − absorption)` coefficients.
+- **Early reflections** (`EarlyReflections`) — per-object delay rings
+  (≈171 ms), a per-(object, image, speaker) smoothed tap matrix, and a
+  room-send accumulator. Each renderer solves every image with its **own**
+  pan machinery (equal-power pairs / 3-triplet VBAP), applies distance
+  attenuation and the coefficient, and delays the tap by the excess path
+  `(dist_image − dist_direct)/c`. The same low-passed (occluded) sample
+  that feeds the direct path feeds the reflections. LFE never participates.
+- **Late field** (`RoomLateField`) — Schroeder tail (4 parallel combs with
+  gains derived exactly from RT60, 2 serial allpasses, `(1 − g)`
+  normalization for boundedness) fed by the accumulated room send, then
+  `AmbisonicFieldMixer::render_extra`: encode → bus → `√N`-compensated
+  decode → per-speaker decorrelation (§55).
+
+**Realtime discipline.** Image enumeration is per-object per-block pure
+arithmetic into fixed stack arrays; rings, tap matrix, and tail buffers are
+preallocated at `prepare` — the per-frame hot path is one ring store + one
+delayed read per tap. New `realtime_allocation` test: order-2 worst case
+(24 images/object, occluded + directional objects, wet 0.7), 10k blocks,
+0 allocs.
+
+**Acceptance (spec-first).** `tests/fidelity/spatial_room.rs` — the
+predicted 280-sample reflection arrival on both renderers (2 m excess path
+÷ 343 m/s), coefficient-exact tap amplitudes, absorption monotonicity,
+order-2 energy growth, room-disabled bit-exact restoration, dry-object
+bit-exactness, diffuse LFE-free late field over 12 blocks, `late_mix`
+monotonicity, and deterministic finite hybrid rendering; plus unit suites
+in `room.rs` / `field.rs` (including an RT60 measurement of the tail within
+±15%).
+
+**Unblocks (Horizon).** Higher orders, HRTF/SOFA/binaural (the late field's
+decode seam generalizes to per-ear filters), head tracking, scene file
+format, and eventually a `SpatialNode` in the production graph.
 

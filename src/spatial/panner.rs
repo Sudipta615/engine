@@ -44,6 +44,7 @@ use super::level::AirAbsorption;
 use super::math::Vec3;
 use super::occlusion::OcclusionState;
 use super::render::{HybridBlockInputs, RenderError, SpatialRenderer};
+use super::room::{EarlyReflections, ListenerImage, RoomLateField, MAX_IMAGES};
 use super::scene::{ListenerTransform, SpatialScene};
 use super::speaker::SpeakerLayout;
 use super::spread::{add_gain, normalize_gains, ring_directions, MAX_SPREAD_GAINS, RING_SAMPLES};
@@ -90,6 +91,12 @@ pub struct BasicPanner {
     bed_roles: Vec<(usize, ChannelId)>,
     /// Diffuse-field mixer (per-speaker decorrelation delay rings).
     fields: AmbisonicFieldMixer,
+    /// Room early reflections (per-object delay rings + tap smoothing).
+    room_er: EarlyReflections,
+    /// Room late field (Schroeder tail feeding the ambisonic bus).
+    room_late: RoomLateField,
+    /// Block-sized scratch for the late-field plane.
+    late_scratch: Vec<f32>,
 
     sample_rate: f32,
     prepared: bool,
@@ -111,6 +118,9 @@ impl BasicPanner {
             occ: vec![OcclusionState::default(); MAX_SPATIAL_OBJECTS],
             bed_roles: Vec::new(),
             fields: AmbisonicFieldMixer::new(),
+            room_er: EarlyReflections::new(),
+            room_late: RoomLateField::new(),
+            late_scratch: vec![0.0; MAX_AUDIO_BLOCK_FRAMES],
             sample_rate: 44_100.0,
             prepared: false,
         }
@@ -191,6 +201,9 @@ impl BasicPanner {
             .filter_map(|(idx, s)| s.role.map(|r| (idx, r)))
             .collect();
         self.fields.prepare(layout, sample_rate)?;
+        self.room_er
+            .prepare(speaker_count, sample_rate, self.smooth);
+        self.room_late.prepare(sample_rate);
         self.sample_rate = sample_rate as f32;
         self.prepared = true;
         Ok(())
@@ -288,7 +301,14 @@ impl BasicPanner {
         }
         let xf = ListenerTransform::from_listener(&scene.listener);
 
+        let room = &scene.room;
+        let room_on = room.enabled && room.reflection_order >= 1;
+        if room_on {
+            self.room_er.begin_block(frames);
+        }
         let mut pairs = [(0usize, 0.0f32); MAX_SPREAD_GAINS];
+        let mut rpairs = [(0usize, 0.0f32); MAX_SPREAD_GAINS];
+        let mut imgs = [ListenerImage::ZERO; MAX_IMAGES];
         // Iterate enabled objects in store order, zipping each with the
         // matching input plane by ordinal (`iter_enabled` yields `(slot, obj)`
         // and never allocates).
@@ -360,6 +380,38 @@ impl BasicPanner {
                 self.sm[row + lfe] = next_lfe;
             }
 
+            // Room path (spec §49): early reflections as virtual sources +
+            // room-send accumulation for the late field. The tap list is
+            // cleared for every object when the room is active (even at
+            // room_send 0) so stale taps from a previous block never fire.
+            if room_on {
+                self.room_er.begin_object(obj_idx);
+            }
+            if room_on && obj.room_send > 0.0 {
+                let n_img = self.room_er.images_for_object(
+                    room,
+                    scene.listener.position,
+                    obj.position,
+                    &mut imgs,
+                );
+                for (img_i, img) in imgs.iter().take(n_img).enumerate() {
+                    let ldir = xf.apply_to_direction(img.dir);
+                    let dg = obj
+                        .distance_model
+                        .distance_gain(img.dist, obj.reference_distance);
+                    self.solve_pan(ldir.azimuth_rad(), &mut rpairs);
+                    for &(spk, g) in rpairs.iter() {
+                        if g == 0.0 {
+                            continue;
+                        }
+                        let target = obj.gain * obj.room_send * img.coeff * dg * g;
+                        if target != 0.0 {
+                            self.room_er.add_tap(obj_idx, img_i, spk, img.delay, target);
+                        }
+                    }
+                }
+            }
+
             // Bake into the interleaved output, applying trim per channel.
             // `inputs` is indexed by the enabled-object ordinal; smoothing
             // state is keyed by the object's stable slot (`obj_idx`).
@@ -392,7 +444,23 @@ impl BasicPanner {
                         out[frame * n_spk + lfe] += s * g;
                     }
                 }
+                // Room: store this frame in the object's reflection ring,
+                // fire the delayed taps, and accumulate the late-field send.
+                if room_on {
+                    self.room_er.object_frame(
+                        obj_idx,
+                        s,
+                        obj.gain * obj.room_send,
+                        frame,
+                        n_spk,
+                        out,
+                        &self.out_trim,
+                    );
+                }
             }
+        }
+        if room_on {
+            self.room_er.end_block(frames);
         }
     }
 }
@@ -451,6 +519,24 @@ impl SpatialRenderer for BasicPanner {
             &self.bed_roles,
             &self.out_trim,
         );
+        // Room late field (spec §55): the Schroeder tail encodes into the
+        // ambisonic bus and decodes as a diffuse source. Skipped when the
+        // room is off or the wet mix is zero (bit-exact).
+        if scene.room.enabled && scene.room.late_mix > 0.0 {
+            let n = self.room_late.process(
+                &scene.room,
+                self.room_er.send(),
+                frames,
+                &mut self.late_scratch,
+            );
+            self.fields.render_extra(
+                &self.late_scratch[..n],
+                scene.room.late_mix,
+                frames,
+                out,
+                &self.out_trim,
+            );
+        }
         self.fields
             .render(scene, inputs.fields, frames, out, &self.out_trim);
         Ok(())

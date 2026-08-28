@@ -14,6 +14,7 @@ use super::bed::{BedId, SpatialBed, SpatialBedStore};
 use super::field::{FieldId, SpatialField, SpatialFieldStore};
 use super::math::{Quat, Vec3};
 use super::object::{ObjectAudioRef, ObjectId, SpatialAudioObject, SpatialObjectStore};
+use super::room::Room;
 use crate::decode::ChannelLayout;
 
 /// The listener: the reference frame for spatial perception.
@@ -92,12 +93,13 @@ impl ListenerTransform {
     }
 }
 
-/// The scene: listener + objects + beds + fields (+ future room, declared
-/// seam). The three content classes (spec §13) are independent of the output
-/// speaker count: objects are point/extended sources, beds are channel-based
-/// content, fields are diffuse environments. The room is a **documented
-/// future seam** (§49) and deliberately not a field yet (spec §136). The
-/// renderer reads the scene read-only.
+/// The scene: listener + objects + beds + fields + room. The three content
+/// classes (spec §13) are independent of the output speaker count: objects
+/// are point/extended sources, beds are channel-based content, fields are
+/// diffuse environments. The room (§49) is an acoustic space the renderers
+/// apply to participating objects; it is deliberately **not** a field (spec
+/// §136) — it is a scene-level structure, disabled by default so existing
+/// scenes render bit-identically. The renderer reads the scene read-only.
 #[derive(Debug, Clone)]
 pub struct SpatialScene {
     pub listener: Listener,
@@ -106,6 +108,8 @@ pub struct SpatialScene {
     pub beds: SpatialBedStore,
     /// Diffuse fields (spec §13.3).
     pub fields: SpatialFieldStore,
+    /// Room acoustics (spec §49): early reflections + late field.
+    pub room: Room,
     pub sample_rate: u32,
 }
 
@@ -116,6 +120,7 @@ impl SpatialScene {
             objects: SpatialObjectStore::new(),
             beds: SpatialBedStore::new(),
             fields: SpatialFieldStore::new(),
+            room: Room::default(),
             sample_rate,
         }
     }

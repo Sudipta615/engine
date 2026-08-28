@@ -56,6 +56,11 @@
 //! - `render.rs` — [`SpatialRenderer`] trait (incl. [`HybridBlockInputs`] /
 //!   `process_hybrid_block`), [`RenderError`], [`RendererKind`] (§22, §37,
 //!   §106).
+//! - `room.rs` — [`Room`] (spec §49): image-source early reflections
+//!   ([`EarlyReflections`], per-object delay rings + tap smoothing) and the
+//!   [`RoomLateField`] Schroeder tail whose output encodes into the
+//!   ambisonic bus (§55); occlusion's `AcousticTransmission` is the
+//!   transmission seam (§43–44).
 //! - `panner.rs` — [`BasicPanner`] (§24–30, §46, §56–57).
 //! - `vbap.rs` — [`VbapRenderer`]: 3-triplet VBAP, Delaunay region
 //!   preprocessor, out-of-coverage fallback (§21, §25–29).
@@ -76,14 +81,13 @@
 //!   ([`BasicPanner`]); VBAP energy-normalizes solved triplet gains instead
 //!   ([`VbapRenderer`], §29).
 //!
-//! ## Room / binaural — future seams
+//! ## Binaural — future seams
 //!
-//! The room (early reflections + late reverb), higher-order Ambisonics (the
-//! order-1 basis + per-order decoder weights are the documented §34
-//! extension), HRTF/binaural, head tracking and the scene file format are
-//! explicitly **not** part of these phases (per the spec's dependency order,
-//! Part XXVI); the data model is shaped so they slot in without redesign
-//! (§136).
+//! Higher-order Ambisonics (the order-1 basis + per-order decoder weights
+//! are the documented §34 extension), HRTF/binaural, head tracking and the
+//! scene file format are explicitly **not** part of these phases (per the
+//! spec's dependency order, Part XXVI); the data model is shaped so they
+//! slot in without redesign (§136).
 //!
 //! The spatial layer contains **no** Dolby/DTS codecs, bitstreams, metadata,
 //! or trademarks — it is an independent implementation (§3, §115).
@@ -98,6 +102,7 @@ pub mod object;
 pub mod occlusion;
 pub mod panner;
 pub mod render;
+pub mod room;
 pub mod scene;
 pub mod speaker;
 pub mod spread;
@@ -118,5 +123,6 @@ pub use object::{
 pub use occlusion::{AcousticTransmission, Occlusion};
 pub use panner::BasicPanner;
 pub use render::{HybridBlockInputs, RenderError, RendererKind, SpatialRenderer, VbapRenderer};
+pub use room::{EarlyReflections, Room, RoomLateField};
 pub use scene::{Listener, ListenerTransform, SpatialScene};
 pub use speaker::{LayoutCalibration, Speaker, SpeakerId, SpeakerLayout};

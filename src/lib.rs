@@ -56,7 +56,7 @@ pub mod prelude {
             AmbisonicDecoder, AmbisonicRenderer, BasicPanner, BedId, CustomDirectivity,
             DecoderPolicy, Directivity, DistanceModel, FieldId, HybridBlockInputs,
             LayoutCalibration, Listener, ObjectAudioRef, ObjectId, Occlusion, Quat, RenderError,
-            RendererKind, SpatialAudioObject, SpatialBed, SpatialBedStore, SpatialField,
+            RendererKind, Room, SpatialAudioObject, SpatialBed, SpatialBedStore, SpatialField,
             SpatialFieldStore, SpatialObjectStore, SpatialRenderer, SpatialScene, Speaker,
             SpeakerId, SpeakerLayout, VbapRenderer, Vec3,
         },

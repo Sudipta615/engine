@@ -801,3 +801,85 @@ fn realtime_ambisonic_renderer_does_not_allocate() {
         "steady-state ambisonic renderer processing allocated on the audio path"
     );
 }
+
+/// Room acoustics (Phase 8, spec §49/§55) must uphold the same
+/// zero-allocation contract inside `process_hybrid_block`: the image-source
+/// enumeration is pure arithmetic into fixed stack arrays, the reflection
+/// rings/tap matrix are preallocated, and the Schroeder tail writes into a
+/// preallocated scratch — worst case is order-2 (24 images per object) with
+/// the late field active.
+#[test]
+fn realtime_spatial_room_does_not_allocate() {
+    let mut scene = SpatialScene::new(48_000);
+    scene.listener.set_position(Vec3::new(6.0, 5.0, 1.5));
+    scene.room = engine::spatial::Room {
+        enabled: true,
+        width: 12.0,
+        depth: 10.0,
+        height: 3.0,
+        absorption: 0.3,
+        reflection_order: 2, // worst case: 24 image sources per object
+        rt60_ms: 800.0,
+        late_mix: 0.7,
+        speed_of_sound: 343.0,
+    };
+    // Several participating objects (one occluded, one directional).
+    for (i, pos) in [
+        Vec3::new(1.0, 5.0, 1.5),
+        Vec3::new(11.0, 5.0, 1.5),
+        Vec3::new(6.0, 1.0, 1.5),
+        Vec3::new(6.0, 9.0, 1.5),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let id = scene.create_audio_object(*pos).expect("add object");
+        let obj = scene.object_mut(id).unwrap();
+        obj.room_send = 1.0;
+        if i == 0 {
+            obj.occlusion = engine::spatial::Occlusion {
+                amount: 0.5,
+                ..Default::default()
+            };
+        }
+        if i == 1 {
+            obj.directivity = engine::spatial::Directivity::Cardioid;
+        }
+    }
+
+    let layout = SpeakerLayout::seven_point_one_four();
+    let mut vbap = VbapRenderer::new();
+    vbap.prepare(&layout, 48_000).unwrap();
+
+    const FRAMES: usize = 128;
+    let object_planes: Vec<Vec<f32>> = (0..4).map(|_| vec![0.3f32; FRAMES]).collect();
+    let object_refs: Vec<&[f32]> = object_planes.iter().map(|v| v.as_slice()).collect();
+    let inputs = engine::spatial::render::HybridBlockInputs {
+        objects: &object_refs,
+        beds: &[],
+        fields: &[],
+    };
+    let mut out = vec![0.0f32; 12 * FRAMES];
+
+    // Warm up: fill the reflection rings, converge the tap smoothing, and
+    // ring the tail before arming the allocator.
+    vbap.process_hybrid_block(&scene, &inputs, FRAMES, &mut out)
+        .unwrap();
+    out.fill(0.0);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for _ in 0..10_000 {
+        vbap.process_hybrid_block(&scene, &inputs, FRAMES, &mut out)
+            .unwrap();
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocations = THREAD_ALLOCS.with(|c| c.get());
+
+    assert_eq!(
+        allocations, 0,
+        "steady-state room (reflections + late field) processing allocated on the audio path"
+    );
+}

@@ -129,7 +129,7 @@ src/
 │                             #   (CorrectionNode — per-channel partitioned
 │                             #   convolution bank, post-aux/pre-EQ)
 │
-├── spatial/                  # ── Spatial audio (Phases 8–12, opt-in) ──
+├── spatial/                  # ── Spatial audio (Phases 8–13, opt-in) ──
 │   ├── math.rs               # Vec3 / Quat + the single documented coordinate
 │   │                         #   system (+X right, +Y front, +Z up; metres /
 │   │                         #   radians / linear gain) — no linear-algebra dep
@@ -165,6 +165,11 @@ src/
 │   │                         #   MaxRe), AmbisonicDecoder (per-speaker
 │   │                         #   matrix), AmbisonicRenderer (listener-
 │   │                         #   rotated FOA-bus decode to any layout)
+│   ├── room.rs               # Room acoustics: Room (box + absorption +
+│   │                         #   order + RT60), image-source enumeration,
+│   │                         #   EarlyReflections (per-object delay rings +
+│   │                         #   tap smoothing), RoomLateField (Schroeder
+│   │                         #   tail encoding into the ambisonic bus)
 │   ├── render.rs             # SpatialRenderer trait (incl. HybridBlockInputs /
 │   │                         #   process_hybrid_block), RendererKind, RenderError
 │   ├── panner.rs             # BasicPanner — equal-power pair pans, per-path

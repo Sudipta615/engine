@@ -159,7 +159,7 @@ device's actual crystal (offset reported in ppm) instead of its nominal
 clock. Same-rate endpoints reuse the master's already-limited block
 untouched.
 
-### Spatial rendering (opt-in, v3.11.0 → v3.15.0)
+### Spatial rendering (opt-in, v3.11.0 → v3.16.0)
 
 ```
 SpatialScene (world space: listener + objects + beds + fields)
@@ -171,6 +171,9 @@ renderer::process_hybrid_block  (BasicPanner — equal-power pair pans, or
         │                         nearest-speaker out-of-coverage fallback)
         │   objects: level chain (distance · directivity · occlusion) →
         │            pan solves (spread-aware) → smoothing → LFE send
+        │            + room: image-source early reflections (per-object
+        │              delay rings, per-image pan solves + coeff·dist) and
+        │              room send → Schroeder tail → ambisonic W encode
         │   beds:    semantic-role routing onto matching speakers
         │   fields:  ambisonic encode (W) → bus → decode → decorrelation
         ▼
@@ -201,7 +204,13 @@ order is: `listener-space transform → distance model → directivity (source
 facing vs. listener angle) → occlusion (attenuation + low-pass) → pan
 coefficients (BasicPanner equal-power or VBAP basis solve with energy
 normalization; angular-region spread samples the direction cap) →
-coefficient smoothing → LFE send → channel calibration trim`. Beds route by
+coefficient smoothing → LFE send → channel calibration trim`. When a `Room`
+is enabled (and the object's `room_send` is non-zero), the same filtered
+sample additionally drives the room: image-source early reflections (each
+image solved by the renderer's own pan machinery, scaled by the wall
+reflection coefficients and image distance, delayed by the excess path via
+a per-object ring) and a room-send accumulator whose Schroeder tail encodes
+into the ambisonic bus and decodes as a diffuse source. Beds route by
 semantic role onto matching speakers; fields encode into the ambisonic bus
 (`W` only — perfectly diffuse — with the `√N` diffuse compensation) and
 decode onto every pan speaker with per-speaker decorrelation; all three
@@ -213,8 +222,8 @@ listener orientation (world-fixed fields) and applies the decode matrix
 and renderers live in `crate::spatial` (see
 [`ARCHITECTURE.md`](ARCHITECTURE.md)); `tests/fidelity/spatial_panner.rs`,
 `tests/fidelity/spatial_vbap.rs`, `tests/fidelity/spatial_object_behavior.rs`,
-`tests/fidelity/spatial_hybrid.rs`, and
-`tests/fidelity/spatial_ambisonic.rs` pin the contracts and
+`tests/fidelity/spatial_hybrid.rs`, `tests/fidelity/spatial_ambisonic.rs`,
+and `tests/fidelity/spatial_room.rs` pin the contracts and
 `realtime_allocation` verifies the render paths allocate nothing in steady
 state.
 

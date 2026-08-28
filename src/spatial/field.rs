@@ -272,6 +272,42 @@ impl AmbisonicFieldMixer {
             self.bus[f * AMBISONIC_CHANNELS + 2] = 0.0;
             self.bus[f * AMBISONIC_CHANNELS + 3] = 0.0;
         }
+        self.decode_and_spread(frames, out, out_trim);
+    }
+
+    /// Render one **derived** diffuse plane (e.g. the room's late field)
+    /// through the same encode → decode → decorrelation pipeline. `gain`
+    /// scales the plane before the `√N` diffuse compensation. Allocation-free.
+    pub fn render_extra(
+        &mut self,
+        input: &[f32],
+        gain: f32,
+        frames: usize,
+        out: &mut [f32],
+        out_trim: &[f32],
+    ) {
+        if !self.prepared || frames == 0 || frames > MAX_AUDIO_BLOCK_FRAMES {
+            return;
+        }
+        for f in 0..frames {
+            let b = f * AMBISONIC_CHANNELS;
+            self.bus[b] = input.get(f).copied().unwrap_or(0.0) * gain * self.diffuse_boost;
+            self.bus[b + 1] = 0.0;
+            self.bus[b + 2] = 0.0;
+            self.bus[b + 3] = 0.0;
+        }
+        self.decode_and_spread(frames, out, out_trim);
+    }
+
+    /// Decode the filled bus into the decorrelation rings and read each
+    /// speaker's delayed value into the output (shared by `render` and
+    /// `render_extra`).
+    fn decode_and_spread(&mut self, frames: usize, out: &mut [f32], out_trim: &[f32]) {
+        let n = self.speakers.len();
+        let n_spk = out.len().checked_div(frames).unwrap_or(0);
+        if n == 0 || n_spk == 0 {
+            return;
+        }
         // Decode into the ring at a common cursor, then read each speaker's
         // decorrelated value into the output.
         let dl = self.delay_len;
@@ -410,5 +446,37 @@ mod tests {
             let got = out[m.delay_samples[k] * 6 + spk];
             assert!((got - per).abs() < 1e-4, "gain-scaled {got} vs {per}");
         }
+    }
+
+    #[test]
+    fn render_extra_behaves_like_a_diffuse_field() {
+        // A derived diffuse plane (the room's late-field seam, §55) must go
+        // through the same encode → decode → decorrelation pipeline: an
+        // impulse lands at 1/√N on every pan speaker at its own delay, and
+        // the LFE stays silent.
+        let layout = crate::spatial::speaker::SpeakerLayout::seven_point_one_four();
+        let mut m = AmbisonicFieldMixer::new();
+        m.prepare(&layout, 48_000).unwrap();
+        let n = m.speakers.len();
+        let per = 1.0 / (n as f32).sqrt();
+        let frames = m.delay_len + 4;
+        let input = vec![1.0f32];
+        let mut out = vec![0.0f32; 12 * frames];
+        let trim = vec![1.0f32; 12];
+        m.render_extra(&input, 1.0, frames, &mut out, &trim);
+        for (k, &spk) in m.speakers.iter().enumerate() {
+            let got = out[m.delay_samples[k] * 12 + spk];
+            assert!((got - per).abs() < 1e-4, "extra plane speaker {spk} {got}");
+        }
+        for f in 0..frames {
+            assert!(out[f * 12 + 3].abs() < 1e-6, "LFE silent");
+        }
+        let e: f32 = m
+            .speakers
+            .iter()
+            .map(|&spk| (0..frames).map(|f| out[f * 12 + spk]).sum::<f32>())
+            .map(|s| s * s)
+            .sum();
+        assert!((e - 1.0).abs() < 1e-3, "extra plane energy {e}");
     }
 }

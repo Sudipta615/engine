@@ -2,6 +2,74 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.16.0] — 2026-08-28
+
+Room acoustics (roadmap Phase 13): the spatial scene gains an acoustic
+space. A `spatial::room::Room` (axis-aligned box in world space) turns
+participating objects into small acoustic events: **early reflections** via
+the image-source method (each mirrored image is a virtual source with its
+own pan solve, distance attenuation, reflection-coefficient amplitude, and
+excess-path delay through a per-object ring) and a **late field** — a
+Schroeder tail shaped by the room's RT60 that encodes into the ambisonic
+bus (the Phase 12 seam, §55) and decodes as a diffuse, decorrelated source.
+The room is opt-in at both levels: `Room::default()` is disabled (renders
+stay bit-identical) and an object participates only through its `room_send`
+— the seam the scene model declared. Occlusion's `AcousticTransmission` is
+the transmission seam (§43–44): the same low-passed sample that feeds the
+direct path feeds the reflections.
+
+### Added
+
+- **`Room` model** (`spatial::room`): dimensions (width/depth/height),
+  wall absorption (one coefficient; per-wall is a documented seam),
+  early-reflection order (1 = 6 images, 2 = 24 distinct), late RT60, and
+  late wet mix. Added to `SpatialScene`; `Room::default()` is disabled.
+- **Image-source geometry** (`image_sources`): breadth-first reflection of
+  the source across the six walls with deduplication — order 1 → 6 images,
+  order 2 → 24 (two crossings on one axis, or one on each of two). Each
+  image carries the product of the crossed walls' reflection coefficients
+  (`1 − absorption`). Pure arithmetic, unit-tested against closed forms.
+- **Early reflections** (`EarlyReflections`, renderer-owned): per-object
+  delay rings (≈171 ms @ 48 kHz, preallocated), a per-(object, image,
+  speaker) smoothed tap-gain matrix, and a room-send accumulator. The
+  renderers solve each image with their own pan machinery (equal-power
+  pairs for `BasicPanner`, full 3-triplet VBAP for `VbapRenderer`), so
+  reflections obey the same geometry as the direct path; delays are the
+  excess path `(dist_image − dist_direct)/c`, clamped to the ring.
+- **Late field** (`RoomLateField`): a Schroeder tail — 4 parallel feedback
+  combs whose gains are derived exactly from `rt60_ms` (verified by
+  measuring the output decay), 2 serial allpasses for density, `(1 − g)`
+  per-comb normalization so the tail stays bounded — whose output is fed
+  through `AmbisonicFieldMixer::render_extra`: encode into the ambisonic
+  bus (`W` only) → decode with the `√N` diffuse compensation → per-speaker
+  decorrelation. LFE never receives room energy.
+- **Realtime**: image enumeration is pure arithmetic into fixed stack
+  arrays; rings/tap matrix/tail buffers are preallocated — new
+  `realtime_allocation` test running the order-2 worst case (24 images per
+  object, occluded + directional objects, late field at 0.7 wet) over
+  10k blocks, **0 allocations**.
+- **Public surface**: `Room`, `EarlyReflections`, `RoomLateField`,
+  `image_sources`, `ReflectionImage`, `ListenerImage` exported from
+  `spatial`; `Room` in the `prelude`. Objects already carried the
+  `room_send` participation seam.
+- **Acceptance suite**: `tests/fidelity/spatial_room.rs` — the predicted
+  280-sample reflection arrival (excess path 2 m ÷ 343 m/s) on both
+  renderers, coefficient-exact tap amplitudes, absorption monotonicity,
+  order-2 energy growth, room-disabled bit-exact restoration (no state
+  pollution), dry-object bit-exactness, diffuse LFE-free late field over a
+  12-block run, `late_mix` monotonicity (0 removes the late field), and
+  deterministic finite hybrid rendering.
+
+### Fixed
+
+- n/a
+
+### Changed
+
+- `AmbisonicFieldMixer` gains `render_extra` for derived diffuse planes
+  (the encode/decode/decorrelation loop is shared with `render`).
+- `engine` and `config` versions remain synchronized at `3.16.0`.
+
 ## [3.15.0] — 2026-08-28
 
 Ambisonics / First-Order Ambisonics (roadmap Phase 12): the engine's
