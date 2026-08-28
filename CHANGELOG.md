@@ -2,6 +2,54 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.10.0] — 2026-08-28
+
+Room/headphone correction pipeline (Phase 7 S1–S5): measurement through
+real-time graph application.
+
+### Added
+
+- **ESS measurement kit** (`dsp::correction::sweep`): Farina exponential
+  sine-sweep generation, regularized frequency-domain deconvolution,
+  sub-sample pre-delay estimation, harmonic-offset reporting, and noise/SNR
+  measurement.
+- **IR import and conditioning** (`dsp::correction::ir`): pure-Rust WAV
+  parsing for PCM and IEEE-float formats, multichannel extraction, rumble
+  high-pass filtering, onset/tail conditioning, and peak normalization.
+- **Phase machinery** (`dsp::correction::phase`): cepstral minimum-phase,
+  excess-phase allpass extraction, linear-phase rendering, hybrid rendering
+  (minimum-phase response delayed by two crossover cycles — magnitude
+  bit-identical to the min render), and group-delay utilities.
+- **Correction derivation** (`dsp::correction::derive`): octave smoothing,
+  flat/tilt/shelf targets, SNR-weighted regularized inversion, boost clamps,
+  safety normalization, and per-channel rendered correction IRs.
+- **Real-time graph integration** (`dsp::graph::nodes::correction_node`): a
+  per-channel partitioned-convolution bank with depth control and hot IR
+  swaps, wired into the plan post-aux/pre-EQ with live enable toggles,
+  sticky state across generation swaps, and latency/bit-perfect reporting.
+- **Engine surface**: `EngineCommand` variants and handlers, `EngineHandle`
+  methods, correction lifecycle events, and `CorrectionInfo` telemetry in
+  the lock-free playback snapshot; C FFI (`engine_set_correction_enabled`,
+  `engine_set_correction_depth`, `engine_load_correction_ir`,
+  `engine_correction_info`) and `audio-engine-cli` flags.
+- Acceptance suites for ESS measurement, phase rendering, correction
+  inversion, and the graph end-to-end room-correction pipeline under
+  `tests/fidelity/`.
+
+### Fixed
+
+- Added explicit finite-value and parameter validation throughout the
+  measurement-to-correction control path.
+- Hybrid-phase rendering no longer re-integrates per-bin group delays into
+  a blended phase (which wrapped negative-delay content around the IR
+  window and rippled the response); it delays the exact minimum-phase IR
+  instead, keeping the magnitude bit-identical to the min render at every
+  frequency.
+
+### Changed
+
+- `engine` and `config` versions remain synchronized at `3.10.0`.
+
 ## [3.9.0] — 2026-08-27
 
 Endpoint & aux-insert control surfaces, per-endpoint clock drift correction,

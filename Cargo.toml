@@ -3,7 +3,7 @@ members = [".", "crates/config"]
 
 [package]
 name = "engine"
-version = "3.9.0"
+version = "3.10.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"
@@ -109,6 +109,10 @@ thiserror = "2.0"
 num-traits = "0.2"
 num-complex = "0.4"
 realfft = "3.5"
+# Complex-domain FFT for the correction chain (Phase 7): deconvolution,
+# cepstral minimum-phase, hybrid-phase rendering. Same crate realfft builds
+# on, so this adds no new compiled code.
+rustfft = "6.2"
 config = { path = "crates/config" }
 thread-priority = { version = "3.1", optional = true }
 # Pure-Rust Monkey's Audio (APE) decoder, enabled by the `codec-ape` feature.
@@ -336,3 +340,19 @@ path = "tests/fidelity/multichannel_graph.rs"
 [[test]]
 name = "graph_pipeline_equivalence"
 path = "tests/fidelity/graph_pipeline_equivalence.rs"
+
+[[test]]
+name = "ess_measurement"
+path = "tests/fidelity/ess_measurement.rs"
+
+[[test]]
+name = "minimal_phase"
+path = "tests/fidelity/minimal_phase.rs"
+
+[[test]]
+name = "correction_inverse"
+path = "tests/fidelity/correction_inverse.rs"
+
+[[test]]
+name = "room_correction_pipeline"
+path = "tests/fidelity/room_correction_pipeline.rs"

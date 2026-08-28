@@ -38,6 +38,22 @@ impl DspGraph {
         }
     }
 
+    // ── Correction (Phase 7 S5) ──────────────────────────────────────────
+
+    pub fn correction(&self) -> &CorrectionNode {
+        match &self.active.nodes[node_id::CORRECTION] {
+            GraphNode::Correction(n) => n,
+            _ => unreachable!("arena slot CORRECTION holds a CorrectionNode"),
+        }
+    }
+
+    pub fn correction_mut(&mut self) -> &mut CorrectionNode {
+        match &mut self.active.nodes[node_id::CORRECTION] {
+            GraphNode::Correction(n) => n,
+            _ => unreachable!("arena slot CORRECTION holds a CorrectionNode"),
+        }
+    }
+
     // ── Pre-mix accessors — input-0 / input-1 aliases into the mix bus ────
     //
     // Backward-compatible with the Phase-1 named pre-mix accessors: input 0

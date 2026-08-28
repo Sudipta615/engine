@@ -12,9 +12,9 @@ mod rate_policy;
 pub use dsp_config::{
     BandConfig, BassManagementConfig, ChannelEqConfig, ChannelEqEntry, ChannelMixConfig,
     ChannelMixTemplate, ChannelRoutingConfig, ChannelTrimConfig, ChannelTrimEntry,
-    ConvolutionConfig, CrossfadeConfig, CrossfeedConfig, EqBandConfig, EqConfig, EqPreset,
-    GraphicEqConfig, GraphicEqLayout, LfeConfig, LimiterConfig, LoudnessConfig,
-    MultibandCompressorConfig, StereoEnhancerConfig,
+    ConvolutionConfig, CorrectionConfig, CorrectionPhaseMode, CorrectionTarget, CrossfadeConfig,
+    CrossfeedConfig, EqBandConfig, EqConfig, EqPreset, GraphicEqConfig, GraphicEqLayout, LfeConfig,
+    LimiterConfig, LoudnessConfig, MultibandCompressorConfig, StereoEnhancerConfig,
 };
 pub use engine_config::{
     AuxBusConfig, ConfigValidation, EndpointConfig, EngineConfig, EnginePreset, SlotSendConfig,

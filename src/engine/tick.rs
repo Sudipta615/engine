@@ -112,6 +112,9 @@ impl AudioEngine {
         #[cfg(feature = "audio-output")]
         self.poll_device_monitor();
         self.drain_capture();
+        // Phase 7 S5: land a finished room measurement (deconvolve →
+        // condition → derive) once its sweep has played out.
+        self.check_measurement();
 
         // Fold externally-observed hardware volume changes (OS volume
         // slider, hardware knob, programmatic sets from other processes)
@@ -426,6 +429,17 @@ impl AudioEngine {
                 let (ins_enabled, ins_wet) = self.graph.control_handle().aux_insert_state();
                 next.aux_insert_enabled = ins_enabled;
                 next.aux_insert_wet_mix = ins_wet;
+                // Phase 7 S5: mirror the correction node state (the FFI
+                // `engine_correction_info` read path).
+                let corr = self.graph.correction().info();
+                next.correction = crate::playback_info::CorrectionInfo {
+                    enabled: corr.enabled,
+                    depth: corr.depth,
+                    phase_mode: corr.phase_mode.map(|m| format!("{m:?}").to_lowercase()),
+                    ir_len_samples: corr.ir_len_samples,
+                    latency_ms: corr.latency_ms,
+                    max_gain_db: corr.max_gain_db,
+                };
                 #[cfg(feature = "audio-output")]
                 {
                     next.output_info = out_info.clone();

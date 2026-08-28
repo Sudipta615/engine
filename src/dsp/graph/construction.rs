@@ -83,6 +83,9 @@ impl GraphGeneration {
             GraphNode::Limiter(LimiterNode::new(sample_rate)),
             GraphNode::Dither(DitherNode::new(sample_rate)),
             GraphNode::Aux(AuxBusNode::new(send_bus, sample_rate)),
+            // Phase 7 S5: the correction node is the last arena slot — it
+            // runs post-aux / pre-EQ in the compiled plan.
+            GraphNode::Correction(CorrectionNode::new(sample_rate)),
         ]; // Arena-order contract: every `node_id` slot must hold the node kind
            // its table entry claims. Debug-only; also keeps the slot constants
            // referenced so the table cannot silently drift from the arena.
@@ -107,6 +110,10 @@ impl GraphGeneration {
         debug_assert!(matches!(nodes[node_id::LIMITER], GraphNode::Limiter(_)));
         debug_assert!(matches!(nodes[node_id::DITHER], GraphNode::Dither(_)));
         debug_assert!(matches!(nodes[node_id::AUX], GraphNode::Aux(_)));
+        debug_assert!(matches!(
+            nodes[node_id::CORRECTION],
+            GraphNode::Correction(_)
+        ));
 
         let mut gen = GraphGeneration {
             node_ids: GraphGeneration::canonical_ids(nodes.len()),
@@ -144,6 +151,11 @@ impl GraphGeneration {
             // mix node's taps are gated on the shared bus's `enabled`).
             gen_node!(gen, node_id::AUX, Aux).apply_aux(config.aux.enabled, config.aux.return_gain);
         }
+
+        // Phase 7 S5: the correction config (enabled / depth / measured IR
+        // paths → S2–S4 derive) applies to the correction node.
+        gen_node!(gen, node_id::CORRECTION, Correction)
+            .apply_config(&config.correction, sample_rate);
 
         // User-state replay: a fresh generation inherits the listener's
         // volume / balance / speed from the control bus (seeded with defaults
@@ -205,6 +217,17 @@ impl GraphGeneration {
                 // the swap too (the config-applied IR stays loaded).
                 gen_node!(gen, node_id::AUX, Aux)
                     .set_aux_insert(user.aux_insert_enabled, user.aux_insert_wet_mix);
+            }
+            // Phase 7 S5: a live correction toggle, depth, and the rendered
+            // IR set survive a swap (live snapshots only; construction
+            // keeps the config-applied correction).
+            if user.has_live_bus_state {
+                gen_node!(gen, node_id::CORRECTION, Correction)
+                    .set_runtime(user.correction_enabled, user.correction_depth);
+                if let Some(ref set) = user.correction_ir {
+                    let _ =
+                        gen_node!(gen, node_id::CORRECTION, Correction).load_set(set, sample_rate);
+                }
             }
         }
 
@@ -541,6 +564,16 @@ impl DspGraph {
     pub fn apply_config(&mut self, config: &EngineConfig) {
         self.active
             .apply_config(config, self.sample_rate, &self.multichannel_layout);
+        // Phase 7 S5: a live LoadCorrectionIr / MeasureRoom result survives
+        // an unrelated config apply when the config itself carries no IR
+        // paths (the sticky set is authoritative over the config only for
+        // the IR — enabled/depth always come from the config here).
+        if config.correction.ir_paths.is_empty() {
+            if let Some(set) = self.bus.user_correction_ir() {
+                let rate = self.sample_rate;
+                let _ = self.correction_mut().load_set(&set, rate);
+            }
+        }
         self.precision_mode = config.precision_mode;
         self.performance_mode = config.performance_mode;
         self.volume_fade_ms = config.volume_fade_ms as f32;

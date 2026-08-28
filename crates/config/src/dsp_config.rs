@@ -656,6 +656,112 @@ pub struct ChannelMixConfig {
     pub template: ChannelMixTemplate,
 }
 
+// ── Room & headphone correction (Phase 7 S5) ────────────────────────────────
+
+/// Phase-rendering mode for a correction IR (Phase 7 S5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum CorrectionPhaseMode {
+    /// Cepstral minimum phase: zero added latency, phase-dispersive.
+    #[default]
+    Minimum,
+    /// Symmetric FIR: constant group delay `n/2`, phase-flat magnitude.
+    Linear,
+    /// Minimum phase below the crossover, linear phase above (rendered as
+    /// the minimum-phase IR delayed by two crossover cycles).
+    Hybrid,
+}
+
+/// Target response the correction is derived against (Phase 7 S5).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub enum CorrectionTarget {
+    /// Flat magnitude (0 dB at every frequency).
+    #[default]
+    Flat,
+    /// Linear tilt in log-frequency: `db_per_octave · log2(f / 1 kHz)`.
+    Tilt {
+        /// Slope in dB per octave.
+        db_per_octave: f32,
+    },
+    /// Smooth shelf between two plateau gains around `corner_hz`, swept
+    /// over `slope_octaves` with a raised cosine.
+    Shelf {
+        /// Center of the transition (Hz).
+        corner_hz: f32,
+        /// Plateau gain below the transition (dB).
+        low_gain_db: f32,
+        /// Plateau gain above the transition (dB).
+        high_gain_db: f32,
+        /// Total transition width (octaves).
+        slope_octaves: f32,
+    },
+}
+
+/// Room & headphone correction configuration (Phase 7 S5).
+///
+/// The node is a per-channel partitioned-convolution bank placed
+/// post-aux / pre-EQ. `ir_paths` are the **measured** IR files (one path
+/// per channel, or a single multichannel WAV); the full S2→S4 chain
+/// (conditioning → smoothing → SNR-weighted regularized inverse → phase
+/// render) runs on the control path at config-apply time, so a host that
+/// configures correction at construction or config-load gets the derived
+/// IRs wired without a separate load command. A missing/unreadable IR
+/// leaves the node inactive — bit-exact passthrough.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CorrectionConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Measured IR files used to derive the correction (see the struct
+    /// docs). One path per channel; a single multichannel WAV also works
+    /// (its channels are the per-channel IRs). Empty = no correction.
+    #[serde(default)]
+    pub ir_paths: Vec<String>,
+    #[serde(default)]
+    pub phase_mode: CorrectionPhaseMode,
+    /// Hybrid crossover (Hz); only used when `phase_mode` is hybrid.
+    #[serde(default = "default_hybrid_crossover_hz")]
+    pub hybrid_crossover_hz: f32,
+    #[serde(default)]
+    pub target: CorrectionTarget,
+    /// Hard clamp on any correction boost (dB); cuts are not clamped.
+    #[serde(default = "default_max_boost_db")]
+    pub max_boost_db: f32,
+    /// Octave-fraction smoothing applied to the measured magnitude before
+    /// inversion (power-domain, log-frequency).
+    #[serde(default = "default_smoothing_octaves")]
+    pub smoothing_octaves: f32,
+    /// Wet/dry depth in [0, 1] (1.0 = fully corrected).
+    #[serde(default = "default_correction_depth")]
+    pub depth: f32,
+}
+
+fn default_correction_depth() -> f32 {
+    1.0
+}
+fn default_hybrid_crossover_hz() -> f32 {
+    1000.0
+}
+fn default_max_boost_db() -> f32 {
+    6.0
+}
+fn default_smoothing_octaves() -> f32 {
+    1.0 / 6.0
+}
+
+impl Default for CorrectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            ir_paths: Vec::new(),
+            phase_mode: CorrectionPhaseMode::default(),
+            hybrid_crossover_hz: default_hybrid_crossover_hz(),
+            target: CorrectionTarget::default(),
+            max_boost_db: default_max_boost_db(),
+            smoothing_octaves: default_smoothing_octaves(),
+            depth: 1.0,
+        }
+    }
+}
+
 impl Default for ChannelMixConfig {
     fn default() -> Self {
         Self {

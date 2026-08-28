@@ -109,6 +109,7 @@ impl AudioEngine {
             device_monitor,
             #[cfg(all(target_os = "windows", feature = "wasapi-native"))]
             capture: None,
+            measurement: None,
 
             telemetry: EngineTelemetry::default(),
             dsd: DsdTransportState::default(),

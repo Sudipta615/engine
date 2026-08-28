@@ -21,6 +21,7 @@
 //! a generation returned through `retired` is guaranteed unreferenced.
 
 use super::*;
+use crate::dsp::correction::CorrectionIrSet;
 
 /// One mix-bus slot's listener-facing user state (Phase 4 S1). Slots 0/1 are
 /// the transition pair; slots >= 2 are independent lanes. Mirrored from the
@@ -109,6 +110,14 @@ pub struct UserState {
     /// live runtime toggle survives a generation swap.
     pub aux_insert_enabled: bool,
     pub aux_insert_wet_mix: f32,
+    /// Phase 7 S5: live correction enabled / depth, mirrored like the aux
+    /// state so a runtime toggle survives a generation swap.
+    pub correction_enabled: bool,
+    pub correction_depth: f32,
+    /// Phase 7 S5: the rendered correction IR set carried across a rebuild
+    /// (a `LoadCorrectionIr` / `MeasureRoom` result survives a swap).
+    /// Immutable after load; `None` = no IR.
+    pub correction_ir: Option<Arc<CorrectionIrSet>>,
     /// Program-gated ducking config (Phase 4 S4), carried across a rebuild
     /// so a reconfig never drops a configured duck. `None` = disabled.
     pub duck: Option<DuckState>,
@@ -131,6 +140,9 @@ impl Default for UserState {
             aux_return_gain: 1.0,
             aux_insert_enabled: false,
             aux_insert_wet_mix: 0.5,
+            correction_enabled: false,
+            correction_depth: 1.0,
+            correction_ir: None,
             duck: None,
             slot_automation: Vec::new(),
         }

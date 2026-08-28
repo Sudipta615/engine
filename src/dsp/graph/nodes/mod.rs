@@ -1,5 +1,6 @@
 pub mod aux_node;
 pub mod convolution_node;
+pub mod correction_node;
 pub mod crossfeed_node;
 pub mod dither_node;
 pub mod dynamics_node;
@@ -15,6 +16,7 @@ pub mod timestretch_node;
 
 pub use aux_node::AuxBusNode;
 pub use convolution_node::ConvolutionNode;
+pub use correction_node::{CorrectionNode, CorrectionNodeInfo};
 pub use crossfeed_node::CrossfeedNode;
 pub use dither_node::DitherNode;
 pub use dynamics_node::DynamicsNode;
@@ -52,6 +54,7 @@ impl DspNode for GraphNode {
             GraphNode::Limiter(n) => n.capability(),
             GraphNode::Dither(n) => n.capability(),
             GraphNode::Aux(n) => n.capability(),
+            GraphNode::Correction(n) => n.capability(),
         }
     }
 
@@ -72,6 +75,7 @@ impl DspNode for GraphNode {
             GraphNode::Limiter(n) => n.is_active(),
             GraphNode::Dither(n) => n.is_active(),
             GraphNode::Aux(n) => n.is_active(),
+            GraphNode::Correction(n) => n.is_active(),
         }
     }
 
@@ -92,6 +96,7 @@ impl DspNode for GraphNode {
             GraphNode::Limiter(n) => n.latency_samples(),
             GraphNode::Dither(n) => n.latency_samples(),
             GraphNode::Aux(n) => n.latency_samples(),
+            GraphNode::Correction(n) => n.latency_samples(),
         }
     }
 
@@ -112,6 +117,7 @@ impl DspNode for GraphNode {
             GraphNode::Limiter(n) => n.tail_samples(),
             GraphNode::Dither(n) => n.tail_samples(),
             GraphNode::Aux(n) => n.tail_samples(),
+            GraphNode::Correction(n) => n.tail_samples(),
         }
     }
 
@@ -132,6 +138,7 @@ impl DspNode for GraphNode {
             GraphNode::Limiter(n) => n.reset(),
             GraphNode::Dither(n) => n.reset(),
             GraphNode::Aux(n) => n.reset(),
+            GraphNode::Correction(n) => n.reset(),
         }
     }
 
@@ -152,6 +159,7 @@ impl DspNode for GraphNode {
             GraphNode::Limiter(n) => n.prepare(sample_rate, max_channels),
             GraphNode::Dither(n) => n.prepare(sample_rate, max_channels),
             GraphNode::Aux(n) => n.prepare(sample_rate, max_channels),
+            GraphNode::Correction(n) => n.prepare(sample_rate, max_channels),
         }
     }
 
@@ -172,6 +180,7 @@ impl DspNode for GraphNode {
             GraphNode::Limiter(n) => n.process_block_f32(planes),
             GraphNode::Dither(n) => n.process_block_f32(planes),
             GraphNode::Aux(n) => n.process_block_f32(planes),
+            GraphNode::Correction(n) => n.process_block_f32(planes),
         }
     }
 
@@ -192,6 +201,7 @@ impl DspNode for GraphNode {
             GraphNode::Limiter(n) => n.process_block_f64(planes),
             GraphNode::Dither(n) => n.process_block_f64(planes),
             GraphNode::Aux(n) => n.process_block_f64(planes),
+            GraphNode::Correction(n) => n.process_block_f64(planes),
         }
     }
 }

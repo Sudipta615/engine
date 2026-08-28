@@ -690,5 +690,18 @@ fn print_event(event: EngineEvent) {
         EngineEvent::CaptureError(ref msg) => {
             println!("\n  \x1b[31m[Engine] Capture error: {}\x1b[0m", msg);
         }
+        EngineEvent::MeasurementProgress { ref stage } => {
+            println!("\n  \x1b[36m[Engine] Room measurement: {}\x1b[0m", stage);
+        }
+        EngineEvent::MeasurementComplete { ref path, snr_db } => {
+            println!(
+                "\n  \x1b[32m[Engine] Room measurement complete: '{}' (SNR {:.1} dB)\x1b[0m",
+                path.display(),
+                snr_db
+            );
+        }
+        EngineEvent::MeasurementFailed(ref msg) => {
+            println!("\n  \x1b[31m[Engine] Room measurement failed: {}\x1b[0m", msg);
+        }
     }
 }

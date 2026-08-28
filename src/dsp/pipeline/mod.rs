@@ -229,6 +229,16 @@ pub static DSP_STAGE_CAPABILITIES: &[DspStageCapability] = &[
         precision: StagePrecision::Any,
     },
     DspStageCapability {
+        name: "correction",
+        channel_support: StageChannelSupport::AllChannels,
+        position: "post-aux, pre-EQ",
+        stateful: true,
+        realtime_safe: true,
+        bit_perfect_compatible: false,
+        sample_rate_sensitive: true,
+        precision: StagePrecision::Any,
+    },
+    DspStageCapability {
         name: "balance",
         channel_support: StageChannelSupport::StereoOnly,
         position: "post-mix",

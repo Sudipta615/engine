@@ -243,7 +243,7 @@ rate domain, chain, and backend.
   SSE2/NEON SIMD with a strict element-wise (no-FMA) bit-exact contract,
   locked by `phase6_bit_exact_simd_accumulate_matches_scalar` and the
   graph-vs-pipeline equivalence suite.
-- **Aux as a plan node (done, v3.10.0):** promoted the aux out of `MixBusNode`
+- **Aux as a plan node (done, v3.9.0):** promoted the aux out of `MixBusNode`
   into a standalone `AuxBusNode` running as its own `AUX` plan step with a
   shared interior-mutable `AuxSendBus`. Each mix slot's send is now an
   independent ramped gain (click-free per-send automation) with its own
@@ -253,3 +253,162 @@ rate domain, chain, and backend.
 - **Horizon:** precompiled lane kernels, decode-ahead lane buffering — the
   meter/send/automation substrate from Phases 4–6 is the exact measurement
   and control surface those need.
+
+---
+
+## Phase 7 — Room & headphone correction pipeline (v3.10.0) — **Implemented S1–S5**
+
+**Intent.** Turn the engine's existing parts — partitioned convolution,
+EBU R128-grade measurement tooling, loopback capture (Windows) — into a
+**measurement-to-correction pipeline**: play an exponential sine sweep through
+the room or headphones, deconvolve the recording into an impulse response,
+derive a regularized inverse against a target curve, render it into the
+user's chosen phase mode, and run it as a first-class, disabled-exact plan
+node ahead of the EQ chain. The portable path (IR file import, e.g. REW /
+Dirac exports) works on every platform; the integrated live-measurement path
+works wherever a capture input exists today (WASAPI loopback).
+
+### S1 — sweep measurement kit — `dsp/correction/sweep.rs` (pure DSP, portable)
+
+- Farina **exponential sine sweep** generator (configurable 10–60 s,
+  20 Hz–24 kHz band, optional pre-emphasis) with its exact reference capture
+  signal.
+- **Deconvolution** of the recorded sweep (frequency-domain regularized
+  inverse of the sweep spectrum) into a complex impulse response, with
+  pre-delay/latency detection (peak search, sub-sample via phase slope).
+- **Harmonic separation**: Farina's method places the 2nd/3rd/… harmonic
+  impulses at known negative pre-delay offsets — time-gate them to report
+  per-harmonic distortion and the measurement's usable SNR.
+- Output: `Measurement { per-channel complex IR, sample rate, snr_db,
+  harmonic_db, pre_delay }` — the raw truth before any interpretation.
+
+### S2 — IR import & conditioning — `dsp/correction/ir.rs` (portable)
+
+- Load WAV IRs (any channel count; per-channel extraction for multichannel
+  rooms).
+- Conditioning chain (control path only): DC/rumble high-pass, level
+  normalization to a reference peak, **decay-tail truncation** (energy
+  percentile windowing, configurable), sample-rate alignment between IR and
+  session.
+- The same conditioner runs on sweep-derived and imported IRs — one code
+  path.
+
+### S3 — phase machinery — `dsp/correction/phase.rs`
+
+- **Minimum-phase** rendering via the cepstral (Hilbert of log-magnitude)
+  method; **excess-phase** allpass extraction so min + excess ≡ original.
+- **Linear-phase** rendering (symmetric IR, constant group delay) for
+  purists who accept the latency.
+- **Hybrid** rendering: minimal-phase below a crossover (bass keeps
+  transient alignment), linear-phase above — implemented as the exact
+  minimum-phase IR delayed by two crossover cycles, so the magnitude is
+  bit-identical to the min render at every frequency while the group
+  delay sits at ≈ τ₀ (two crossover cycles) where the correction is
+  smooth; group-delay continuity holds exactly (GD_min + τ₀ everywhere).
+- Frequency-dependent **time alignment** between channels (multiway
+  speakers, distance delays folded into the IR rather than the routing
+  matrix).
+
+### S4 — correction derivation — `dsp/correction/derive.rs`
+
+- Smooth the measured magnitude (log-domain octave-fraction smoothing),
+  compare against the **target curve** (flat, tilt dB/octave, or shelf), and
+  derive a **regularized inverse**: Wiener-style, weighted by the
+  measurement's own SNR so boosts collapse where the measurement is
+  unreliable.
+- Hard safety rails: boost clamp (`max_boost_db`, default +6 dB) and the
+  derived IR peak-normalized below digital full scale, so correction can
+  never clip into the master limiter on its own.
+- Render the result into the S3 phase mode per channel → the final
+  correction IR set.
+
+### S5 — engine integration
+
+- **`CorrectionNode`** (`dsp/graph/nodes/correction_node.rs`): a per-channel
+  bank of partitioned `ConvolutionEngine`s running as an `AllChannels`-scoped
+  plan step placed **post-aux / pre-EQ** (`mix → aux → correction → eq → …`),
+  so user EQ stacks on the corrected response and the node's declared latency
+  flows through the Phase-1 capability metadata into
+  `position_secs_compensated`.
+- **Config** (`CorrectionConfig` in `crates/config/src/dsp_config.rs`,
+  generation-carried like `AuxBusConfig`): `enabled`, per-channel IR paths,
+  `phase_mode`, `hybrid_crossover_hz`, `target`, `max_boost_db`,
+  `smoothing_octaves`, `depth` (0–1 wet/dry). Runtime commands
+  `SetCorrectionEnabled` / `SetCorrectionDepth` / `LoadCorrectionIr` ride the
+  SPSC control queue with the mirror/replay swap discipline (a live toggle
+  and IR hot-load survive swaps; a missing IR stays bit-exact).
+- **Measurement orchestration**: `MeasureRoom { seconds, pre_emphasis }`
+  plays the S1 sweep on the primary endpoint while capturing (WASAPI loopback
+  today; a generic input backend is Horizon), then runs S2–S4 on the control
+  thread and lands the result as a correction IR. Progress/completion via
+  `EngineEvent::MeasurementProgress` / `MeasurementComplete { path, snr_db }`.
+- **Telemetry**: `PlaybackInfo.correction` (enabled, phase mode, IR length,
+  added latency ms, per-channel max gain) — published with the existing
+  ArcSwap snapshot.
+- **C FFI**: `engine_set_correction_enabled`, `engine_set_correction_depth`,
+  `engine_load_correction_ir`, `engine_correction_info` — status-code
+  contract like the rest of `ffi.rs`.
+
+### Acceptance tests — written before implementation
+
+Each lands as a `[[test]]` entry under `tests/fidelity/`; the phase is not
+**Done** until every threshold below is met by a committed suite (spec-first:
+these names and thresholds are the contract the implementation is reviewed
+against).
+
+- **`tests/fidelity/ess_measurement.rs`** — S1 correctness:
+  - a synthetic room (min-phase peaks/dips + pure delay) probed by the sweep
+    is recovered within **±0.1 dB, 20 Hz–20 kHz**; delay recovered within
+    **1 sample** @ 48 kHz;
+  - injected 2nd/3rd-harmonic distortion is reported within **±1 dB** at the
+    predicted pre-delay offsets;
+  - an injected noise floor is estimated within **±2 dB** of truth.
+- **`tests/fidelity/minimal_phase.rs`** — S3 correctness:
+  - the min-phase render's magnitude matches its source within
+    **±0.01 dB** full band; strictly causal support;
+  - the excess-phase allpass is flat within **±0.001 dB**; min + excess ≡
+    original (magnitude **±0.01 dB**, group delay **±1 sample**);
+  - the linear-phase render has constant group delay (N−1)/2 ± 0.5 sample;
+    the hybrid split keeps crossover group-delay continuity within
+    **5 samples** and magnitude unchanged **±0.01 dB**.
+- **`tests/fidelity/correction_inverse.rs`** — S4 correctness:
+  - a synthetic ±6 dB room corrected to a flat target leaves a residual
+    within **±0.5 dB, 40 Hz–16 kHz**;
+  - where injected SNR < 10 dB the inverse clamps to `max_boost_db`; no
+    NaN/Inf anywhere in the derived IR set;
+  - tilt/shelf targets are honored within **±0.2 dB**.
+- **`tests/fidelity/room_correction_pipeline.rs`** — S5 end-to-end through
+  the graph:
+  - pink noise through a corrected synthetic room → octave-band residual
+    within **±0.5 dB, 40 Hz–16 kHz**;
+  - **disabled = bit-exact**: plans without the correction step remain
+    bit-identical to the frozen master (equivalence-suite discipline);
+  - all three phase modes produce identical magnitude (**±0.01 dB**),
+    differing only in phase/latency;
+  - a live toggle and IR hot-load survive a generation swap with no NaN and
+    no discontinuity beyond headroom;
+  - the reported correction latency matches the IR group delay, and
+    `position_secs_compensated` tracks a recorded WAV's content offset (the
+    `transition_tails` method).
+- **`tests/fidelity/realtime_allocation.rs`** — extended: the correction
+  processing path allocates nothing after IR load (load/render are
+  control-path); no locks added.
+- **`benches/graph_plan_bench.rs`** — extended with correction on/off:
+  disabled adds **zero** p50 cost; enabled at a 200 ms IR stays within
+  **p50 < 2 ms per 1024-frame block @ 48 kHz** on the CI reference runner
+  (criterion-tracked).
+
+**Realtime discipline.** Sweep synthesis, deconvolution, phase rendering,
+and inversion are control-thread DSP — they run once per measurement and are
+heap-happy by design. The hot path sees only precomputed, per-channel
+partitioned FFT state inside `CorrectionNode` — the same allocation-free
+contract as the existing convolution node. Disabled = the plan step is
+skipped, never reordered; missing IR = bit-exact passthrough.
+
+**Unblocks (Horizon).** A generic input/capture backend brings integrated
+measurement to Linux/macOS; per-device auto-load via `output_profile`;
+correction-aware bass management (correcting the sub path against the
+mains); AutoEQ headphone-target integration (S4's target curves are the
+seam); extending the pipeline oracle with a correction stage for a
+correction-vs-pipeline golden equivalence suite.
+

@@ -120,6 +120,40 @@ pub struct PlaybackInfo {
     /// the telemetry cadence: enabled / wet-mix of the global convolution.
     pub aux_insert_enabled: bool,
     pub aux_insert_wet_mix: f32,
+    /// Phase-7 S5 correction state, mirrored from the correction node on the
+    /// telemetry cadence (enabled, phase mode, IR length, added latency,
+    /// per-channel max gain, depth).
+    pub correction: CorrectionInfo,
+}
+
+/// Phase-7 S5 room/headphone correction telemetry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CorrectionInfo {
+    /// Whether the correction stage is enabled.
+    pub enabled: bool,
+    /// Wet/dry depth in [0, 1] (1.0 = fully corrected).
+    pub depth: f32,
+    /// Phase mode the loaded IR set was rendered in (`None` = no IR).
+    pub phase_mode: Option<String>,
+    /// Length of the loaded IRs (samples); 0 when inactive.
+    pub ir_len_samples: usize,
+    /// Declared correction latency (ms) — the phase mode's group delay.
+    pub latency_ms: f32,
+    /// Peak gain the loaded set applies (dB).
+    pub max_gain_db: f32,
+}
+
+impl Default for CorrectionInfo {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            depth: 1.0,
+            phase_mode: None,
+            ir_len_samples: 0,
+            latency_ms: 0.0,
+            max_gain_db: 0.0,
+        }
+    }
 }
 
 /// Telemetry for one physical output endpoint.
@@ -208,6 +242,7 @@ impl Default for PlaybackInfo {
             endpoints: Vec::new(),
             aux_insert_enabled: false,
             aux_insert_wet_mix: 0.5,
+            correction: CorrectionInfo::default(),
         }
     }
 }

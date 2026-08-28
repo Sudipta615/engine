@@ -15,6 +15,7 @@
 //!   LoudnessScanComplete; also profile/device helpers
 
 mod capture;
+mod correction;
 mod dsp;
 mod eq;
 mod lanes;
@@ -23,6 +24,8 @@ mod multichannel;
 mod output;
 mod playback;
 mod playlist;
+
+pub(crate) use correction::PendingMeasurement;
 
 use crossbeam::channel::TryRecvError;
 use log::warn;
@@ -424,6 +427,17 @@ impl AudioEngine {
             EngineCommand::SetAuxInsert { enabled, wet_mix } => {
                 self.graph.set_aux_insert(enabled, wet_mix);
             }
+
+            // ── Correction (Phase 7 S5) ──
+            EngineCommand::SetCorrectionEnabled(enabled) => {
+                self.handle_set_correction_enabled(enabled)
+            }
+            EngineCommand::SetCorrectionDepth(depth) => self.handle_set_correction_depth(depth),
+            EngineCommand::LoadCorrectionIr(path) => self.handle_load_correction_ir(path),
+            EngineCommand::MeasureRoom {
+                seconds,
+                pre_emphasis,
+            } => self.handle_measure_room(seconds, pre_emphasis),
             EngineCommand::SetSampleRatePolicy(policy) => {
                 self.handle_set_sample_rate_policy(policy)
             }

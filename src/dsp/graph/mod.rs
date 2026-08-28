@@ -118,8 +118,11 @@ mod node_id {
     /// send taps and returning into the master. Runs right after the mix
     /// step in the plan (see [`plan::PlanSet::compile`]).
     pub const AUX: usize = 14;
+    /// Phase 7 S5: the room/headphone correction node (per-channel
+    /// partitioned convolution bank), placed post-aux / pre-EQ.
+    pub const CORRECTION: usize = 15;
     /// Number of canonical node slots (also the first non-node `NodeId`).
-    pub const NODE_COUNT: usize = 15;
+    pub const NODE_COUNT: usize = 16;
 }
 
 /// Uniform node storage for the arena. The enum enables monomorphized (match)
@@ -148,6 +151,7 @@ pub(super) enum GraphNode {
     Limiter(LimiterNode),
     Dither(DitherNode),
     Aux(AuxBusNode),
+    Correction(CorrectionNode),
 }
 
 const VOLUME_RAMP_DURATION_MS: f32 = 10.0;

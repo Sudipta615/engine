@@ -97,6 +97,25 @@ pub enum EngineEvent {
     },
     /// A capture could not be started or stopped.
     CaptureError(String),
+    /// Phase-7 S5 room measurement progress: a stage of the sweep
+    /// measurement completed (sweep generated, capture started, …).
+    MeasurementProgress {
+        /// Human-readable stage name.
+        stage: String,
+    },
+    /// Phase-7 S5 room measurement completed: the sweep recording at `path`
+    /// was deconvolved and the derived correction IR is now live (enabled,
+    /// depth per config).
+    MeasurementComplete {
+        /// The sweep recording the correction was derived from.
+        path: std::path::PathBuf,
+        /// Measurement SNR (dB) reported by the S1 deconvolution.
+        snr_db: f32,
+    },
+    /// Phase-7 S5 room measurement could not complete (no capture backend,
+    /// an unreadable recording, or a derivation failure). The sweep may
+    /// still have played; no correction was changed.
+    MeasurementFailed(String),
 }
 
 /// Hardware output device events.
