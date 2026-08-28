@@ -16,6 +16,7 @@ pub mod playback_info;
 pub mod playlist;
 pub mod sink;
 pub mod source;
+pub mod spatial;
 
 // Re-exports for convenience
 pub use commands::EngineCommand;
@@ -50,6 +51,11 @@ pub mod prelude {
         playlist::{Playlist, RepeatMode},
         sink::{DacSink, NoopSink, SampleSink, VecSink},
         source::AudioSource,
+        spatial::{
+            AirAbsorption, BasicPanner, DistanceModel, LayoutCalibration, Listener, ObjectAudioRef,
+            ObjectId, Quat, RenderError, RendererKind, SpatialAudioObject, SpatialObjectStore,
+            SpatialRenderer, SpatialScene, Speaker, SpeakerId, SpeakerLayout, Vec3,
+        },
     };
-    pub use config::{AudioBackend, ResamplerQuality};
+    pub use config::{AudioBackend, ChannelPolicy, ResamplerQuality};
 }

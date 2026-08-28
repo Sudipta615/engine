@@ -412,3 +412,60 @@ mains); AutoEQ headphone-target integration (S4's target curves are the
 seam); extending the pipeline oracle with a correction stage for a
 correction-vs-pipeline golden equivalence suite.
 
+---
+
+## Phase 8 — Spatial scene + basic panner (v3.11.0) — **Implemented**
+
+**Intent.** Lay the speaker-independent spatial layer (the spec's central
+rule: *objects describe content, channels describe the reproduction system*)
+without touching the conventional PCM/DSP/output core. The spec's
+multichannel foundation (semantic `ChannelId`/`ChannelLayout`, N-channel
+buffers, LFE-as-effects-path, BS.775 matrices) already shipped, so this
+phase adds **`crate::spatial`**: an opt-in, standalone scene model plus the
+first renderer.
+
+### Key mechanisms
+
+- **`spatial::math`** — allocation-free `Vec3`/`Quat` with one documented
+  coordinate system (`+X` right, `+Y` front, `+Z` up; azimuth 0 = front,
+  +90° = right; metres/radians/linear). Deliberately dependency-light (no
+  `glam`/`nalgebra`).
+- **Scene model** — `SpatialScene` (listener + bounded object store),
+  `Listener`/`ListenerTransform` (world-fixed objects move exactly opposite
+  the listener yaw — the head-tracking seam), `SpatialAudioObject` with
+  shareable `ObjectAudioRef`, and `SpatialSourceType` (Point/Extended/
+  Diffuse/Bed seams). Beds/fields/room are documented future seams, so the
+  scene needs no redesign when they land (§136).
+- **Speaker geometry** — `Speaker`/`SpeakerLayout` (  named presets stereo / 5.1
+  / 7.1 / 7.1.4 + arbitrary `custom`) and `LayoutCalibration` (per-speaker
+  trim + time-align) applied separately from geometry (§19–20).
+- **`BasicPanner`** — listener-space transform, azimuth-bracketing
+  speaker-pair solve under the equal-power `la²+lb²=1` law, per-
+  `(object,speaker)` coefficient smoothing (click-free region crossings),
+  additive LFE send (never a pan target), simplified spread, and a broad
+  `cos(elevation)` off-plane term. Writes into a caller-supplied interleaved
+  buffer, so the steady-state hot path allocates nothing.
+- **Renderer abstraction** — `SpatialRenderer` trait, `RendererKind`,
+  typed `RenderError` (invalid/degenerate geometry surfaces as an error,
+  never NaN). `ChannelPolicy::SpatialRender` is the opt-in flag.
+
+**Realtime discipline.** Geometry is fully preprocessed in `prepare`;
+`process_block` has no `Vec` growth and no locks (validated by
+`realtime_allocation`). Disabled-exact by construction — the conventional
+decode loop and the graph-vs-pipeline equivalence suite are untouched and
+stay bit-exact.
+
+**Acceptance (spec-first).** `tests/fidelity/spatial_panner.rs` covers
+cardinal impulses, symmetry, continuity around a full circle (no NaN / no
+jump), the narrow-band energy invariant at spread 0, listener rotation
+preserving world-fixed objects, distance/elevation monotonicity, LFE
+isolation, per-speaker calibration trim, custom layouts, and bounded air
+absorption.
+
+**Unblocks (Horizon).** The next spatial phases in the spec's dependency
+order: 3D VBAP geometry (speaker-pair/triplet solver + out-of-coverage
+fallback), object behavior (directivity/Doppler/occlusion), beds/fields,
+Ambisonics/HOA, room/reflections, HRTF/SOFA/binaural, head tracking, scene
+file format, and eventually a `SpatialNode` in the production graph. The
+scene/level/render layer is the stable substrate those build on.
+

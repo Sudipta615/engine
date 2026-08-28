@@ -317,6 +317,12 @@ impl AudioEngine {
                 config::ChannelPolicy::MaxChannels(max_ch) => {
                     channels > 2 && channels <= max_ch as usize
                 }
+                // `SpatialRender` routes a spatial scene through the spatial
+                // renderer; the conventional channel path is left untouched
+                // here (the renderer owns the object→speaker mapping). The
+                // engine's spatial driver decodes object audio separately and
+                // hands it to the renderer as planes.
+                config::ChannelPolicy::SpatialRender => false,
             };
             // An explicit channel-mix template may widen stereo into the
             // negotiated multichannel output, or map a mismatched source

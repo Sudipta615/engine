@@ -30,6 +30,7 @@ from C, C++, Python, C#, Node.js, and any language that can call C.
 | **Gapless + crossfade transitions** | Sample-accurate **gapless**, customizable **crossfade** (constant-power / linear / exponential / logarithmic / S-curve), fade, and stop transitions between tracks — all as mix-bus envelopes. |
 | **Audiophile codecs + 1-bit DSD** | FLAC, ALAC, WAV, AIFF, APE, WavPack, TTA, Opus, Ogg Vorbis, AAC, MP3 — plus native **DSD (DSF/DFF)** up to DSD512 over Native wire and DoP. |
 | **Immersive multichannel** | Mono → 7.1.4 (12 ch) and custom layouts up to 16 channels, with active bass management, per-channel distance delays, routing matrices, and per-channel EQ. |
+| **Spatial audio (opt-in)** | An independent spatial scene layer (`spatial/`): world-space objects + listener, named/custom speaker layouts, calibration, and an equal-power `BasicPanner` that renders the *same* scene to stereo, 5.1, 7.1, 7.1.4, or a custom array into a normal multichannel buffer — conventional PCM/DSP untouched (opt in via `ChannelPolicy::SpatialRender`).
 | **Isolated client handle** | `EngineHandle` is a `Clone + Send` bridge over a lock-free command channel and atomic telemetry — the realtime thread is never blocked by the host. |
 | **Real-time analyzer** | Lock-free peak / RMS / dominant-frequency and FFT spectrum taps published in every telemetry snapshot. |
 | **Loudness & tags** | EBU R128 / ReplayGain measurement, normalization, and **tag write-back** (`tag-write`) in FLAC/MP3/M4A/WAV/AIFF/APE/WavPack; AcoustID **fingerprinting** (`fingerprint`). |
@@ -406,8 +407,8 @@ Everything is opt-in; the default set covers everyday playback.
 
 ## 🧪 Testing & quality gates
 
-The repository ships **29 integration/fidelity test files** plus in-crate unit suites —
-over 700 tests. Dedicated suites under [`tests/fidelity/`](tests/fidelity/) cover EQ
+The repository ships **30 integration/fidelity test files** plus in-crate unit suites —
+over 730 tests. Dedicated suites under [`tests/fidelity/`](tests/fidelity/) cover EQ
 frequency response, lookahead-limiter correctness and measurement, dither measurement,
 resampler quality/measurement, EBU R128, golden reference vectors, decoder robustness +
 fuzz mutation, multichannel graph, gapless/crossfade/seamless-seek, timestretch fidelity,
@@ -452,6 +453,9 @@ cross-target compile check of the native WASAPI/ASIO backends. Always re-run `ca
 │   │   │                      #   split into construction/plan/swap/access/controls/
 │   │   │                      #   lifecycle/process/limiter/report + nodes/)
 │   │   └── resampler/         # Rubato-based resampling
+│   ├── spatial/               # Speaker-independent spatial layer (Phase 8):
+│   │                          #   math/ (Vec3+Quat+coords), scene/object/speaker/
+│   │                          #   level/render + panner/ (BasicPanner)
 │   ├── output/                # ALSA / WASAPI / ASIO / CoreAudio / CPAL + endpoint.rs
 │   │                          #   (per-endpoint worker + drift correction), device
 │   │                          #   monitor, output profiles, WAV writer, loopback

@@ -2,6 +2,65 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.11.0] — 2026-08-28
+
+Spatial audio foundation (roadmap Phase 8): an independent, opt-in spatial
+scene layer plus the first renderer. A `crate::spatial` module brings a
+speaker-independent object scene model and an equal-power `BasicPanner` that
+renders the same scene to any layout — stereo, 5.1, 7.1, 7.1.4, or a custom
+array — into a normal interleaved multichannel buffer the existing output
+core delivers. The conventional PCM/DSP path is untouched; spatial rendering
+is opted into via `ChannelPolicy::SpatialRender`. The spec's multichannel
+foundation (semantic channels, N-channel buffers, LFE-as-effects-path already
+normalized in prior phases) means this phase adds the scene/level/render
+layer without touching conventional playback.
+
+### Added
+
+- **Spatial math** (`spatial::math`): allocation-free `Vec3` / `Quat` with a
+  single documented coordinate system (`+X` right, `+Y` front, `+Z` up;
+  azimuth from front toward right; metres / radians / linear gain) — the
+  engine stays dependency-light (no `glam`/`nalgebra`).
+- **Scene model**: `SpatialScene` (listener + object store), `Listener` and
+  the `ListenerTransform` (world-fixed objects move exactly opposite the
+  listener's yaw — the head-tracking/VR seam), `SpatialAudioObject` with
+  `ObjectAudioRef` (one shareable [`AudioSource`] serving many instances),
+  `SpatialObjectStore` (bounded, stable handles), and `SpatialSourceType`
+  (Point/Extended/Diffuse/Bed seams).
+- **Speaker geometry**: `Speaker`, `SpeakerLayout` with named presets
+  (`stereo` / `five_point_one` / `seven_point_one` / `seven_point_one_four`)
+  plus arbitrary `custom` arrays, and `LayoutCalibration` (per-speaker level
+  trim + time-alignment seams) applied separately from geometry.
+- **Level laws**: `DistanceModel` (`Linear` / `Inverse` / `InverseSquare` /
+  `InverseReference`) and a bounded `AirAbsorption` HF model.
+- **Equal-power `BasicPanner`** (`spatial::panner`): listener-space
+  transform, azimuth-bracketing speaker-pair solve with the `la²+lb²=1`
+  equal-power law, per-(object,speaker) coefficient smoothing (click-free
+  region transitions), additive LFE send (LFE is never a pan target),
+  simplified spread, and `cos(elevation)` off-plane attenuation — writing
+  into a caller-supplied interleaved buffer so the steady-state hot path
+  allocates nothing.
+- **Renderer abstraction**: `SpatialRenderer` trait, `RendererKind`, and
+  typed `RenderError` (invalid/degenerate geometry surfaces as errors, never
+  NaN).
+- **Opt-in policy**: `ChannelPolicy::SpatialRender` (config crate) — the
+  conventional decode loop is unchanged; hosts drive the renderer
+  programmatically via the `prelude` (aspatial types re-exported).
+- **Acceptance suites**: `tests/fidelity/spatial_panner.rs` (cardinal
+  impulses, symmetry, continuity around a full circle, energy invariant at
+  spread 0, listener rotation keeping world-fixed objects stable, distance /
+  elevation monotonicity, LFE isolation, calibration trim, custom layouts,
+  bounded air absorption) and a `realtime_allocation` test proving
+  `BasicPanner::process_block` performs zero allocations in steady state.
+
+### Fixed
+
+- n/a
+
+### Changed
+
+- `engine` and `config` versions remain synchronized at `3.11.0`.
+
 ## [3.10.0] — 2026-08-28
 
 Room/headphone correction pipeline (Phase 7 S1–S5): measurement through

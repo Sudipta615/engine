@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use engine::dsp::graph::DspGraph;
 use engine::dsp::loudness::LoudnessMetadata;
 use engine::dsp::pipeline::DspPipeline;
+use engine::spatial::{BasicPanner, SpatialRenderer, SpatialScene, SpeakerLayout, Vec3};
 
 /// Write a short 16-bit stereo WAV whose left channel is a single impulse
 /// (sample 0 = 1.0, rest silence); right channel silent. Used as the aux
@@ -483,5 +484,68 @@ fn realtime_resampler_non_passthrough_does_not_allocate() {
     assert_eq!(
         allocations, 0,
         "non-passthrough resampler processing allocated on the audio path"
+    );
+}
+
+/// The spatial `BasicPanner` (Phase A, spec Part V) must uphold the same
+/// zero-allocation contract as the rest of the engine's hot path: after
+/// `prepare`, `process_block` writes into a caller buffer using only
+/// preallocated per-object state and stack arrays — no `Vec` growth, no
+/// data-structure rebuild.
+///
+/// Scene construction, the layout, and `prepare` are all control-path (run
+/// before the measurement window). The measured loop only calls
+/// `process_block` against a fixed scene and input planes.
+#[test]
+fn realtime_spatial_panner_does_not_allocate() {
+    let mut scene = SpatialScene::new(48_000);
+    // Several objects spread around the ring to exercise multiple pan paths.
+    for (x, y) in [
+        (0.0, 1.0),
+        (-1.0, 0.0),
+        (1.0, 0.0),
+        (0.0, -1.0),
+        (0.5, 0.5),
+        (-0.5, 0.5),
+    ] {
+        scene
+            .create_audio_object(Vec3::new(x, y, 0.0))
+            .expect("add object");
+    }
+
+    let layout = SpeakerLayout::five_point_one();
+    let mut panner = BasicPanner::new(engine::spatial::panner::DEFAULT_SMOOTHING_MS);
+    panner.prepare(&layout, 48_000).unwrap();
+
+    // Preallocate input planes and the interleaved output buffer. The input
+    // values stay fixed for the whole measured loop (this test measures
+    // allocation, not sample correctness).
+    const FRAMES: usize = 128;
+    let inputs: Vec<Vec<f32>> = (0..6).map(|_| vec![0.3f32; FRAMES]).collect();
+    let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
+    let mut out = vec![0.0f32; 6 * FRAMES];
+
+    // Warm up the smoothing state (control-rate one-pole + per-object paths)
+    // before arming the allocator.
+    panner
+        .process_block(&scene, &input_refs, FRAMES, &mut out)
+        .unwrap();
+    out.fill(0.0);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for _ in 0..10_000 {
+        panner
+            .process_block(&scene, &input_refs, FRAMES, &mut out)
+            .unwrap();
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocations = THREAD_ALLOCS.with(|c| c.get());
+
+    assert_eq!(
+        allocations, 0,
+        "steady-state spatial panner processing allocated on the audio path"
     );
 }

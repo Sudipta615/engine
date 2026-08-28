@@ -279,6 +279,17 @@ pub enum ChannelPolicy {
     /// or if the output/DSP path cannot preserve the requested layout. N is
     /// also bounded by the engine's maximum supported channel count.
     MaxChannels(u8),
+    /// Render a spatial scene through a spatial renderer (`SpatialObjects`
+    /// mode, spec §6 / Part I §6).
+    ///
+    /// In this mode the conventional decoded-signal path is routed through
+    /// the engine's spatial renderer, which places scene objects onto the
+    /// negotiated output layout. This is **opt-in**: the default remains
+    /// [`Self::ForceDownmixStereo`], and every other access to the channel
+    /// engine is unchanged. Beds/fields and object audio that have no spatial
+    /// counterpart fall back to a conventional downmix so no channel is
+    /// silently dropped.
+    SpatialRender,
 }
 
 /// Envelope detector mode for a compressor band.

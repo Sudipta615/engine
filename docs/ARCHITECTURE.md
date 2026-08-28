@@ -129,6 +129,30 @@ src/
 │                             #   (CorrectionNode — per-channel partitioned
 │                             #   convolution bank, post-aux/pre-EQ)
 │
+├── spatial/                  # ── Spatial audio (Phase 8, opt-in) ──
+│   ├── math.rs               # Vec3 / Quat + the single documented coordinate
+│   │                         #   system (+X right, +Y front, +Z up; metres /
+│   │                         #   radians / linear gain) — no linear-algebra dep
+│   ├── scene.rs              # SpatialScene (listener + object store),
+│   │                         #   Listener, ListenerTransform (world-fixed
+│   │                         #   objects move opposite the listener yaw)
+│   ├── object.rs             # SpatialAudioObject, ObjectAudioRef (shareable
+│   │                         #   AudioSource), SpatialObjectStore (bounded /
+│   │                         #   stable handles), SpatialSourceType
+│   ├── speaker.rs            # Speaker, SpeakerLayout (stereo / 5.1 / 7.1 /
+│   │                         #   7.1.4 / custom), LayoutCalibration
+│   ├── level.rs              # DistanceModel (Linear/Inverse/InverseSquare/
+│   │                         #   InverseReference), AirAbsorption
+│   ├── render.rs             # SpatialRenderer trait, RendererKind, RenderError
+│   └── panner.rs             # BasicPanner — equal-power pair pans, per-path
+│                             #   coefficient smoothing, additive LFE send
+│                             #   (LFE is not a pan target), simplified spread,
+│                             #   cos(elevation) off-plane term; writes into a
+│                             #   caller-supplied interleaved buffer so the
+│                             #   steady-state hot path allocates nothing.
+│                             #   Beds/fields/room/HRTF/binaural are declared
+│                             #   seams for later phases (spec Part XXVI).
+│
 ├── output/                   # ── Output backends ──
 │   ├── mod.rs                # Module wiring + re-exports
 │   ├── output.rs             # Output trait + factory (backend selection/fallback)

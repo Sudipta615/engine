@@ -38,6 +38,10 @@ drive the whole surface.
 │   │                           #   plans split by concern (construction/plan/swap/
 │   │                           #   access/controls/lifecycle/process/limiter/report
 │   │                           #   + nodes/: mix/{mod,envelope,sum}, aux_node, …)
+│   ├── spatial/                # speaker-independent spatial layer (Phase 8):
+│   │                           #   math/ (Vec3+Quat+one coordinate system),
+│   │                           #   scene/object/speaker/level/render + panner/
+│   │                           #   (BasicPanner, equal-power)
 │   ├── output/                 # per-OS backends (alsa/wasapi/asio/coreaudio/cpal) +
 │   │                           #   endpoint.rs (per-endpoint worker, drift correction)
 │   │                           #   + device_monitor, output_profile, rate_policy
