@@ -472,7 +472,7 @@ cross-target compile check of the native WASAPI/ASIO backends. Always re-run `ca
 │   │                          #   (per-endpoint worker + drift correction), device
 │   │                          #   monitor, output profiles, WAV writer, loopback
 │   └── bin/                   # audio-engine-cli, replaygain-scanner
-├── benches/                   # dsp_bench, pipeline_bench, graph_plan_bench
+├── benches/                   # dsp_bench, pipeline_bench, graph_plan_bench, spatial_bench
 ├── docs/                      # ARCHITECTURE.md, SIGNAL_FLOW.md, EMBEDDING.md, ROADMAP.md
 └── tests/                     # headless_playback.rs, fidelity/ (26 suites)
 ```

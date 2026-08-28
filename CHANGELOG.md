@@ -2,6 +2,38 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.23.0] — 2026-08-29
+
+Hot-path optimization of the binaural renderer (Phase 22). Per-frame-
+constant geometry — the analytic ITD delay (`sin` + Woodworth) and the
+room images' ITD — is hoisted out of the per-sample loop and computed once
+per block; FIR ring reads drop their per-tap modulo; ring cursors advance
+by increment-and-wrap; and `read_delayed` needs one modulo instead of two.
+All changes are arithmetic-identical (same samples, same order), so the
+bit-exact equivalence suites are untouched — measured on `spatial_bench`
+(4 objects, 1024 frames @ 48 kHz): FIR dataset path **2.9×**, analytic
+**2.2×**, analytic + room **1.7×**, production graph SpatialNode (512)
+**1.9×**; the VBAP path is unchanged (untouched).
+
+### Added
+
+- `benches/spatial_bench.rs` — criterion suites for the binaural FIR /
+  analytic / room paths, VBAP on 5.1, and the graph with the SpatialNode
+  enabled (regression guards for the Phase-22 wins).
+
+### Changed
+
+- `BinauralRenderer` object loop: analytic ITD delays and room-image ITDs
+  precomputed once per block; `azimuth_rad` no longer recomputed per
+  frame in the FIR path.
+- FIR convolution: descending ring reads with a wrap branch instead of a
+  modulo per tap (identical tap order).
+- `read_delayed`: one modulo + branch instead of two modulos.
+
+### Fixed
+
+- None.
+
 ## [3.22.0] — 2026-08-29
 
 The active spatial scene now persists across sessions: the engine

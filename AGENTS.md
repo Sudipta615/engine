@@ -60,7 +60,7 @@ drive the whole surface.
 │   │                           #   endpoint.rs (per-endpoint worker, drift correction)
 │   │                           #   + device_monitor, output_profile, rate_policy
 │   └── bin/                    # `audio-engine-cli`, `replaygain-scanner`
-├── benches/                    # dsp_bench, pipeline_bench, graph_plan_bench
+├── benches/                    # dsp_bench, pipeline_bench, graph_plan_bench, spatial_bench
 ├── docs/                       # ARCHITECTURE.md, SIGNAL_FLOW.md, EMBEDDING.md, ROADMAP.md
 └── tests/                      # headless + `tests/fidelity/` DSP/decoder suites
 ```

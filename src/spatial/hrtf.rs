@@ -242,8 +242,12 @@ pub fn read_delayed(ring: &[f32], cursor: usize, delay_samples: f32, len: usize)
     let d = delay_samples.clamp(0.0, l - 1.0);
     let i = d.floor() as usize;
     let f = d - i as f32;
-    let a = ring[(cursor + len - i) % len];
-    let b = ring[(cursor + len - i - 1) % len];
+    // Phase 22: one modulo instead of two — `b` is one ring slot behind `a`
+    // (mod `len`), so the wrap is a branch, not a division.
+    let a_idx = (cursor + len - i) % len;
+    let b_idx = if a_idx == 0 { len - 1 } else { a_idx - 1 };
+    let a = ring[a_idx];
+    let b = ring[b_idx];
     a + f * (b - a)
 }
 

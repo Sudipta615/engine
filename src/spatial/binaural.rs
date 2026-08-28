@@ -493,6 +493,42 @@ impl BinauralRenderer {
             let use_fir = self.dataset.is_some();
             let fir_len = self.fir_len;
             let taps = self.dataset.as_ref().map(|d| d.taps()).unwrap_or(0);
+
+            // Phase 22: hoist per-frame-constant geometry out of the frame
+            // loop. The analytic ITD delay and the room images' ITD are pure
+            // functions of this block's (direction/ear) and (image/ear)
+            // pairs — computing them once per block instead of once per
+            // frame removes the renderer's largest avoidable trig cost
+            // (`ear_delay_sec` → `sin` + Woodworth). Bit-identical values;
+            // only the call site moved.
+            let mut dly = [0.0f32; MAX_DIRS * Ear::COUNT];
+            if !use_fir {
+                for (d, &(dir, _)) in dirs.iter().take(n_dirs).enumerate() {
+                    let az = dir.azimuth_rad();
+                    for ear in 0..Ear::COUNT {
+                        let e = Ear::from_index(ear);
+                        dly[d * Ear::COUNT + ear] =
+                            ear_delay_sec(az, e, self.head_radius, self.speed_of_sound)
+                                * self.sample_rate;
+                    }
+                }
+            }
+            let mut ref_itd = [0.0f32; MAX_IMAGES * Ear::COUNT];
+            for i in 0..n_img {
+                let az = ref_az[i];
+                for ear in 0..Ear::COUNT {
+                    let e = Ear::from_index(ear);
+                    ref_itd[i * Ear::COUNT + ear] =
+                        ear_delay_sec(az, e, self.head_radius, self.speed_of_sound)
+                            * self.sample_rate;
+                }
+            }
+
+            // Ring cursors advance by one per frame — track them with an
+            // increment-and-wrap instead of a modulo per frame.
+            let mut cursor = self.itd_pos % rl;
+            let mut fcur = self.fir_pos % fir_len;
+            let fir_ring_base = obj_idx * fir_len;
             for frame in 0..frames {
                 let mut s = input[frame];
                 // Occlusion low-passes before the head model (spec §43); the
@@ -501,12 +537,10 @@ impl BinauralRenderer {
                 if let Some(c) = occ_coeffs {
                     s = self.occ[obj_idx].process(s, &c);
                 }
-                let cursor = (self.itd_pos + frame) % rl;
-                let fcur = (self.fir_pos + frame) % fir_len;
                 if use_fir {
                     // FIR path: one ring per object, convolved with each
                     // (direction, ear)'s interpolated IR.
-                    self.obj_fir_ring[obj_idx * fir_len + fcur] = s;
+                    self.obj_fir_ring[fir_ring_base + fcur] = s;
                 } else {
                     self.obj_itd[row + cursor] = s;
                 }
@@ -515,27 +549,33 @@ impl BinauralRenderer {
                 // spectral HRTF (dataset loaded — carries ITD + spectral
                 // cues) or the analytic chain (fractional ITD delay + head-
                 // shadow shelf + elevation pinna notch).
-                for (d, &(dir, w)) in dirs.iter().take(n_dirs).enumerate() {
-                    let az = dir.azimuth_rad();
+                for (d, &(_, w)) in dirs.iter().take(n_dirs).enumerate() {
                     for ear in 0..Ear::COUNT {
-                        let e = Ear::from_index(ear);
                         let idx = obj_idx * (MAX_DIRS * Ear::COUNT) + d * Ear::COUNT + ear;
                         if use_fir {
                             let ir_base = idx * taps;
                             let mut acc = 0.0f32;
+                            // Phase 22: descending ring reads with a wrap
+                            // branch instead of a modulo per tap. `taps <
+                            // fir_len`, so the window wraps at most once;
+                            // same samples, same order — bit-exact.
+                            let mut ridx = fcur;
                             for k in 0..taps {
                                 acc += self.obj_ir[ir_base + k]
-                                    * self.obj_fir_ring
-                                        [obj_idx * fir_len + (fcur + fir_len - k) % fir_len];
+                                    * self.obj_fir_ring[fir_ring_base + ridx];
+                                ridx = if ridx == 0 { fir_len - 1 } else { ridx - 1 };
                             }
                             let g = acc * w * obj_gain * self.out_trim[ear];
                             if g != 0.0 {
                                 out[frame * 2 + ear] += g;
                             }
                         } else {
-                            let delay = ear_delay_sec(az, e, self.head_radius, self.speed_of_sound)
-                                * self.sample_rate;
-                            let vd = read_delayed(&self.obj_itd[row..], cursor, delay, rl);
+                            let vd = read_delayed(
+                                &self.obj_itd[row..],
+                                cursor,
+                                dly[d * Ear::COUNT + ear],
+                                rl,
+                            );
                             let y = self.obj_shelf[idx].process(vd);
                             let y = self.obj_notch[idx].process(y);
                             let g = y * w * obj_gain * self.out_trim[ear];
@@ -560,13 +600,9 @@ impl BinauralRenderer {
                     let rcursor = self.room_er.cursor_at(frame);
                     self.room_er.store(obj_idx, rcursor, s);
                     for i in 0..n_img {
-                        let az = ref_az[i];
                         let base_delay = imgs[i].delay as f32;
                         for ear in 0..Ear::COUNT {
-                            let e = Ear::from_index(ear);
-                            let delay = base_delay
-                                + ear_delay_sec(az, e, self.head_radius, self.speed_of_sound)
-                                    * self.sample_rate;
+                            let delay = base_delay + ref_itd[i * Ear::COUNT + ear];
                             let vd = self.room_er.read_delayed(obj_idx, rcursor, delay);
                             let idx = obj_idx * (MAX_IMAGES * Ear::COUNT) + i * Ear::COUNT + ear;
                             let y = self.ref_notch[idx].process(self.ref_shelf[idx].process(vd));
@@ -579,6 +615,15 @@ impl BinauralRenderer {
                     if obj.room_send > 0.0 {
                         self.room_er.add_send(frame, s * obj.gain * obj.room_send);
                     }
+                }
+
+                cursor += 1;
+                if cursor == rl {
+                    cursor = 0;
+                }
+                fcur += 1;
+                if fcur == fir_len {
+                    fcur = 0;
                 }
             }
         }

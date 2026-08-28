@@ -1055,3 +1055,49 @@ missing auto-save is a no-op.
 **Unblocks (Horizon).** Versioned auto-save files, per-endpoint scene
 layouts, and host tooling on top of the restored scene.
 
+## Phase 22 — Optimization (v3.23.0) — **Implemented**
+
+**Intent.** The final phase: cut the spatial renderer's avoidable hot-path
+cost. Every Phase-8–21 capability must stay exactly as verified — the
+phase's non-negotiables are **bit-exactness** (the equivalence suites stay
+pinned) and **zero allocation** (the realtime suites stay green).
+
+### Key mechanisms
+
+- **Per-block geometry hoisting in `BinauralRenderer::render_objects`** —
+  the analytic ITD delay (`ear_delay_sec` → `sin` + Woodworth) and the
+  room images' ITD are pure functions of the block's direction/ear pairs,
+  yet were recomputed once per *frame*. They now live in per-block
+  tables (`dly`, `ref_itd`); `azimuth_rad` is no longer called per frame
+  in the FIR path either. Identical values, moved call sites.
+- **Modulo-free FIR ring reads** — the dataset convolution read its
+  `taps`-sample window with `% fir_len` per tap. The window wraps at most
+  once (`taps < fir_len`), so a descending index with one wrap branch
+  replaces the per-tap division; the tap order — and therefore the
+  accumulation — is unchanged.
+- **Increment-and-wrap ring cursors** — `(pos + frame) % len` per frame
+  becomes a running cursor with a wrap check.
+- **`read_delayed` one modulo** — `b` is one ring slot behind `a`, so the
+  second modulo becomes a branch.
+
+### Measured (criterion, `benches/spatial_bench.rs`, 4 objects × 1024
+frames @ 48 kHz, after vs before)
+
+| Path | Before | After | Speedup |
+|---|---|---|---|
+| Binaural FIR (64-tap dataset) | 4.35 ms | 1.52 ms | **2.9×** |
+| Binaural analytic | 701 µs | 324 µs | **2.2×** |
+| Binaural analytic + room | 1.63 ms | 964 µs | **1.7×** |
+| Graph SpatialNode (512-block) | 128 µs | 68 µs | **1.9×** |
+| VBAP 5.1 (untouched) | 61 µs | 53 µs | — |
+
+**Acceptance (spec-first).** All Phase-8–21 suites unchanged and green:
+the `graph_pipeline_equivalence` bit-exact suites, every spatial
+acceptance suite (`spatial_binaural`, `spatial_hrtf_ir`, `spatial_scene`,
+`spatial_render`, …), and `realtime_allocation` (0 allocs on the
+optimized paths). `spatial_bench` pins the numbers going forward.
+
+**Unblocks (Horizon).** SIMD (portable `std::simd` on stable) for the FIR
+convolution and mix sum, and per-architecture tuning of the renderer
+inner loops.
+
