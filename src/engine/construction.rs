@@ -68,7 +68,13 @@ impl AudioEngine {
         let (output_event_tx, output_event_rx) = channel::bounded(64);
         let output_sample_rate = DEFAULT_SAMPLE_RATE;
         let configured_endpoints = config.endpoints.clone();
-        let graph = DspGraph::from_config(&config, output_sample_rate as f32);
+        let mut graph = DspGraph::from_config(&config, output_sample_rate as f32);
+        // Phase 21: restore the last session's active spatial scene (screen,
+        // room, listener, enable) over the configured defaults. Best-effort
+        // — a missing/corrupt auto-save simply keeps the config defaults.
+        let mut spatial_persistence =
+            crate::engine::spatial_persistence::SpatialPersistence::from_config(&config);
+        spatial_persistence.restore(&mut graph, output_sample_rate as f32);
         let graphic_eq = GraphicEq::from_config(&config.graphic_eq);
         let info = PlaybackInfo {
             sample_rate: output_sample_rate,
@@ -116,6 +122,7 @@ impl AudioEngine {
             loudness_scan: LoudnessScanState::default(),
             recovery: RecoveryState::default(),
             scratch: EngineScratch::default(),
+            spatial_persistence,
             lanes: Vec::new(),
             #[cfg(feature = "audio-output")]
             endpoints: Vec::new(),

@@ -1020,3 +1020,38 @@ peak normalization, irregular-mesh rejection, and the JSON round-trip.
 **Unblocks (Horizon).** Optional minimum-phase conversion of the IRs to
 shrink the FIR length, and per-corpus tap budgeting on `use_dataset`.
 
+## Phase 21 — Scene persistence in the engine lifecycle (v3.22.0) — **Implemented**
+
+**Intent.** The active spatial scene survives across sessions: the engine
+auto-saves the graph's spatial state and restores it at construction, so
+a host's spatial tuning is not lost on restart.
+
+### Key mechanisms
+
+- **`engine::spatial_persistence`** — a control-path concern
+  (`SpatialPersistence`) that snapshots the `SpatialNode` surface
+  (enable, screen, room, listener) into the existing
+  `config::SpatialConfig` serde model — the same model the graph
+  configures from — so no new file format is needed. Writes are atomic
+  (temp + rename): a crash mid-write can never corrupt the last good
+  scene.
+- **Lifecycle hooks** — restore runs at engine construction (best-effort:
+  a missing/corrupt file keeps the config defaults; construction never
+  fails). `maybe_save` runs once per engine tick *after* queued graph
+  controls are applied and writes only when the state changed (plain
+  field compare on the steady path). `Drop` flushes pending controls and
+  persists the final scene, so a graceful shutdown always restores
+  exactly what was active.
+- **`EngineConfig::spatial_autosave_path`** — hosts can point the
+  auto-save at their own file (default: `<user-data>/engine/
+  spatial_scene.json`).
+
+**Acceptance (spec-first).** Unit suites in `spatial_persistence.rs` pin
+the snapshot round-trip, write-on-change, and best-effort restore.
+`src/engine/tests/spatial_persistence.rs` exercises the full lifecycle:
+a scene survives an engine restart, drop persists without a tick, and a
+missing auto-save is a no-op.
+
+**Unblocks (Horizon).** Versioned auto-save files, per-endpoint scene
+layouts, and host tooling on top of the restored scene.
+

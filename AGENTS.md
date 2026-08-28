@@ -28,6 +28,7 @@ drive the whole surface.
 │   │   ├── tick.rs · handle.rs · stream.rs · construction.rs · output_setup.rs
 │   │   ├── lanes.rs · track_loading.rs · crossfade.rs · recovery.rs · telemetry.rs
 │   │   ├── volume.rs · clock.rs · buffers.rs · dsd_state.rs · loudness_state.rs
+│   │   ├── spatial_persistence.rs  # auto-save/restore of the active spatial scene
 │   │   ├── commands/           # command handlers by domain (playback/dsp/eq/lanes/…)
 │   │   ├── decode_loop/        # single-stream + crossfade decode loops
 │   │   └── tests/              # engine integration tests

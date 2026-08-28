@@ -33,6 +33,9 @@ src/
 │   ├── recovery.rs           # Stream recovery (device hotplug, exclusive-mode falls)
 │   ├── dsd_state.rs          # DSD transport state (native / DoP / PCM fallback)
 │   ├── loudness_state.rs     # Background EBU R128 scan state
+│   ├── spatial_persistence.rs # Phase 21: auto-save/restore of the active
+│   │                         #   spatial scene (SpatialNode surface →
+│   │                         #   SpatialConfig, atomic writes, lifecycle hooks)
 │   ├── volume.rs             # Volume control modes (software / hardware)
 │   ├── output_setup.rs       # Output backend creation & device selection
 │   ├── helpers.rs            # Shared helpers (event emission, playback info writes)

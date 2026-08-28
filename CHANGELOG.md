@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.22.0] — 2026-08-29
+
+The active spatial scene now persists across sessions: the engine
+auto-saves the graph's spatial state (screen, room, listener, enable) and
+restores it at construction, so a host's spatial tuning survives a
+restart without any host-side bookkeeping.
+
+### Added
+
+- `engine::spatial_persistence` — control-path auto-save/restore of the
+  active spatial scene. `SpatialPersistence` snapshots the `SpatialNode`
+  surface into the existing `config::SpatialConfig` serde model, writes it
+  atomically (temp + rename, so a crash can never corrupt the last good
+  scene), and restores best-effort at engine construction.
+- `EngineConfig::spatial_autosave_path` — optional explicit path for the
+  auto-save file (default: `<user-data>/engine/spatial_scene.json`);
+  hosts that want persistence elsewhere (or disabled) set this.
+- Engine lifecycle hooks: `maybe_save` runs each tick after queued graph
+  controls are applied and writes only when the state actually changed;
+  `Drop` flushes pending controls and persists the final scene, so a
+  graceful shutdown always restores exactly what was active.
+
+### Fixed
+
+- None.
+
 ## [3.21.0] — 2026-08-29
 
 Measured HRTF corpus loading: the binaural path can now render real

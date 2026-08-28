@@ -14,6 +14,7 @@ mod lanes;
 mod loudness_state;
 mod output_setup;
 mod recovery;
+mod spatial_persistence;
 mod stream;
 mod telemetry;
 #[cfg(test)]
@@ -131,6 +132,9 @@ pub struct AudioEngine {
     pub(crate) loudness_scan: LoudnessScanState,
     pub(crate) recovery: RecoveryState,
     pub(crate) scratch: EngineScratch,
+    /// Auto-save/restore of the active spatial scene (Phase 21). Control
+    /// thread only: restores at construction, writes on change + shutdown.
+    pub(crate) spatial_persistence: spatial_persistence::SpatialPersistence,
     /// Multi-track lane registry (Phase 4 S6): independent streams mixed
     /// onto bus slots ≥ 2. Control side adds/removes; the decode loop feeds
     /// active lanes at every block boundary.

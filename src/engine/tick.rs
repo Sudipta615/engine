@@ -109,6 +109,9 @@ impl AudioEngine {
         // none when no stream is playing). Multi-threaded hosts use the
         // graph's block-boundary tick instead.
         self.graph.drain_queued_control();
+        // Phase 21: persist the active spatial scene when it changed (writes
+        // once per change; the steady path is a plain field compare).
+        self.spatial_persistence.maybe_save(&self.graph);
         #[cfg(feature = "audio-output")]
         self.poll_device_monitor();
         self.drain_capture();
@@ -834,5 +837,12 @@ impl AudioEngine {
 impl Drop for AudioEngine {
     fn drop(&mut self) {
         self.stop();
+        // Flush any queued-but-unapplied graph controls so the persisted
+        // scene reflects what the host last requested (drop is the last
+        // chance to observe it — no further tick will run).
+        self.graph.drain_queued_control();
+        // Phase 21: persist the final spatial scene state so the next
+        // session restores exactly what was active at shutdown.
+        self.spatial_persistence.save_now(&self.graph);
     }
 }

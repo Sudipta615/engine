@@ -71,6 +71,13 @@ pub struct EngineConfig {
     pub correction: CorrectionConfig,
     #[serde(default)]
     pub spatial: SpatialConfig,
+    /// Optional explicit path for the active spatial scene's auto-save file
+    /// (Phase 21). `None` = the engine's user-data directory default
+    /// (`<data_local_dir>/engine/spatial_scene.json`). Hosts that want a
+    /// custom location (or to disable persistence entirely, via `Some` of a
+    /// path that is never writable) set this.
+    #[serde(default)]
+    pub spatial_autosave_path: Option<std::path::PathBuf>,
     #[serde(default)]
     pub endpoints: Vec<EndpointConfig>,
 }
@@ -370,6 +377,7 @@ impl Default for EngineConfig {
             aux: AuxBusConfig::default(),
             correction: CorrectionConfig::default(),
             spatial: SpatialConfig::default(),
+            spatial_autosave_path: None,
             endpoints: Vec::new(),
         }
     }
