@@ -111,7 +111,7 @@ impl AudioEngine {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let sweep_wav = std::env::temp_dir().join(format!("freebuff_sweep_{stamp}.wav"));
+        let sweep_wav = std::env::temp_dir().join(format!("shadow_sweep_{stamp}.wav"));
         if let Err(e) = write_mono_i16_wav(&sweep_wav, self.output_sample_rate, sweep.samples()) {
             self.emit_event(EngineEvent::MeasurementFailed(format!(
                 "cannot write the sweep WAV: {e}"
@@ -123,7 +123,7 @@ impl AudioEngine {
 
         // Capture the system mix. On platforms without a capture backend the
         // CaptureError event fires and the measurement cannot complete.
-        let recording = std::env::temp_dir().join(format!("freebuff_measurement_{stamp}.wav"));
+        let recording = std::env::temp_dir().join(format!("shadow_measurement_{stamp}.wav"));
         self.handle_capture_start(Some(recording.clone()), None);
         if !self.capture_active() {
             let _ = std::fs::remove_file(&sweep_wav);

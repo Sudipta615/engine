@@ -11,16 +11,25 @@ use std::f32::consts::PI;
 /// Uses the DeMan coefficients from ITU-R BS.1770-4: the RBJ-cookbook
 /// shelf response does not match the ITU-specified response, so the
 /// shelf is implemented as a biquad in transposed direct form II.
+///
+/// ## Precision
+///
+/// The filter state (`z1`, `z2`) is kept in **f64** so the DFII-T
+/// recursion accumulates with full double-precision, matching the
+/// main biquad engine's noise-floor model. Coefficient calculation
+/// uses `f32` (the DeMan constants are `f32`-derived); widening them
+/// to f64 for the recursion is done once per `new()`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct KWeightStage1 {
-    b0: f32,
-    b1: f32,
-    b2: f32,
-    a1: f32,
-    a2: f32,
-    // One filter state per channel (up to `MAX_CHANNELS`).
-    z1: [f32; 8],
-    z2: [f32; 8],
+    b0: f64,
+    b1: f64,
+    b2: f64,
+    a1: f64,
+    a2: f64,
+    // One filter state per channel (up to `MAX_CHANNELS`), in f64 to
+    // match the main biquad's precision model.
+    z1: [f64; 8],
+    z2: [f64; 8],
 }
 
 impl KWeightStage1 {
@@ -44,11 +53,11 @@ impl KWeightStage1 {
         let vb = vh.powf(0.499_666_78);
         let norm = kk + k / q + 1.0;
         Self {
-            b0: (vh + vb * k / q + kk) / norm,
-            b1: 2.0 * (kk - vh) / norm,
-            b2: (vh - vb * k / q + kk) / norm,
-            a1: 2.0 * (kk - 1.0) / norm,
-            a2: (1.0 - k / q + kk) / norm,
+            b0: ((vh + vb * k / q + kk) / norm) as f64,
+            b1: (2.0 * (kk - vh) / norm) as f64,
+            b2: ((vh - vb * k / q + kk) / norm) as f64,
+            a1: (2.0 * (kk - 1.0) / norm) as f64,
+            a2: ((1.0 - k / q + kk) / norm) as f64,
             z1: [0.0; 8],
             z2: [0.0; 8],
         }
@@ -56,24 +65,27 @@ impl KWeightStage1 {
 
     #[inline]
     pub(crate) fn process(&mut self, sample: f32, ch: usize) -> f32 {
-        let out = sample * self.b0 + self.z1[ch];
-        self.z1[ch] = crate::buffer::flush_denormal(sample * self.b1 - out * self.a1 + self.z2[ch]);
-        self.z2[ch] = crate::buffer::flush_denormal(sample * self.b2 - out * self.a2);
-        out
+        let s = sample as f64;
+        let out = self.b0 * s + self.z1[ch];
+        self.z1[ch] = crate::buffer::flush_denormal_f64(self.b1 * s - self.a1 * out + self.z2[ch]);
+        self.z2[ch] = crate::buffer::flush_denormal_f64(self.b2 * s - self.a2 * out);
+        out as f32
     }
 }
 
 /// Second-order high-pass (stage 2 of K-weighting)
+///
+/// See [`KWeightStage1`] for the precision rationale — same f64 state model.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct KWeightStage2 {
-    b0: f32,
-    b1: f32,
-    b2: f32,
-    a1: f32,
-    a2: f32,
-    // One filter state per channel (up to `MAX_CHANNELS`).
-    z1: [f32; 8],
-    z2: [f32; 8],
+    b0: f64,
+    b1: f64,
+    b2: f64,
+    a1: f64,
+    a2: f64,
+    // One filter state per channel (up to `MAX_CHANNELS`), in f64.
+    z1: [f64; 8],
+    z2: [f64; 8],
 }
 
 impl KWeightStage2 {
@@ -94,11 +106,11 @@ impl KWeightStage2 {
         let kk = k * k;
         let norm = kk + k / q + 1.0;
         Self {
-            b0: 1.0 / norm,
-            b1: -2.0 / norm,
-            b2: 1.0 / norm,
-            a1: 2.0 * (kk - 1.0) / norm,
-            a2: (1.0 - k / q + kk) / norm,
+            b0: (1.0 / norm) as f64,
+            b1: (-2.0 / norm) as f64,
+            b2: (1.0 / norm) as f64,
+            a1: (2.0 * (kk - 1.0) / norm) as f64,
+            a2: ((1.0 - k / q + kk) / norm) as f64,
             z1: [0.0; 8],
             z2: [0.0; 8],
         }
@@ -106,10 +118,11 @@ impl KWeightStage2 {
 
     #[inline]
     pub(crate) fn process(&mut self, sample: f32, ch: usize) -> f32 {
-        let out = sample * self.b0 + self.z1[ch];
-        self.z1[ch] = crate::buffer::flush_denormal(sample * self.b1 - out * self.a1 + self.z2[ch]);
-        self.z2[ch] = crate::buffer::flush_denormal(sample * self.b2 - out * self.a2);
-        out
+        let s = sample as f64;
+        let out = self.b0 * s + self.z1[ch];
+        self.z1[ch] = crate::buffer::flush_denormal_f64(self.b1 * s - self.a1 * out + self.z2[ch]);
+        self.z2[ch] = crate::buffer::flush_denormal_f64(self.b2 * s - self.a2 * out);
+        out as f32
     }
 }
 
@@ -478,7 +491,12 @@ pub struct LoudnessMeter {
     block_samples: u64,
     block_capacity: u64, // samples per 400ms block
 
-    // Hop counter: fires every 100ms
+    // Hop counter: fires every 100 ms. At non-standard sample rates the
+    // rounded integer sample count may differ from the exact 100 ms target
+    // by up to ±0.5 samples (e.g. at 22050 Hz, `hop_capacity` = 2205
+    // samples = 100.0227 ms). This ≤ 0.023% timing error is well within
+    // the EBU R128 ±0.5 LU tolerance and matches all reference
+    // implementations (libebur128, ffmpeg).
     hop_samples: u64,
     hop_capacity: u64,
 

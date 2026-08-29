@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.24.1] — 2026-08-29
+
+### Fixed
+
+- **FadeProcessor accumulation precision** — `FadeProcessor::advance` now computes
+  the gain value from the exact `samples_processed / total_samples` ratio in `f64`
+  rather than accumulating an `f32` increment per sample. This eliminates
+  floating-point accumulation drift over long fades (millions of samples).
+- **Loudness K-weighting precision** — `KWeightStage1` and `KWeightStage2` in
+  `dsp::loudness::meter` now maintain `f64` filter states (`z1`, `z2`), aligning with
+  the main biquad engine's precision model and lowering the measurement noise floor.
+
+### Changed
+
+- **Crossfade curve documentation** — Extended `CrossfadeCurve` doc comments to clearly
+  specify midpoint energy and power characteristics (constant-power vs −3 dB dip) for
+  each curve variant.
+- **Loudness hop timing documentation** — Added documentation detailing hop quantization
+  at non-standard sample rates and alignment with EBU R128 tolerances.
+
 ## [3.24.0] — 2026-08-29
 
 Completed the DSP seams and added the spatial scene infrastructure layers

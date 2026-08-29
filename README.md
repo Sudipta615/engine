@@ -1,4 +1,4 @@
-# Freebuff Desktop — Independent Core Audio Engine
+# Shadow Desktop — Independent Core Audio Engine
 
 A reference-grade, bit-perfect, **headless** audio playback and DSP engine written in
 **100% pure Rust**. Built for audiophile listening, pro-audio workstations, low-latency

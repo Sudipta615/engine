@@ -192,10 +192,8 @@ mod tests {
 
     #[test]
     fn snapshot_round_trips_through_the_autosave_file() {
-        let dir = std::env::temp_dir().join(format!(
-            "freebuff_spatial_persist_rt_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("shadow_spatial_persist_rt_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -227,10 +225,8 @@ mod tests {
 
     #[test]
     fn maybe_save_writes_only_on_change() {
-        let dir = std::env::temp_dir().join(format!(
-            "freebuff_spatial_persist_ms_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("shadow_spatial_persist_ms_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join(AUTOSAVE_FILE_NAME);
@@ -280,10 +276,8 @@ mod tests {
 
     #[test]
     fn restore_is_best_effort() {
-        let dir = std::env::temp_dir().join(format!(
-            "freebuff_spatial_persist_be_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("shadow_spatial_persist_be_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 

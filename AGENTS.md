@@ -4,7 +4,7 @@ Guidance for AI coding agents (and humans) working in this repository.
 
 ## Project snapshot
 
-**Freebuff Desktop** is a headless, high-performance, bit-perfect audiophile audio
+**Shadow Desktop** is a headless, high-performance, bit-perfect audiophile audio
 playback & DSP engine written in 100% pure Rust. It is a Cargo workspace with a
 graph-runtime architecture: a node-based DSP graph (compiled execution plans, live
 generation swaps) is the **production hot path**, an N-input mix bus carries the

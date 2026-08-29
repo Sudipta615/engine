@@ -228,7 +228,7 @@ fn render_rejects_bad_lengths() {
 fn write_temp_wav(channels: &[Vec<f64>], rate: u32) -> PathBuf {
     use std::io::Write;
     let path = std::env::temp_dir().join(format!(
-        "freebuff-correction-test-{}-{}.wav",
+        "shadow-correction-test-{}-{}.wav",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -316,7 +316,7 @@ fn conditioner_rejects_rate_mismatch() {
 #[test]
 fn wav_parser_rejects_garbage() {
     let path = std::env::temp_dir().join(format!(
-        "freebuff-correction-garbage-{}.bin",
+        "shadow-correction-garbage-{}.bin",
         std::process::id()
     ));
     std::fs::write(&path, b"not a wav file at all........").unwrap();

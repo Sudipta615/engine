@@ -372,7 +372,23 @@ impl FadeProcessor {
 
     fn advance(&mut self, n: u64) {
         self.samples_processed += n;
-        self.gain += self.increment_per_sample * n as f32;
+
+        // Compute gain from the exact position ratio using f64 arithmetic
+        // instead of accumulating an f32 increment per sample. This
+        // eliminates floating-point drift for very long fades (millions of
+        // samples) where repeated f32 addition would accumulate error.
+        if self.total_samples > 0 {
+            let progress =
+                (self.samples_processed as f64 / self.total_samples as f64).clamp(0.0, 1.0);
+            self.gain = match self.state {
+                FadeState::FadingIn => progress as f32,
+                FadeState::FadingOut => (1.0 - progress) as f32,
+                _ => self.gain,
+            };
+        } else {
+            // Fallback for zero-length fades (e.g. cancel with total_samples = 0).
+            self.gain += self.increment_per_sample * n as f32;
+        }
 
         match self.state {
             FadeState::FadingIn
@@ -481,5 +497,24 @@ mod tests {
             assert!(delta < 0.05, "Fade should be smooth, delta={}", delta);
             prev = l;
         }
+    }
+
+    #[test]
+    fn test_fade_exact_ratio_no_drift() {
+        // 10-second fade at 192 kHz (1,920,000 samples)
+        let sample_rate = 192_000.0;
+        let mut fade = FadeProcessor::new(10_000.0, sample_rate);
+        fade.fade_in();
+        // At half-way point, progress and curve gain should be exact
+        for _ in 0..960_000 {
+            fade.process(1.0, 1.0);
+        }
+        assert!((fade.gain() - 0.5).abs() < 1e-4);
+        // Process rest
+        for _ in 0..960_000 {
+            fade.process(1.0, 1.0);
+        }
+        assert_eq!(fade.state, FadeState::Idle);
+        assert!((fade.gain() - 1.0).abs() < 1e-6);
     }
 }

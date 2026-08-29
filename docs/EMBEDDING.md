@@ -1,6 +1,6 @@
 # Embedding the engine
 
-This guide shows real, runnable ways to embed **Freebuff Desktop**'s audio engine into a
+This guide shows real, runnable ways to embed **Shadow Desktop**'s audio engine into a
 host application. It covers the two embedding models, then walks through playback,
 telemetry, DSP control, gapless/crossfade, headless analysis, sample capture, and the C
 FFI. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the module map and concurrency model,

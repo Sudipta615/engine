@@ -1555,7 +1555,7 @@ mod tests {
                 meas(90.0, 45.0, 8, 5.0),
             ],
         };
-        let dir = std::env::temp_dir().join("freebuff_hrtf_corpus_test.json");
+        let dir = std::env::temp_dir().join("shadow_hrtf_corpus_test.json");
         save_hrtf_corpus_json(&dir, &corpus).expect("saves");
         let loaded = load_hrtf_corpus_json(&dir).expect("loads");
         let _ = std::fs::remove_file(&dir);

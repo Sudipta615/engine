@@ -10,17 +10,29 @@
 //! simply switches to the next track's samples at the boundary.
 
 /// Crossfade curve shape
+///
+/// Energy behaviour at the midpoint (`t = 0.5`) varies by curve:
+/// - **Constant power** (`out² + in² ≈ 1.0`): `EqualPower`, `Logarithmic`
+/// - **−3 dB dip** (`out² + in² = 0.5`): `Linear`, `Exponential`
+/// - **Linear-sum unity** (`out + in = 1.0`): `SCurve` (energy dips slightly)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CrossfadeCurve {
-    /// Linear interpolation (causes ~3 dB dip at center)
+    /// Linear interpolation — `(1−t, t)`. Simple but causes a ~3 dB
+    /// perceived dip at the midpoint (`0.5² + 0.5² = 0.5`).
     Linear,
-    /// Equal-power: cos/sin crossfade (preserves perceived loudness)
+    /// Equal-power cosine/sine crossfade — `(cos(π/2·t), sin(π/2·t))`.
+    /// Preserves perceived loudness because `cos² + sin² = 1`.
     EqualPower,
-    /// Exponential curve (steeper drop-off, slower rise)
+    /// Exponential curve — `((1−t)², t²)`. Steeper drop-off / slower rise
+    /// than linear; has the same ~3 dB dip at the midpoint (`0.25 + 0.25 = 0.5`).
     Exponential,
-    /// Logarithmic curve (slower drop-off, steeper rise)
+    /// Logarithmic (square-root) curve — `(√(1−t), √t)`. Slower drop-off /
+    /// steeper rise. Preserves constant power: `(1−t) + t = 1.0`.
     Logarithmic,
-    /// S-curve: smoothstep for the most natural transition
+    /// S-curve (smoothstep) — `s = t²(3−2t)`, gains `(1−s, s)`. The
+    /// smoothest perceptual transition (zero derivative at endpoints). Sum
+    /// is unity (`(1−s) + s = 1`) but energy dips slightly (`≈ 0.5` at
+    /// midpoint, same as linear).
     SCurve,
 }
 

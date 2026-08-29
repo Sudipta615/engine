@@ -494,7 +494,7 @@ mod tests {
         sc.create_field();
         sc.room.enabled = true;
         let path = std::env::temp_dir().join(format!(
-            "freebuff_scene_roundtrip_{}.json",
+            "shadow_scene_roundtrip_{}.json",
             std::process::id()
         ));
         save_scene_json(&path, &sc).unwrap();

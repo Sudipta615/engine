@@ -31,7 +31,7 @@ const SR: u32 = 48_000;
 
 fn temp_path(tag: &str) -> std::path::PathBuf {
     let mut p = std::env::temp_dir();
-    p.push(format!("freebuff_scene_{tag}_{}.json", std::process::id()));
+    p.push(format!("shadow_scene_{tag}_{}.json", std::process::id()));
     p
 }
 

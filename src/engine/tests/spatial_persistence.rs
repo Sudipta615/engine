@@ -19,7 +19,7 @@ fn headless_engine_with(dir: &std::path::Path) -> AudioEngine {
 #[test]
 fn spatial_scene_survives_an_engine_restart() {
     let dir = std::env::temp_dir().join(format!(
-        "freebuff_engine_spatial_persist_{}",
+        "shadow_engine_spatial_persist_{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
@@ -53,10 +53,8 @@ fn spatial_scene_survives_an_engine_restart() {
 /// Drop persists the scene even when no tick observed the change.
 #[test]
 fn drop_persists_the_final_scene() {
-    let dir = std::env::temp_dir().join(format!(
-        "freebuff_engine_spatial_drop_{}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("shadow_engine_spatial_drop_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("spatial_scene.json");
@@ -81,10 +79,8 @@ fn drop_persists_the_final_scene() {
 /// must never fail construction.
 #[test]
 fn missing_autosave_is_a_noop() {
-    let dir = std::env::temp_dir().join(format!(
-        "freebuff_engine_spatial_none_{}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("shadow_engine_spatial_none_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
