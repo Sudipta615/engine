@@ -51,6 +51,10 @@ pub mod prelude {
             ValidationReport,
         },
         dsp::pipeline::{DspPipeline, OutputSampleFormat},
+        dsp::timeline::{
+            AudioClock, EventError, EventId, EventPayload, EventTime, Quantize, ScheduledEvent,
+            TempoMap, TempoPoint, TempoRamp, Timeline, TimelineRegion, TransportState,
+        },
         events::EngineEvent,
         playback_info::{PlaybackInfo, PlaybackState},
         playlist::{Playlist, RepeatMode},

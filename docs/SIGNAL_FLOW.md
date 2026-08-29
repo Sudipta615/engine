@@ -235,6 +235,40 @@ The whole topology serializes to JSON and back to an identical render, and
 exports a Graphviz `digraph` for inspection. Offline-first by design (like
 the acoustic layer); the realtime `dsp::graph` hot path is untouched.
 
+### Timeline & scheduler — time as a render primitive (offline, v3.28.0)
+
+A deterministic **clock + event queue** drives a compiled Graph 2.0 graph:
+musical time (BPM, bars/beats/ticks, tempo changes/ramps, looping,
+transport, regions) and sample-accurate scheduled parameter changes —
+Direction 5's timestamped events made concrete:
+
+```
+Timeline (AudioClock + event queue)
+   │  schedule_at_beat / schedule_at_sample / schedule_at_..., quantize
+   ▼
+advance_block(n) → the events whose master sample was crossed (once each)
+   │  each carries its in-block index (event.at % block)
+   ▼
+OfflineExecutor.set_gain_step(node, gain, index) — the change lands
+                                        exactly on that sample, then persists
+   │  render loop gates process_block on clock.is_playing() (transport owns
+   │  the render, not just the events)
+```
+
+Example — a gate scheduled at beat 1 of a 120 BPM song opens the sine
+**sample-exactly** at sample 24 000, silent before it:
+
+```rust
+let mut tl = Timeline::new(48_000.0);
+tl.set_tempo(120.0);
+tl.set_state(TransportState::Playing, 0);
+tl.schedule(EventTime::Beat(1.0), EventPayload::SetGain { node: gain.0, gain: 2.0 })?;
+// per block: for e in tl.advance_block(128) { ex.set_gain_step(NodeId(e.node), g, e.local_index(128))?; }
+```
+
+Like the acoustic and Graph 2.0 layers, the timeline is control/offline-path
+and heap-happy by design; it adds nothing to any realtime audio thread.
+
 ### Spatial rendering (opt-in, v3.11.0 → v3.19.0)
 
 ```

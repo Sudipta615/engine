@@ -405,13 +405,14 @@ Everything is opt-in; the default set covers everyday playback.
 
 ## 🧪 Testing & quality gates
 
-The repository ships **33 integration/fidelity test files** plus in-crate unit suites —
-over 765 tests. Dedicated suites under [`tests/fidelity/`](tests/fidelity/) cover EQ
+The repository ships **34 integration/fidelity test files** plus in-crate unit suites —
+over 780 tests. Dedicated suites under [`tests/fidelity/`](tests/fidelity/) cover EQ
 frequency response, lookahead-limiter correctness and measurement, dither measurement,
 resampler quality/measurement, EBU R128, golden reference vectors, decoder robustness +
 fuzz mutation, multichannel graph, gapless/crossfade/seamless-seek, timestretch fidelity,
 the acoustic world simulation layer, its **acoustic baking** cache, the **Graph 2.0**
-general-purpose topology runtime, **graph-vs-pipeline bit-exact equivalence**,
+general-purpose topology runtime, the **timeline and scheduler** (sample-accurate
+events driving the graph), **graph-vs-pipeline bit-exact equivalence**,
 concurrent ring-buffer stress, and realtime zero-allocation validation. Benchmarks live
 in [`benches/`](benches/) (Criterion).
 

@@ -2,6 +2,46 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.28.0] — 2026-08-29
+
+Timeline and Scheduler (roadmap v3.28): **make time a first-class render
+primitive.** A new [`dsp::timeline`] module is Direction 3's `AudioClock`
+(Direction 5's event runtime) fused: a deterministic, sample-accurate clock
+and event queue that drives the Graph 2.0 `OfflineExecutor` — scheduled
+parameter changes land on the exact sample, and the transport owns the
+render, not just the events.
+
+### Added
+
+- **AudioClock** (`dsp::timeline::clock`) — Direction 3's shape in full:
+  sample position (a looped playhead) + a monotonic master counter,
+  tempo, bars/beats/ticks (MIDI 480 PPQ), transport state (Playing /
+  Paused / Stopped), a loop region (playhead wraps; events still fire
+  once on the master), a linear [`TempoRamp`], time-signature, and
+  sample↔beat conversions.
+- **TempoMap** (`dsp::timeline::tempo`) — ordered tempo changes with exact
+  piecewise-constant beat↔sample integration, so a musical position maps
+  correctly across tempo changes.
+- **Events** (`dsp::timeline::event`) — [`EventTime`] (Sample or Beat),
+  [`EventPayload`] (SetGain typed to a Graph 2.0 node, a Trigger, and an
+  opaque Host tag), and once-only sample-accurate firing.
+- **Timeline scheduler** ([`Timeline`]) — `schedule_at_sample` /
+  `schedule_at_beat`, `advance_block` returning exactly the events whose
+  master sample was crossed (each with the in-block index for sample-
+  accurate application), note-grid [`Quantize`] snapping, [`TimelineRegion`]
+  containment, and mutation-free determinism. Beat events resolve to an
+  absolute master sample at schedule time.
+- **Renderer hook** — [`OfflineExecutor::set_gain_step`](crate::dsp::graph2::OfflineExecutor::set_gain_step)
+  applies a gain change at an arbitrary in-block frame; a timeline event
+  firing at master sample `S` lands on `S % block` exactly.
+- **Fidelity suite** — `tests/fidelity/timeline_scheduler.rs` (7 tests): a
+  Timeline drives the Graph 2.0 executor with a gate scheduled at beat 1
+  opening sample-exactly at 24 000; a non-block-aligned gain step lands at
+  the exact index; looping wraps the playhead while events fire once;
+  pausing halts both clock and render (the transport owns rendering); a
+  16th-note grid snaps a beat to the exact sample; a tempo change retimes
+  a beat across segments; and timeline regions resolve containment.
+
 ## [3.27.0] — 2026-08-29
 
 Graph 2.0 (roadmap v3.27): **make the graph the true center of the
@@ -160,7 +200,7 @@ scalar absorption coefficient to per-octave-band spectra.
   world is an exact direct path; a freestanding fin diffracts a path;
   solves are deterministic and capped; and `diffract_around_edge` reports
   the correct 1/r distance + delay.
-- `config` and `engine` crates stay in lockstep at 3.27.0.
+- `config` and `engine` crates stay in lockstep at 3.28.0.
 
 ## [3.24.1] — 2026-08-29
 

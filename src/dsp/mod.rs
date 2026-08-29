@@ -24,6 +24,7 @@ pub mod pipeline;
 pub mod resampler;
 pub mod resampler_handle;
 pub mod stereo;
+pub mod timeline;
 pub mod timestretch;
 pub mod true_peak;
 

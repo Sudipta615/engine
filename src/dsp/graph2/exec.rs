@@ -38,6 +38,9 @@ pub struct OfflineExecutor {
     sources: HashMap<NodeId, SourceState>,
     /// Accumulated captured audio per Sink node.
     captures: HashMap<NodeId, Vec<f32>>,
+    /// Pending per-node gain steps `(gain, local block index)` applied by
+    /// `run_gain` at the exact frame — sample-accurate parameter changes.
+    gain_steps: HashMap<NodeId, (f32, usize)>,
 }
 
 #[derive(Debug, Default)]
@@ -93,6 +96,7 @@ impl OfflineExecutor {
             delays,
             sources: HashMap::new(),
             captures: HashMap::new(),
+            gain_steps: HashMap::new(),
         })
     }
 
@@ -132,6 +136,42 @@ impl OfflineExecutor {
     /// The audio accumulated at a Sink node so far.
     pub fn capture(&self, sink: NodeId) -> Option<&[f32]> {
         self.captures.get(&sink).map(|v| v.as_slice())
+    }
+
+    // ── Parametrized / scheduled changes (v3.28 timeline hook) ──────────────
+
+    /// Set a Gain node's gain from the **next block start** (block-quantized).
+    /// Control path; applies to the process following the next block.
+    pub fn set_gain(&mut self, node: NodeId, gain: f32) -> Result<(), Graph2Error> {
+        let n = self
+            .nodes
+            .get_mut(&node)
+            .ok_or(Graph2Error::UnknownNode(node))?;
+        if n.kind != NodeKind::Gain {
+            return Err(Graph2Error::UnknownNode(node));
+        }
+        n.params = NodeParams::Gain { gain };
+        // Drop any pending step for this node (a fresh absolute set wins).
+        self.gain_steps.remove(&node);
+        Ok(())
+    }
+
+    /// Schedule a gain step at a **local index within the current block**,
+    /// applied sample-accurately: frames `[0, local)` keep the old gain,
+    /// frames `[local, block)` use `gain`. A timeline firing an event at
+    /// master sample `S` calls `set_gain_step(node, gain, S % block)` so
+    /// the change lands on the exact sample.
+    pub fn set_gain_step(
+        &mut self,
+        node: NodeId,
+        gain: f32,
+        local: usize,
+    ) -> Result<(), Graph2Error> {
+        if !self.nodes.contains_key(&node) {
+            return Err(Graph2Error::UnknownNode(node));
+        }
+        self.gain_steps.insert(node, (gain, local.min(self.block)));
+        Ok(())
     }
 
     // ── Node ops ────────────────────────────────────────────────────────────
@@ -181,15 +221,35 @@ impl OfflineExecutor {
     }
 
     fn run_gain(&mut self, id: NodeId) {
-        let gain = match self.nodes.get(&id).map(|n| n.params.clone()) {
+        let base_gain = match self.nodes.get(&id).map(|n| n.params.clone()) {
             Some(NodeParams::Gain { gain }) => gain,
             _ => 1.0,
         };
-        let in_plane = self.read_input(id, PortId::IN);
-        let out: Vec<f32> = match in_plane {
-            Some(p) => p.iter().map(|s| s * gain).collect(),
+        // Sample-accurate step: frames before `local` use the old gain,
+        // frames at/after it use the stepped value.
+        let step = self.gain_steps.remove(&id);
+        let in_plane = match self.read_input(id, PortId::IN) {
+            Some(p) => p.to_vec(),
             None => vec![0.0; self.block],
         };
+        let mut out = vec![0.0f32; self.block];
+        match step {
+            Some((new_gain, local)) => {
+                for (i, o) in out.iter_mut().enumerate() {
+                    let g = if i >= local { new_gain } else { base_gain };
+                    *o = in_plane[i] * g;
+                }
+                // Persist the new gain so subsequent blocks keep it.
+                if let Some(n) = self.nodes.get_mut(&id) {
+                    n.params = NodeParams::Gain { gain: new_gain };
+                }
+            }
+            None => {
+                for (i, o) in out.iter_mut().enumerate() {
+                    *o = in_plane[i] * base_gain;
+                }
+            }
+        }
         self.broadcast(id, PortId::OUT, &out);
     }
 
@@ -353,5 +413,47 @@ mod tests {
         assert!((cap[128] - expect).abs() < 1e-3, "{} vs {expect}", cap[128]);
         // And the wave is bounded.
         assert!(cap.iter().all(|s| s.abs() <= 1.0 + 1e-6));
+    }
+
+    #[test]
+    fn gain_step_is_sample_accurate() {
+        // sine → gain(0.0) → sink. A step to 2.0 at local frame 40 must leave
+        // frames [0,40) silent and start scaling with 2.0 exactly at 40.
+        let mut g = Graph2::new();
+        let src = g.add_source_with(
+            "sine",
+            super::super::node::SourceParams {
+                signal: TestSignal::Sine,
+                frequency_hz: 1000.0,
+            },
+        );
+        let gain = g.add_gain("vol", 0.0);
+        let sink = g.add_sink("out");
+        g.add_edge(src, PortId::OUT, gain, PortId::IN).unwrap();
+        g.add_edge(gain, PortId::OUT, sink, PortId::IN).unwrap();
+        let order = g.compile().unwrap().clone();
+
+        let mut ex = OfflineExecutor::new(&g, &order, 128, SR).unwrap();
+        ex.set_gain_step(gain, 2.0, 40).unwrap();
+        ex.process_block().unwrap();
+        let cap = ex.capture(sink).unwrap();
+        assert_eq!(cap.len(), 128);
+        // Frames before the step are silent (base gain 0).
+        assert!(cap[..40].iter().all(|s| s.abs() < 1e-6));
+        // Frame 40 onward is 2× the raw sine.
+        let raw = |i: usize| (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / SR).sin();
+        assert!((cap[40] - 2.0 * raw(40)).abs() < 1e-3, "step frame 40");
+        assert!((cap[100] - 2.0 * raw(100)).abs() < 1e-3, "after step");
+        // The stepped gain persists to the next block (block-quantized set).
+        // Block 1's frame 40 is absolute sample 128 + 40 = 168.
+        ex.process_block().unwrap();
+        let cap2 = ex.capture(sink).unwrap();
+        let abs = 128 + 40;
+        assert!(
+            (cap2[abs] - 2.0 * raw(abs)).abs() < 1e-3,
+            "persists into next block: {} vs {}",
+            cap2[abs],
+            2.0 * raw(abs)
+        );
     }
 }

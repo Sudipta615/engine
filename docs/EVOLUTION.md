@@ -1307,3 +1307,66 @@ already a deterministic renderer — event recording and golden renders can
 wrap it), and v3.30 graph-wide latency (per-node `taps` capability is
 already declared; a propagation pass over the edge set is next).
 
+---
+
+## Phase 26 — Timeline and Scheduler (v3.28.0) — **Implemented**
+
+**Intent.** The guide's directive for v3.28: **make time a first-class
+render primitive.** Phases 23–25 built the world (acoustic simulation),
+cached it (baking), and made the graph the center (Graph 2.0) — but time
+was still implicit: block boundaries, not musical events, drove rendering.
+This phase adds a deterministic **clock + event scheduler** on the
+control/offline path and wires it to the Graph 2.0 executor, so a host
+runs "this audio program over time" — BPM, bars/beats/ticks, tempo
+changes and ramps, looping, quantization, transport, timeline regions —
+and scheduled parameter changes land on the exact sample.
+
+### Key mechanisms
+
+- **`clock`** — [`AudioClock`]: Direction 3's shape in full. Two
+  positions: `position` (the looped playhead — drives display and musical
+  position) and `master_position` (a monotonic, never-wrapping counter
+  that events are keyed against — events fire once, exactly once, even
+  across loops). Transport state (Playing / Paused / Stopped), loop
+  region, linear [`TempoRamp`], time signature, bars/beats/ticks (MIDI
+  480 PPQ), and sample↔beat conversions.
+- **`tempo`** — [`TempoMap`]: ordered tempo changes with exact
+  piecewise-constant beat↔sample integration, so "at beat 4" maps to the
+  right sample when the tempo changes at beat 2.
+- **`event`** — [`ScheduledEvent`]: resolved to an absolute master sample
+  at schedule time; [`EventTime`] (Sample | Beat), [`EventPayload`]
+  (SetGain typed to a Graph 2.0 node, a Trigger, an opaque Host tag).
+- **`Timeline`** (this module) — the scheduler: `schedule_at_sample` /
+  `schedule_at_beat`, note-grid [`Quantize`] snapping, `advance_block`
+  returning exactly the events whose master sample was crossed (each
+  carrying its in-block index for sample-accurate application),
+  [`TimelineRegion`] containment, and `pending()`.
+- **Renderer hook** — [`OfflineExecutor::set_gain_step`] applies a gain
+  change at an arbitrary in-block frame, so an event firing at master
+  sample `S` lands on `S % block` exactly, then persists as the new
+  block-quantized value.
+
+**Realtime discipline.** The timeline is control/offline-path and
+heap-happy by design; it drives an offline renderer. It adds no allocation
+or lock to any realtime audio thread (the realtime `dsp::graph` hot path
+is untouched).
+
+**Acceptance (spec-first).** `tests/fidelity/timeline_scheduler.rs` (7
+tests) — a Timeline drives the Graph 2.0 executor with a gain gate
+scheduled at beat 1 (120 BPM): silent for the first 23 999 samples, then
+sample-exact at 24 000; a non-block-aligned gain step lands
+at the exact in-block index and persists; looping wraps the playhead
+(musical position < 4 beats at master 12 800) while the event fires once;
+pausing freezes the clock, leaves the event pending, and — because the
+render loop gates `process_block` on `is_playing` — produces no audio; a
+16th-note grid snaps beat 6.6 to sample 156 000; a tempo change retimes a
+beat event across segments (beat 4 → sample 72 000); and timeline regions
+resolve containment. Unit suites: clock 5, tempo 3, timeline mod 6,
+graph2 `set_gain_step` 1 (15 new). `engine` and `config` stay in lockstep
+at 3.28.0.
+
+**Unblocks (Horizon).** v3.29 **reference rendering and determinism**
+(the timeline's monotonic master + once-fire events are exactly the inputs
+an event-recording/`aelog`-replay layer needs); v3.30 graph-wide latency;
+and musical automation (tempo-mapped control curves riding this clock).
+

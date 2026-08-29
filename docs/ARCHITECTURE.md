@@ -149,10 +149,24 @@ src/
 │   │                         #   round-trip + to_dot inspection (mod.rs),
 │   │                         #   and an offline executor rendering any
 │   │                         #   topology block-by-block (exec.rs:
-│   │                         #   Source/Sink/Gain/Delay/Mix/Split). The
-│   │                         #   topology, not an authored chain, defines
-│   │                         #   the signal flow — realtime dsp::graph is
-│   │                         #   untouched
+│   │                         #   Source/Sink/Gain/Delay/Mix/Split;
+│   │                         #   set_gain_step for sample-accurate parameter
+│   │                         #   changes). The topology, not an authored
+│   │                         #   chain, defines the signal flow — realtime
+│   │                         #   dsp::graph is untouched
+│   ├── timeline/              # Timeline & scheduler (Phase 26, v3.28):
+│   │                         #   clock.rs (AudioClock — playhead + monotonic
+│   │                         #   master, transport state, loop region, tempo
+│   │                         #   ramp, bars/beats/ticks + conversions),
+│   │                         #   tempo.rs (TempoMap — piecewise-constant
+│   │                         #   beat↔sample integration across tempo
+│   │                         #   changes), event.rs (ScheduledEvent / EventTime
+│   │                         #   Sample|Beat / EventPayload SetGain|Trigger|
+│   │                         #   Host), mod.rs (Timeline scheduler —
+│   │                         #   advance_block fires sample-accurate once-
+│   │                         #   events per block, note-grid quantization,
+│   │                         #   timeline regions). Drives a compiled Graph
+│   │                         #   2.0 graph: the transport owns rendering
 │
 ├── spatial/                  # ── Spatial audio (Phases 8–24, opt-in) ──
 │   ├── acoustic/             # Acoustic world simulation + baking (Phases
