@@ -137,6 +137,22 @@ src/
 │                             #   atomic control mirror, live-enable replay
 │                             #   on generation swap; MC masters pass
 │                             #   through untouched)
+│   ├── graph2/               # Graph 2.0 (Phase 25, v3.27): general-purpose
+│   │                         #   audio graph topology — nodes with explicit
+│   │                         #   typed ports (node.rs: PortSpec/SignalType/
+│   │                         #   NodeKind/NodeCapabilities), first-class
+│   │                         #   edges (edge.rs), validation + cycle
+│   │                         #   detection with cycle-path reporting
+│   │                         #   (validate.rs), deterministic topological
+│   │                         #   scheduling (sort.rs: Kahn's, ascending-id
+│   │                         #   tie-break), builder/query/compile + serde
+│   │                         #   round-trip + to_dot inspection (mod.rs),
+│   │                         #   and an offline executor rendering any
+│   │                         #   topology block-by-block (exec.rs:
+│   │                         #   Source/Sink/Gain/Delay/Mix/Split). The
+│   │                         #   topology, not an authored chain, defines
+│   │                         #   the signal flow — realtime dsp::graph is
+│   │                         #   untouched
 │
 ├── spatial/                  # ── Spatial audio (Phases 8–24, opt-in) ──
 │   ├── acoustic/             # Acoustic world simulation + baking (Phases

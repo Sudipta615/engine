@@ -14,6 +14,7 @@ pub mod equalizer;
 pub mod float;
 pub mod gain;
 pub mod graph;
+pub mod graph2;
 pub mod graphic_eq;
 pub mod limiter;
 pub mod loudness;

@@ -3,7 +3,7 @@ members = [".", "crates/config"]
 
 [package]
 name = "engine"
-version = "3.26.0"
+version = "3.27.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"
@@ -423,3 +423,7 @@ path = "tests/fidelity/acoustic_world.rs"
 [[test]]
 name = "acoustic_bake"
 path = "tests/fidelity/acoustic_bake.rs"
+
+[[test]]
+name = "graph_topology"
+path = "tests/fidelity/graph_topology.rs"

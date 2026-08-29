@@ -2,6 +2,57 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.27.0] — 2026-08-29
+
+Graph 2.0 (roadmap v3.27): **make the graph the true center of the
+rendering engine** by generalizing the fixed track/bus chain of `dsp::graph`
+into an *arbitrary topology* runtime. A new [`dsp::graph2`] module is a
+model of explicit structure: nodes declare **input/output ports** with
+typed-bus metadata (signal class + channel count), every connection is a
+**first-class edge**, and the topology — not an authored chain — defines the
+signal flow. Validation, cycle detection, deterministic topological
+scheduling, dynamic recompilation, inspection/serialization, and an offline
+executor that renders any built topology are all included.
+
+### Added
+
+- **General-purpose topology** (`dsp::graph2`) — [`Graph2`]: a builder
+  (`add_source` / `add_gain` / `add_delay` / `add_mix` / `add_split` /
+  `add_sink`, plus `add_node_raw` for host-defined port shapes), explicit
+  edges (`add_edge` fails fast on unknown endpoints, typed-bus mismatch,
+  and duplicate fan-in), removal with an ownership rule (a node with
+  attached edges cannot be removed), and parameter mutation. Deterministic
+  `BTreeMap` iteration makes every artifact reproducible.
+- **Typed ports** ([`PortSpec`], [`SignalType`], channel metadata) — an
+  edge is only legal when both endpoints agree on signal class; Audio can
+  never cross into a Control port. Built-ins carry Audio; Control ports
+  are fully modeled and enforced via `add_node_raw`.
+- **Validation** ([`ValidationReport`], [`Graph2Error`]) — structural
+  errors (unknown node/port, typed-bus mismatch, duplicate fan-in, cycles)
+  block compilation; dangling ports are warnings the executor tolerates
+  (unconnected inputs read silence, unconnected outputs are dropped).
+- **Cycle detection** — grey/white/black DFS reporting the **actual cycle
+  path** (`A -> B -> A`) in the error.
+- **Topological scheduling** ([`ExecutionOrder`], `topological_order`) —
+  deterministic Kahn's algorithm (ascending-id tie-break): identical
+  topologies always compile to identical orders, and every node runs after
+  its producers. This is the Graph 2.0 analogue of `dsp::graph::plan`.
+- **Offline executor** ([`OfflineExecutor`]) — renders a compiled topology
+  block by block through the built-in ops (Source / Sink / Gain / Delay /
+  Mix / Split). A dry/wet bus is just `Split → {Gain, Delay} → Mix`; the
+  executor is offline-first by design, exactly like the acoustic layer.
+- **Inspection & serialization** — [`Graph2::to_dot`] renders a Graphviz
+  digraph; the whole topology round-trips through serde JSON to an
+  identical render.
+- **Dynamic recompilation** — every mutation invalidates the compiled
+  order; `mutate → compile() again` is the recompilation loop.
+- **Fidelity suite** — `tests/fidelity/graph_topology.rs` (8 tests):
+  dry/wet diamond renders both branches at exact offsets/gains, three-way
+  fan-out sums exactly, cycles rejected with path, structural validation
+  (bad ports, duplicate fan-in, typed-bus mismatch, dangling-warning
+  semantics), deterministic scheduling, dynamic recompilation changing the
+  render, JSON round-trip identity, and a sine source driving a gain graph.
+
 ## [3.26.0] — 2026-08-29
 
 Acoustic baking (roadmap v3.26): **turn expensive acoustic computation into
@@ -109,7 +160,7 @@ scalar absorption coefficient to per-octave-band spectra.
   world is an exact direct path; a freestanding fin diffracts a path;
   solves are deterministic and capped; and `diffract_around_edge` reports
   the correct 1/r distance + delay.
-- `config` and `engine` crates stay in lockstep at 3.26.0.
+- `config` and `engine` crates stay in lockstep at 3.27.0.
 
 ## [3.24.1] — 2026-08-29
 

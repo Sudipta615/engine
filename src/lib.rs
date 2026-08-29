@@ -45,6 +45,11 @@ pub mod prelude {
         },
         commands::EngineCommand,
         decode::extract_track_metadata,
+        dsp::graph2::{
+            ExecutionOrder, Graph2, Graph2Error, NodeCapabilities, NodeDef, NodeId, NodeKind,
+            NodeParams, OfflineExecutor, PortId, PortSpec, SignalType, SourceParams, TestSignal,
+            ValidationReport,
+        },
         dsp::pipeline::{DspPipeline, OutputSampleFormat},
         events::EngineEvent,
         playback_info::{PlaybackInfo, PlaybackState},

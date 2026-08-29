@@ -205,6 +205,36 @@ locks. With no bake attached the renderers are bit-identical to v3.25; each
 baked reflection also keeps its full per-band material spectrum for offline
 frequency-domain renderers.
 
+### Graph 2.0 — general-purpose topology (offline, v3.27.0)
+
+Alongside the fixed-chain realtime graph, a new topology model makes the
+graph itself the center of rendering: nodes declare **explicit typed ports**
+(signal class + channels) and connections are **first-class edges**; the
+edge set *defines* the signal flow, and execution order is derived:
+
+```
+Build        Graph2::add_source/add_gain/add_delay/add_mix/add_split/add_sink
+             └─ add_edge (fail-fast: endpoints, typed buses, fan-in)
+Validate     Graph2::validate → ValidationReport
+             (errors: bad ports, SignalType mismatch, fan-in, cycles
+              with the cycle path; warnings: dangling ports)
+Compile      Graph2::compile → ExecutionOrder (deterministic Kahn topo sort)
+             └─ every mutation invalidates → dynamic recompilation
+Execute      OfflineExecutor::process_block  (offline, block-by-block)
+             └─ per-edge planes; Source/Sink/Gain/Delay/Mix/Split ops
+```
+
+Example — a dry/wet bus is arbitrary topology, not a special case:
+
+```
+Source ──▶ Split(2) ──▶ Gain(0.5) ──▶ Mix ──▶ Sink
+                   └──▶ Delay(100) ──▶┘
+```
+
+The whole topology serializes to JSON and back to an identical render, and
+exports a Graphviz `digraph` for inspection. Offline-first by design (like
+the acoustic layer); the realtime `dsp::graph` hot path is untouched.
+
 ### Spatial rendering (opt-in, v3.11.0 → v3.19.0)
 
 ```

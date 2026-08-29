@@ -1233,3 +1233,77 @@ general graph could represent as nodes/edges), v3.28 timeline/scheduler
 `BakedScene` per listener — the cache is already keyed per listener
 position, so N listeners is N scenes).
 
+---
+
+## Phase 25 — Graph 2.0 (v3.27.0) — **Implemented**
+
+**Intent.** The guide's directive for v3.27: **make the graph the true
+center of the rendering engine.** Everything before this phase either
+rendered a signal through a fixed linear chain (`DspPipeline`) or through
+the fixed canonical arena of `dsp::graph` — a set of node slots whose
+*order* is data but whose chain is implicit and track/bus-centered. This
+phase generalizes that: a new `dsp::graph2` module is a model of **explicit
+structure**. Nodes declare input/output **ports** with typed-bus metadata;
+connections are **first-class edges**; the topology — not an authored
+chain — defines the signal flow. Execution order is derived from the edge
+set, never authored.
+
+### Key mechanisms
+
+- **`node`** — [`NodeId`] / [`PortId`] identity, [`PortSpec`] (direction +
+  [`SignalType`] + channel count; `0` = any for fan-in/out ports),
+  [`NodeKind`] (Source / Sink / Gain / Delay / Mix / Split — a
+  topology-complete set: generator, consumer, 1:1 transform, fan-in,
+  fan-out), per-node [`NodeCapabilities`] (stateful / realtime-safe /
+  taps), and [`NodeParams`] payloads.
+- **`edge`** — [`EdgeDef`]: an explicit, addressable connection from one
+  typed port to another. The topology *is* its edge set.
+- **`validate`** — [`ValidationReport`] with hard errors and warnings.
+  Errors: unknown node/port, typed-bus (`SignalType`) mismatch,
+  duplicate fan-in into one input port, and cycles. Warnings: dangling
+  ports (unconnected inputs read silence; unconnected outputs are
+  dropped). Cycle detection is a grey/white/black DFS that reports the
+  **cycle path** (`A -> B -> A`).
+- **`sort`** — deterministic Kahn's algorithm (ascending-id tie-break)
+  producing the [`ExecutionOrder`]: the Graph 2.0 analogue of
+  `dsp::graph::plan::ExecutionPlan`. Identical topologies always compile
+  to identical orders; every node appears after all of its producers.
+- **`mod`** — [`Graph2`] builder/query: `add_source` / `add_gain` /
+  `add_delay` / `add_mix` / `add_split` / `add_sink`, `add_edge`
+  (fail-fast on endpoint, typed-bus, and fan-in violations), `remove_*`
+  with an ownership rule (a node with attached edges cannot be removed),
+  `set_params`, `validate`, `compile` (cached; any mutation invalidates —
+  **dynamic graph recompilation** is mutate-then-compile), serde
+  serialization round-trip, and `to_dot` Graphviz inspection.
+- **`exec`** — [`OfflineExecutor`]: renders a compiled topology block by
+  block. Each edge owns a one-block plane (zeroed at block start, so an
+  unconnected input is silence); state lives per node (delay lines,
+  oscillator phase); sinks accumulate captures. Offline-first by design,
+  exactly like the acoustic layer.
+
+**Realtime discipline.** Graph 2.0 is control/offline-path and heap-happy
+by design (building, validating, compiling, and rendering offline are the
+expensive work an offline engine can afford). The realtime `dsp::graph`
+hot path is untouched — no allocation or lock added to any audio thread. A
+future milestone lowers a compiled [`ExecutionOrder`] onto a realtime
+plan.
+
+**Acceptance (spec-first).** `tests/fidelity/graph_topology.rs` (8 tests)
+— a dry/wet diamond (`Split → {Gain, Delay} → Mix`) renders its dry and
+wet copies at the exact expected offsets and gains; three-way fan-out sums
+exactly (0.1 + 0.2 + 0.3); a cycle is rejected at compile with the path
+reported; structural validation catches bad ports, duplicate fan-in, and
+typed-bus mismatches as errors while dangling inputs are warnings; two
+identical topologies schedule identically and every node runs after its
+producers; tearing down one branch and recompiling changes the render;
+JSON round-trip is render-identical; and a sine source drives a gain graph
+continuously. Unit suites in each new module (9 tests total). `engine`
+and `config` stay in lockstep at 3.27.0.
+
+**Unblocks (Horizon).** v3.28 **timeline and scheduler** (a compiled
+`ExecutionOrder` is a natural host for sample-accurate events and tempo
+mapping), v3.29 reference rendering/determinism (the offline executor is
+already a deterministic renderer — event recording and golden renders can
+wrap it), and v3.30 graph-wide latency (per-node `taps` capability is
+already declared; a propagation pass over the edge set is next).
+
