@@ -2,6 +2,44 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.30.0] — 2026-08-29
+
+Graph-wide latency and alignment (roadmap v3.30 — the final roadmap phase;
+Direction 2, "first-class latency"): timing relationships become explicit
+and correct across arbitrary Graph 2.0 topologies. A new `dsp::graph2::latency`
+pass reports per-node taps and cumulative upstream latency, and
+**automatically compensates** parallel branches so every path into a merge
+point arrives aligned to the slowest — a convolution/delay branch and a dry
+branch no longer need hand-rolled delays.
+
+### Added
+
+- **Per-node latency accounting** — [`node_latency`]: every node reports
+  its intrinsic sample taps (only `Delay` today; a future convolution /
+  HRTF / resampler / lookahead node plugs in the same way).
+- **Graph-wide propagation & diagnostics** ([`analyze`],
+  [`LatencyReport`]) — validates, topologically schedules, and propagates
+  cumulative upstream latency along the edge set: a `Mix` reports the
+  slowest of its inputs, the report gives per-node `upstream` and `taps`
+  plus the graph `total_samples` / `total_ms`.
+- **Automatic delay compensation** ([`compensate`]) — returns an edited
+  copy of the graph with a compensating `Delay` spliced in series on every
+  faster branch into a merge point, so all inputs arrive aligned to the
+  slowest. **Original node ids are preserved verbatim**, so a Timeline
+  event addressing a node by id (e.g. `SetGain`) keeps working on the
+  compensated graph; only new `Delay` nodes are added, and the result is
+  re-validated.
+- **Fidelity suite** — `tests/fidelity/latency_alignment.rs` (6 tests): a
+  dry/wet diamond renders unaligned (dry @0, wet @300) then, after
+  compensation, as a single aligned spike at 300 summing both branches
+  (0.5 + 1.0); a deep 100+200-tap chain sums to 300 with no compensation
+  inserted; the report propagates (mix upstream 300, taps 300/0, total_ms
+  6.25); a Timeline `SetGain` on the dry node id still lands after
+  compensation (3× sine once gated, 160 Hz phase-locked to the 300-tap
+  delay); a three-way fan-out aligns all branches to the slowest (200 +
+  100 taps, summed at sample 200); and analyze/compensate are
+  deterministic.
+
 ## [3.29.0] — 2026-08-29
 
 Reference rendering and determinism (roadmap v3.29) — Direction 17 made
@@ -241,7 +279,7 @@ scalar absorption coefficient to per-octave-band spectra.
   world is an exact direct path; a freestanding fin diffracts a path;
   solves are deterministic and capped; and `diffract_around_edge` reports
   the correct 1/r distance + delay.
-- `config` and `engine` crates stay in lockstep at 3.29.0.
+- `config` and `engine` crates stay in lockstep at 3.30.0.
 
 ## [3.24.1] — 2026-08-29
 

@@ -56,12 +56,14 @@
 
 pub mod edge;
 pub mod exec;
+pub mod latency;
 pub mod node;
 pub mod sort;
 pub mod validate;
 
 pub use edge::{EdgeDef, EdgeEndpoint, EdgeId};
 pub use exec::OfflineExecutor;
+pub use latency::{analyze, compensate, node_latency, LatencyReport};
 pub use node::{
     NodeCapabilities, NodeDef, NodeId, NodeKind, NodeParams, PortDirection, PortId, PortSpec,
     SignalType, SourceParams, TestSignal,

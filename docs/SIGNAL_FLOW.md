@@ -292,6 +292,31 @@ against a fresh timeline, so the outcome is a pure function of the log. The
 Recording and replay are control/offline-path by design; nothing here
 touches a realtime audio thread.
 
+### Graph-wide latency & alignment (offline, v3.30.0)
+
+Latency is a graph-wide concept in Graph 2.0: nodes declare taps and the
+latency pass propagates, reports, and **auto-compensates** parallel branches
+(Direction 2):
+
+```
+analyze(graph, sr) → LatencyReport
+   │  upstream[node] = max over incoming edges of upstream[src] + taps[src]
+   │  (Mix reports its slowest input; total = deepest path)
+compensate(graph) → edited Graph2
+   │  splice Delay(comp) onto every faster branch into a merge point
+   └─ original node ids preserved → Timeline events keep working
+```
+
+```
+  Split ──┬─▶ Gain ──────────────────┐          Split ──┬─▶ Gain ──▶ Delay(300) ──┐
+          │                          ├─▶ Mix   ──▶    │                            ├─▶ Mix
+          └─▶ Delay(300) ────────────┘                └─▶ Delay(300) ─────────────┘
+     unaligned: dry @0, wet @300          compensated: both branches arrive at 300
+```
+
+The pass is control/offline-path; compensation edits the topology the
+offline executor renders, and never touches a realtime audio thread.
+
 ### Spatial rendering (opt-in, v3.11.0 → v3.19.0)
 
 ```

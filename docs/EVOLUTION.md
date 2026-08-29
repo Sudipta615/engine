@@ -1428,3 +1428,54 @@ identical logs could reuse cached captures); and recording the remaining
 render inputs the guide lists (audio inputs, graph generations, listener
 motion) as extended `RecordedCommand` payloads.
 
+---
+
+## Phase 28 — Graph-wide latency and alignment (v3.30.0) — **Implemented**
+
+**Intent.** The guide's v3.30 directive (Direction 2, "first-class
+latency"): **make timing relationships explicit and correct across
+complex offline graphs** — and the roadmap's final phase. Phases 25–29
+built the arbitrary topology (Graph 2.0), made time a primitive (Timeline),
+and made sessions replayable (aelog); this phase gives the graph itself a
+latency model. Every node declares its intrinsic taps; a propagation pass
+computes cumulative upstream latency along the edge set; and parallel
+branches feeding a merge point are **automatically aligned to the slowest
+branch** — a convolution/delay branch and a dry branch no longer need
+hand-rolled delays.
+
+### Key mechanisms
+
+- **Per-node accounting** — [`node_latency`]: only `Delay` adds taps among
+  the built-ins today; a future convolution / HRTF / resampler / lookahead
+  node reports its IR length or filter taps through the same seam.
+- **Propagation & diagnostics** ([`analyze`], [`LatencyReport`]) —
+  validates, topologically schedules, then walks the order computing
+  `upstream[node] = max over incoming edges of upstream[src] + taps[src]`.
+  A `Mix` reports the slowest of its inputs; the report exposes per-node
+  `upstream` / `taps` and the graph `total_samples` / `total_ms`.
+- **Automatic compensation** ([`compensate`]) — returns an edited copy of
+  the graph: for every merge point, the max incoming branch latency is
+  the alignment target and a compensating `Delay` is spliced in series on
+  each faster branch. **Original node ids are preserved verbatim** (only
+  new `comp-d…` Delay nodes are added), so a Timeline `SetGain` event
+  addressing a node by id keeps working on the compensated graph; the
+  result is re-validated and recompiled before execution.
+
+**Realtime discipline.** The latency pass is control/offline-path and
+heap-happy by design; compensation *edits the topology* (which the offline
+executor then renders) rather than touching any realtime audio thread.
+
+**Acceptance (spec-first).** `tests/fidelity/latency_alignment.rs` (6
+tests) — a dry/wet diamond renders unaligned (dry @0, wet @300) then,
+after `compensate`, as a single aligned spike at 300 summing both branches
+(0.5 + 1.0); a deep 100+200-tap chain sums to 300 with no compensation
+inserted (single path); the report propagates (mix upstream 300, wet taps
+300, dry taps 0, total_ms 6.25); a Timeline `SetGain` on the dry node id
+lands after compensation (a 160 Hz sine — 300 samples = one cycle — gates
+to 3× the raw wave once open, with wet-only before); a three-way fan-out
+aligns to the slowest (200 + 100 taps inserted, all three summed at sample
+200); and analyze/compensate are deterministic. Unit suites in `latency.rs`
+(3 tests). `engine` and `config` stay in lockstep at 3.30.0 — completing
+the guide's v3.25 → v3.30 roadmap (acoustic world → baking → Graph 2.0 →
+timeline → determinism → latency).
+

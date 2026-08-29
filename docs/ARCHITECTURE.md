@@ -162,9 +162,14 @@ src/
 │   │                         #   topology block-by-block (exec.rs:
 │   │                         #   Source/Sink/Gain/Delay/Mix/Split;
 │   │                         #   set_gain_step for sample-accurate parameter
-│   │                         #   changes). The topology, not an authored
-│   │                         #   chain, defines the signal flow — realtime
-│   │                         #   dsp::graph is untouched
+│   │                         #   changes; latency.rs (Phase 28, v3.30:
+│   │                         #   node_latency taps + LatencyReport upstream
+│   │                         #   propagation + compensate — automatic delay
+│   │                         #   alignment splicing Delay nodes onto faster
+│   │                         #   branches while preserving node ids). The
+│   │                         #   topology, not an authored chain, defines
+│   │                         #   the signal flow — realtime dsp::graph is
+│   │                         #   untouched
 │   ├── timeline/              # Timeline & scheduler (Phase 26, v3.28):
 │   │                         #   clock.rs (AudioClock — playhead + monotonic
 │   │                         #   master, transport state, loop region, tempo
