@@ -32,14 +32,19 @@ use super::validate::{validate, Graph2Error};
 use super::Graph2;
 
 /// The intrinsic sample-latency a node adds to its outgoing signal.
-/// Today only [`NodeKind::Delay`] adds taps; a future convolution / HRTF /
-/// resampler / lookahead node reports its IR length / filter taps here.
-/// [`NodeKind::Acoustic`] reports `0`: its direct path passes through
-/// immediately, and the per-path delayed copies are a reverb *tail* — the
-/// wet content is intentionally late, not a pipeline delay to align.
+/// [`NodeKind::Delay`] reports its samples; [`NodeKind::Convolution`]
+/// reports its kernel length and [`NodeKind::HRTF`] the longer of its two
+/// per-ear IRs — the pipeline delay a block-partitioned convolver pays, so
+/// binaural and convolution-heavy branches report and compensate exactly
+/// like `Delay`. [`NodeKind::Acoustic`] reports `0`: its direct path passes
+/// through immediately, and the per-path delayed copies are a reverb
+/// *tail* — the wet content is intentionally late, not a pipeline delay to
+/// align.
 pub fn node_latency(node: &NodeDef) -> u64 {
-    match node.params {
-        NodeParams::Delay { samples } => samples as u64,
+    match &node.params {
+        NodeParams::Delay { samples } => *samples as u64,
+        NodeParams::Convolution { kernel } => kernel.len() as u64,
+        NodeParams::HRTF { left, right } => left.len().max(right.len()) as u64,
         _ => 0,
     }
 }
@@ -352,5 +357,105 @@ mod tests {
         assert_eq!(into_mix, 2);
         // The dry gain still feeds something (id preserved).
         assert!(c.edges.values().any(|e| e.source.node == dry));
+    }
+
+    #[test]
+    fn convolution_and_hrtf_report_taps_like_delay() {
+        let mut g = Graph2::new();
+        let src = g.add_source("imp");
+        let conv = g.add_convolution("corr", vec![0.1; 200]);
+        let hrtf = g.add_hrtf("bin", vec![0.5; 300], vec![0.25; 128]);
+        let sink_c = g.add_sink("c");
+        let sink_l = g.add_sink("l");
+        let sink_r = g.add_sink("r");
+        g.add_edge(src, PortId::OUT, conv, PortId::IN).unwrap();
+        g.add_edge(src, PortId::OUT, hrtf, PortId::IN).unwrap();
+        g.add_edge(conv, PortId::OUT, sink_c, PortId::IN).unwrap();
+        g.add_edge(hrtf, PortId(0), sink_l, PortId::IN).unwrap();
+        g.add_edge(hrtf, PortId(1), sink_r, PortId::IN).unwrap();
+
+        assert_eq!(node_latency(g.node(conv).unwrap()), 200, "kernel length");
+        assert_eq!(
+            node_latency(g.node(hrtf).unwrap()),
+            300,
+            "longer of the two per-ear IRs"
+        );
+        assert!(g.node(conv).unwrap().capabilities().taps);
+        assert!(g.node(hrtf).unwrap().capabilities().taps);
+
+        let rep = analyze(&g, 48_000.0).unwrap();
+        assert_eq!(rep.upstream_at(sink_c), 200);
+        assert_eq!(rep.upstream_at(sink_l), 300, "left ear carries the max");
+        assert_eq!(rep.upstream_at(sink_r), 300);
+        assert_eq!(rep.taps_at(conv), 200);
+        assert_eq!(rep.taps_at(hrtf), 300);
+        assert_eq!(rep.total_samples, 300);
+        assert!((rep.total_ms - 6.25).abs() < 1e-3);
+    }
+
+    #[test]
+    fn compensation_aligns_convolution_branch_like_delay() {
+        // source → split → {conv(kernel 300), gain} → mix → sink
+        let mut g = Graph2::new();
+        let src = g.add_source("imp");
+        let split = g.add_split("s", 2);
+        let conv = g.add_convolution("room", vec![0.1; 300]);
+        let dry = g.add_gain("dry", 0.5);
+        let mix = g.add_mix("mix", 2);
+        let sink = g.add_sink("out");
+        g.add_edge(src, PortId::OUT, split, PortId::IN).unwrap();
+        g.add_edge(split, PortId(0), conv, PortId::IN).unwrap();
+        g.add_edge(split, PortId(1), dry, PortId::IN).unwrap();
+        g.add_edge(conv, PortId::OUT, mix, PortId(0)).unwrap();
+        g.add_edge(dry, PortId::OUT, mix, PortId(1)).unwrap();
+        g.add_edge(mix, PortId::OUT, sink, PortId::IN).unwrap();
+
+        let c = compensate(&g).unwrap();
+        // Original ids preserved; exactly one comp Delay of 300 on the dry leg.
+        for id in g.nodes.keys() {
+            assert!(c.node(*id).is_some(), "id {id:?} preserved");
+        }
+        let comps: Vec<&NodeDef> = c
+            .nodes
+            .values()
+            .filter(|n| n.name.starts_with("comp-"))
+            .collect();
+        assert_eq!(comps.len(), 1);
+        assert_eq!(
+            comps[0].params,
+            NodeParams::Delay { samples: 300 },
+            "convolver branch compensated like a 300-tap delay"
+        );
+    }
+
+    #[test]
+    fn compensation_aligns_hrtf_branch() {
+        // source → split → {hrtf(L300 R128), gain} → mix → sink
+        let mut g = Graph2::new();
+        let src = g.add_source("imp");
+        let split = g.add_split("s", 2);
+        let hrtf = g.add_hrtf("bin", vec![0.5; 300], vec![0.25; 128]);
+        let dry = g.add_gain("dry", 0.5);
+        let mix = g.add_mix("mix", 2);
+        let sink = g.add_sink("out");
+        g.add_edge(src, PortId::OUT, split, PortId::IN).unwrap();
+        g.add_edge(split, PortId(0), hrtf, PortId::IN).unwrap();
+        g.add_edge(split, PortId(1), dry, PortId::IN).unwrap();
+        g.add_edge(hrtf, PortId(0), mix, PortId(0)).unwrap();
+        g.add_edge(dry, PortId::OUT, mix, PortId(1)).unwrap();
+        g.add_edge(mix, PortId::OUT, sink, PortId::IN).unwrap();
+
+        let c = compensate(&g).unwrap();
+        let comps: Vec<&NodeDef> = c
+            .nodes
+            .values()
+            .filter(|n| n.name.starts_with("comp-"))
+            .collect();
+        assert_eq!(comps.len(), 1);
+        assert_eq!(
+            comps[0].params,
+            NodeParams::Delay { samples: 300 },
+            "binaural branch's 300 taps compensated on the dry leg"
+        );
     }
 }

@@ -13,7 +13,7 @@
 //! realtime constraint is promised. Realtime lowering of a compiled order is
 //! future work.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use super::edge::{EdgeDef, EdgeId};
 use super::node::{NodeDef, NodeId, NodeKind, NodeParams, PortId, TestSignal};
@@ -48,6 +48,17 @@ pub struct OfflineExecutor {
     baked: Option<BakedScene>,
     /// Per-node tapped delay lines for `Acoustic` node room responses.
     acoustics: HashMap<NodeId, AcousticState>,
+    /// External audio-input track: when set, every `Buffer` node plays this
+    /// instead of its embedded samples (the aelog replay path).
+    external_input: Option<Vec<f32>>,
+    /// Per-node playback cursor for `Buffer` nodes (sample index).
+    buffer_cursors: HashMap<NodeId, usize>,
+    /// Pipeline-delay state per `Convolution` node: the convolved stream
+    /// held back by one kernel length before emission.
+    convolutions: HashMap<NodeId, ConvState>,
+    /// Per-ear pipeline-delay state per `HRTF` node (both ears delayed by
+    /// the longer IR so the pair stays mutually aligned).
+    hrtfs: HashMap<NodeId, HrtfState>,
 }
 
 /// Ring buffer + cursor for an `Acoustic` node's tapped delay line.
@@ -55,6 +66,81 @@ pub struct OfflineExecutor {
 struct AcousticState {
     buf: Vec<f32>,
     pos: usize,
+}
+
+/// The convolution pipeline: the convolved stream delayed by `delay`
+/// samples before emission — the algorithmic latency a block-partitioned
+/// convolver pays. Initialised with `delay` zeros so the first emitted
+/// samples are the convolution at negative indices (zero), exactly
+/// `output[k] = (x * h)[k - delay]`.
+///
+/// Streaming convolution is **overlap-add**: each block's convolved result
+/// `y_b` (length `emit + overlap`) ends with `overlap = kernel.len() - 1`
+/// samples that continue into the next block, and the next block's leading
+/// `overlap` samples must be *added* to them (not dropped — the previous
+/// block's tail is the same stream position). The `tail` accumulator
+/// carries those addends; only the `emit` final samples of each block are
+/// appended to the delay queue, which stays at a constant length, so the
+/// pipeline delay never drifts.
+#[derive(Debug, Default)]
+struct ConvState {
+    /// The delayed convolution stream; the head (`delay` zeros) makes the
+    /// first emitted samples the convolution at negative indices (zero).
+    pending: VecDeque<f32>,
+    /// The `overlap`-sample addends carried from the previous block.
+    tail: Vec<f32>,
+}
+
+impl ConvState {
+    fn new(delay: usize) -> Self {
+        let mut pending = VecDeque::with_capacity(delay + 256);
+        pending.extend(std::iter::repeat_n(0.0, delay));
+        Self {
+            pending,
+            tail: Vec::new(),
+        }
+    }
+
+    /// Overlap-add block `y` (length `emit + overlap`) onto the stream,
+    /// append its `emit` final samples, and emit the first `emit` samples
+    /// (delayed by the initial head). `overlap` is `kernel.len() - 1` — or
+    /// `0` for a pass-through ear (no convolution, no addends).
+    fn push_and_emit(&mut self, mut y: Vec<f32>, overlap: usize, emit: usize) -> Vec<f32> {
+        if overlap > 0 {
+            let n = overlap.min(y.len());
+            if !self.tail.is_empty() {
+                for (v, t) in y.iter_mut().zip(self.tail.iter()).take(n) {
+                    *v += t;
+                }
+            }
+            let start = y.len().saturating_sub(overlap);
+            self.tail = y[start..].to_vec();
+        }
+        let take = emit.min(y.len());
+        self.pending.extend(y.into_iter().take(take));
+        let mut out = Vec::with_capacity(emit);
+        for _ in 0..emit {
+            out.push(self.pending.pop_front().unwrap_or(0.0));
+        }
+        out
+    }
+}
+
+/// The two per-ear pipeline queues of an `HRTF` node, both holding the
+/// convolution stream back by the longer IR length.
+#[derive(Debug, Default)]
+struct HrtfState {
+    left: ConvState,
+    right: ConvState,
+}
+
+impl HrtfState {
+    fn new(delay: usize) -> Self {
+        Self {
+            left: ConvState::new(delay),
+            right: ConvState::new(delay),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -113,6 +199,10 @@ impl OfflineExecutor {
             gain_steps: HashMap::new(),
             baked: None,
             acoustics: HashMap::new(),
+            external_input: None,
+            buffer_cursors: HashMap::new(),
+            convolutions: HashMap::new(),
+            hrtfs: HashMap::new(),
         })
     }
 
@@ -137,6 +227,9 @@ impl OfflineExecutor {
                 NodeKind::Mix => self.run_mix(node_id),
                 NodeKind::Split => self.run_split(node_id),
                 NodeKind::Acoustic => self.run_acoustic(node_id),
+                NodeKind::Buffer => self.run_buffer(node_id),
+                NodeKind::Convolution => self.run_convolution(node_id),
+                NodeKind::HRTF => self.run_hrtf(node_id),
             }
         }
         Ok(())
@@ -171,6 +264,14 @@ impl OfflineExecutor {
         // Drop any pending step for this node (a fresh absolute set wins).
         self.gain_steps.remove(&node);
         Ok(())
+    }
+
+    /// Attach (or detach) an external mono audio-input track. When set,
+    /// every `Buffer` node plays this track (one-shot per its `loop` flag,
+    /// cursors continuing across blocks) instead of its embedded samples.
+    pub fn set_external_input(&mut self, track: Option<Vec<f32>>) {
+        self.external_input = track;
+        self.buffer_cursors.clear();
     }
 
     /// Attach (or detach) a v3.31 baked acoustic scene. `Acoustic` nodes
@@ -224,6 +325,30 @@ impl OfflineExecutor {
                 st.phase = (st.phase + step * self.block as f32) % (2.0 * std::f32::consts::PI);
             }
             TestSignal::Silence => {}
+        }
+        self.broadcast(id, PortId::OUT, &plane);
+    }
+
+    fn run_buffer(&mut self, id: NodeId) {
+        let (embedded, loop_clip) = match self.nodes.get(&id).map(|n| n.params.clone()) {
+            Some(NodeParams::Buffer { samples, looping }) => (samples, looping),
+            _ => return,
+        };
+        // The external track wins when attached (aelog replay); otherwise
+        // the node's embedded clip plays.
+        let samples: &[f32] = self.external_input.as_deref().unwrap_or(&embedded);
+        let st = self.buffer_cursors.entry(id).or_insert(0);
+        let mut plane = vec![0.0f32; self.block];
+        for s in plane.iter_mut() {
+            if *st >= samples.len() {
+                if loop_clip && !samples.is_empty() {
+                    *st = 0; // wrap the loop cursor
+                } else {
+                    continue; // one-shot: silence after the end
+                }
+            }
+            *s = samples[*st];
+            *st += 1;
         }
         self.broadcast(id, PortId::OUT, &plane);
     }
@@ -370,6 +495,75 @@ impl OfflineExecutor {
         self.broadcast(id, PortId::OUT, &out);
     }
 
+    fn run_convolution(&mut self, id: NodeId) {
+        let kernel = match self.nodes.get(&id).map(|n| n.params.clone()) {
+            Some(NodeParams::Convolution { kernel }) => kernel,
+            _ => return,
+        };
+        let in_plane = match self.read_input(id, PortId::IN) {
+            Some(p) => p.to_vec(),
+            None => vec![0.0; self.block],
+        };
+        if kernel.is_empty() {
+            self.broadcast(id, PortId::OUT, &in_plane);
+            return;
+        }
+        // Convolve this block (length block + kernel − 1) and emit delayed
+        // by one kernel length — matching `node_latency` exactly. The
+        // pipeline overlap-adds consecutive blocks so the delay never
+        // drifts.
+        let y = direct_convolve(&in_plane, &kernel);
+        let st = self
+            .convolutions
+            .entry(id)
+            .or_insert_with(|| ConvState::new(kernel.len()));
+        let out = st.push_and_emit(y, kernel.len() - 1, self.block);
+        self.broadcast(id, PortId::OUT, &out);
+    }
+
+    fn run_hrtf(&mut self, id: NodeId) {
+        let (left, right) = match self.nodes.get(&id).map(|n| n.params.clone()) {
+            Some(NodeParams::HRTF { left, right }) => (left, right),
+            _ => return,
+        };
+        let in_plane = match self.read_input(id, PortId::IN) {
+            Some(p) => p.to_vec(),
+            None => vec![0.0; self.block],
+        };
+        let delay = left.len().max(right.len());
+        if delay == 0 {
+            // No filters: both ears pass through (still mutually aligned).
+            self.broadcast(id, PortId(0), &in_plane);
+            self.broadcast(id, PortId(1), &in_plane);
+            return;
+        }
+        // An empty ear IR means "no filter for that ear": pass the input
+        // through (still delayed by `delay`, so the pair stays aligned).
+        let y_l = if left.is_empty() {
+            in_plane.clone()
+        } else {
+            direct_convolve(&in_plane, &left)
+        };
+        let y_r = if right.is_empty() {
+            in_plane.clone()
+        } else {
+            direct_convolve(&in_plane, &right)
+        };
+        let st = self
+            .hrtfs
+            .entry(id)
+            .or_insert_with(|| HrtfState::new(delay));
+        // Per-ear overlap: each ear's own IR length − 1 (an empty ear passes
+        // through with no overlap), while both ears share the same pipeline
+        // delay so the pair stays aligned.
+        let overlap_l = left.len().saturating_sub(1);
+        let overlap_r = right.len().saturating_sub(1);
+        let out_l = st.left.push_and_emit(y_l, overlap_l, self.block);
+        let out_r = st.right.push_and_emit(y_r, overlap_r, self.block);
+        self.broadcast(id, PortId(0), &out_l);
+        self.broadcast(id, PortId(1), &out_r);
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     /// The plane of the single edge feeding `node`'s input port, if any.
@@ -395,6 +589,20 @@ impl OfflineExecutor {
             }
         }
     }
+}
+
+/// Full linear convolution of one block with an FIR kernel
+/// (`len(x) + len(h) − 1` samples). Offline path — the direct, exact
+/// formulation; the realtime `dsp::convolution` engine remains the hot-path
+/// partitioned counterpart.
+fn direct_convolve(x: &[f32], h: &[f32]) -> Vec<f32> {
+    let mut y = vec![0.0f32; x.len() + h.len() - 1];
+    for (i, &xi) in x.iter().enumerate() {
+        for (j, &hj) in h.iter().enumerate() {
+            y[i + j] += xi * hj;
+        }
+    }
+    y
 }
 
 /// The renderable taps of a baked response: `(excess_delay, gain)` per
@@ -590,6 +798,8 @@ mod tests {
             "bake has reflections"
         );
 
+        // Now the graph side: an impulse into the Acoustic node with the
+        // baked scene attached must reproduce the oracle exactly.
         let mut g = Graph2::new();
         let src = g.add_source("imp");
         let room_node = g.add_acoustic("room", pos);
@@ -604,5 +814,160 @@ mod tests {
         ex.process_blocks(4).unwrap(); // 2048 frames — covers the reflection tail
         let cap = ex.capture(sink).unwrap();
         assert_eq!(cap, expected, "graph acoustic node == baked response");
+    }
+
+    #[test]
+    fn buffer_plays_embedded_clip_one_shot_and_loops() {
+        // One-shot: [1,2,3] then silence.
+        let mut g = Graph2::new();
+        let b = g.add_buffer("in", vec![1.0, 2.0, 3.0], false);
+        let sink = g.add_sink("out");
+        g.add_edge(b, PortId::OUT, sink, PortId::IN).unwrap();
+        let order = g.compile().unwrap().clone();
+        let mut ex = OfflineExecutor::new(&g, &order, 4, SR).unwrap();
+        ex.process_blocks(2).unwrap();
+        let cap = ex.capture(sink).unwrap();
+        assert_eq!(cap, [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+
+        // Looping: [1,2,3] repeats.
+        let mut g2 = Graph2::new();
+        let b2 = g2.add_buffer("in", vec![1.0, 2.0, 3.0], true);
+        let sink2 = g2.add_sink("out");
+        g2.add_edge(b2, PortId::OUT, sink2, PortId::IN).unwrap();
+        let order2 = g2.compile().unwrap().clone();
+        let mut ex2 = OfflineExecutor::new(&g2, &order2, 4, SR).unwrap();
+        ex2.process_blocks(2).unwrap();
+        let cap2 = ex2.capture(sink2).unwrap();
+        assert_eq!(cap2, [1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn external_input_overrides_buffer_clip() {
+        let mut g = Graph2::new();
+        let b = g.add_buffer("in", vec![], false); // empty embedded clip
+        let sink = g.add_sink("out");
+        g.add_edge(b, PortId::OUT, sink, PortId::IN).unwrap();
+        let order = g.compile().unwrap().clone();
+        let mut ex = OfflineExecutor::new(&g, &order, 3, SR).unwrap();
+        ex.set_external_input(Some(vec![9.0, 8.0, 7.0, 6.0]));
+        ex.process_blocks(2).unwrap();
+        let cap = ex.capture(sink).unwrap();
+        assert_eq!(
+            cap,
+            [9.0, 8.0, 7.0, 6.0, 0.0, 0.0],
+            "one-shot external track"
+        );
+    }
+
+    #[test]
+    fn convolution_renders_kernel_at_its_pipeline_delay() {
+        // Impulse → conv(kernel [1,2,3]) → sink, block 4. The node emits
+        // `output[k] = (x * h)[k - N]` with N = kernel length, so the
+        // impulse response appears at offset 3 — matching node_latency.
+        let kernel = vec![1.0, 2.0, 3.0];
+        let mut g = Graph2::new();
+        let src = g.add_source("imp");
+        let conv = g.add_convolution("c", kernel.clone());
+        let sink = g.add_sink("out");
+        g.add_edge(src, PortId::OUT, conv, PortId::IN).unwrap();
+        g.add_edge(conv, PortId::OUT, sink, PortId::IN).unwrap();
+        let order = g.compile().unwrap().clone();
+        let mut ex = OfflineExecutor::new(&g, &order, 4, SR).unwrap();
+        ex.process_blocks(2).unwrap();
+        let cap = ex.capture(sink).unwrap();
+        assert_eq!(
+            cap,
+            [0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 0.0, 0.0],
+            "IR at offset kernel.len(), tail carries across blocks"
+        );
+    }
+
+    #[test]
+    fn convolution_pipeline_does_not_drift_over_many_blocks() {
+        // Sine → conv(identity kernel, 300 taps) → sink, block 256. The
+        // output must stay exactly x[k-300] after 94 blocks — a per-block
+        // overlap mishandling would grow the pipeline queue and drift (or
+        // silence) the response over time.
+        let mut h = vec![0.0; 300];
+        h[0] = 1.0; // identity kernel: convolution = delay by 300
+        let mut g = Graph2::new();
+        let src = g.add_source_with(
+            "tone",
+            crate::dsp::graph2::node::SourceParams {
+                signal: TestSignal::Sine,
+                frequency_hz: 160.0,
+            },
+        );
+        let conv = g.add_convolution("c", h);
+        let sink = g.add_sink("out");
+        g.add_edge(src, PortId::OUT, conv, PortId::IN).unwrap();
+        g.add_edge(conv, PortId::OUT, sink, PortId::IN).unwrap();
+        let order = g.compile().unwrap().clone();
+        let mut ex = OfflineExecutor::new(&g, &order, 256, SR).unwrap();
+        ex.process_blocks(94).unwrap(); // 24 064 samples, past the gate point
+        let cap = ex.capture(sink).unwrap();
+        let x = |k: usize| (2.0 * std::f32::consts::PI * 160.0 * k as f32 / SR).sin();
+        assert!((cap[301] - x(1)).abs() < 1e-3, "early: {}", cap[301]);
+        assert!(
+            (cap[10_000] - x(9_700)).abs() < 1e-3,
+            "mid-run: {} vs {}",
+            cap[10_000],
+            x(9_700)
+        );
+        assert!(
+            (cap[23_990] - x(23_690)).abs() < 1e-3,
+            "late (no drift): {} vs {}",
+            cap[23_990],
+            x(23_690)
+        );
+    }
+
+    #[test]
+    fn convolution_kernel_longer_than_block_is_continuous() {
+        // A 10-tap kernel with block 4: the response must span blocks
+        // without a seam — out[k] = h[k-10] for k >= 10.
+        let h: Vec<f32> = (1..=10).map(|i| i as f32).collect();
+        let mut g = Graph2::new();
+        let src = g.add_source("imp");
+        let conv = g.add_convolution("c", h.clone());
+        let sink = g.add_sink("out");
+        g.add_edge(src, PortId::OUT, conv, PortId::IN).unwrap();
+        g.add_edge(conv, PortId::OUT, sink, PortId::IN).unwrap();
+        let order = g.compile().unwrap().clone();
+        let mut ex = OfflineExecutor::new(&g, &order, 4, SR).unwrap();
+        ex.process_blocks(5).unwrap(); // 20 frames ≥ 10 + 10
+        let cap = ex.capture(sink).unwrap();
+        for k in 0..cap.len() {
+            let want = if k >= 10 { h[k - 10] } else { 0.0 };
+            assert_eq!(cap[k], want, "frame {k}");
+        }
+    }
+
+    #[test]
+    fn hrtf_renders_stereo_pair_aligned_to_longer_ir() {
+        // Left IR 5 taps, right IR 2 taps: both ears are delayed by 5 (the
+        // node's reported taps), so the pair stays mutually aligned.
+        let left = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let right = vec![10.0, 20.0];
+        let mut g = Graph2::new();
+        let src = g.add_source("imp");
+        let hrtf = g.add_hrtf("bin", left.clone(), right.clone());
+        let sl = g.add_sink("l");
+        let sr = g.add_sink("r");
+        g.add_edge(src, PortId::OUT, hrtf, PortId::IN).unwrap();
+        g.add_edge(hrtf, PortId(0), sl, PortId::IN).unwrap();
+        g.add_edge(hrtf, PortId(1), sr, PortId::IN).unwrap();
+        let order = g.compile().unwrap().clone();
+        let mut ex = OfflineExecutor::new(&g, &order, 8, SR).unwrap();
+        ex.process_blocks(2).unwrap();
+
+        let mut exp_l = vec![0.0; 5];
+        exp_l.extend(left.iter().copied());
+        exp_l.resize(16, 0.0);
+        let mut exp_r = vec![0.0; 5];
+        exp_r.extend(right.iter().copied());
+        exp_r.resize(16, 0.0);
+        assert_eq!(ex.capture(sl).unwrap(), exp_l, "left ear at offset 5");
+        assert_eq!(ex.capture(sr).unwrap(), exp_r, "right ear aligned too");
     }
 }

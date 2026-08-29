@@ -46,8 +46,9 @@ pub mod prelude {
         commands::EngineCommand,
         decode::extract_track_metadata,
         dsp::aelog::{
-            replay_events, replay_render, Aelog, AelogError, AelogRecorder, RecordedCommand,
-            ReplayError, ReplayOutcome, SessionHeader, AELOG_VERSION,
+            graph_fingerprint, log_hash, render_cached, replay_events, replay_render, Aelog,
+            AelogCache, AelogError, AelogRecorder, RecordedCommand, ReplayError, ReplayOutcome,
+            SessionHeader, AELOG_VERSION,
         },
         dsp::graph2::{
             analyze, compensate, node_latency, ExecutionOrder, Graph2, Graph2Error, LatencyReport,

@@ -3,7 +3,7 @@ members = [".", "crates/config"]
 
 [package]
 name = "engine"
-version = "3.31.0"
+version = "3.34.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"
@@ -443,3 +443,15 @@ path = "tests/fidelity/latency_alignment.rs"
 [[test]]
 name = "acoustic_graph"
 path = "tests/fidelity/acoustic_graph.rs"
+
+[[test]]
+name = "aelog_inputs"
+path = "tests/fidelity/aelog_inputs.rs"
+
+[[test]]
+name = "aelog_cache"
+path = "tests/fidelity/aelog_cache.rs"
+
+[[test]]
+name = "convolver_taps"
+path = "tests/fidelity/convolver_taps.rs"

@@ -339,6 +339,83 @@ the direct path adds **zero pipeline latency** (the tail is wet content, so
 control hooks are offline-path; the node's render-time work is a preallocated
 ring read + multiply.
 
+### Aelog render inputs — audio & listener motion (offline, v3.32.0)
+
+The log captures every input a render consumes, so a spatial session
+replays exactly: audio fed into the graph and the listener's motion join
+the timeline commands as first-class recorded commands.
+
+```
+Buffer source node (Graph 2.0, Phase 30)
+   │  embedded clip (one-shot / looping), or the executor's external track
+   ▼
+AelogRecorder
+   │  record_audio_input(chunk)      → RecordedCommand::InputAudio
+   │  record_listener_position(pos)  → SetListenerPosition{at = master, pos}
+   │  (every timeline mutation still logged as before)
+   ▼
+Aelog ──▶ replay_events(log)
+   │        → ReplayOutcome { audio_input = exact track,
+   │                          listener_motion = (sample, pos) pairs }
+   └───▶ replay_render(log, graph)
+           → set_external_input(audio_input) → byte-identical capture
+```
+
+Both inputs are stamped in master-sample terms — chunks concatenate in
+order, positions carry the master at record time — so a combined session
+(audio + trajectory + a beat-timed `SetGain`) replays to the identical
+render. Recording and replay stay control/offline-path.
+
+### Aelog render cache (offline, v3.33.0)
+
+Because a golden render is a pure function of `(log, graph, sink)`, an
+identical session never needs to be rendered twice — captures are cached
+under a deterministic hash and reused:
+
+```
+recording.aelog ──▶ log_hash()  ──┐
+graph           ──▶ graph_fingerprint() ──┼─▶ key (FNV-1a over canonical JSON)
+sink id         ──────────────────┘
+        │
+        ▼
+AelogCache (file store under the app data dir)
+   │  lookup(key) ── hit ──▶ captured audio (replay_events recomputes the
+   │                            cheap event stream; only audio is cached)
+   └── miss ──▶ replay_render(log, graph) ──▶ store(key, captured)
+```
+
+Identical sessions hash identically; any command difference changes the
+hash; the graph fingerprint + sink keep same-log-different-graph renders
+separate (never a wrong cross-graph capture). Corrupt or missing entries
+are misses, writes are atomic, and the whole cache is control/offline-path.
+
+### HRTF & convolver taps in the latency pass (offline, v3.34.0)
+
+Convolution and binaural branches now report and compensate exactly like
+`Delay` nodes — the v3.30 pass extends to the engine's two signature
+heavy operations:
+
+```
+NodeKind::Convolution { kernel }      node_latency = kernel.len()
+   out[k] = (x * h)[k - kernel.len()]   (streaming overlap-add pipeline;
+   ─────────────────────────────────────  the delay never drifts)
+NodeKind::HRTF { left, right }        node_latency = max(len)
+   mono in ──▶ left ear  (delay = max)  both ears share the pipeline
+           └──▶ right ear (delay = max)  delay → the pair stays aligned
+
+  Split ──┬─▶ Convolution(300) ──┐           Split ──┬─▶ Conv(300) ──────┐
+          │                      ├─▶ Mix  ──▶      │                     ├─▶ Mix
+          └─▶ Gain ──────────────┘                  └─▶ Gain ─▶ Delay(300)┘
+     unaligned: dry @0, conv @300      compensated: both arrive at 300
+```
+
+The executor's streaming pipeline **overlap-adds** consecutive blocks
+(each block's convolved tail continues into the next block's head), so
+long renders stay sample-exact; compensation preserves node ids, so a
+timeline `SetGain` still lands on the compensated graph. Both nodes are
+offline render primitives — the realtime `dsp::convolution` engine stays
+the hot-path partitioned counterpart.
+
 ### Spatial rendering (opt-in, v3.11.0 → v3.19.0)
 
 ```

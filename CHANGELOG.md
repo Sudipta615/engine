@@ -2,6 +2,122 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.34.0] — 2026-08-29
+
+Binaural and convolution-heavy branches join the latency pass: two new
+Graph 2.0 nodes — [`NodeKind::Convolution`] (1:1 FIR convolver) and
+[`NodeKind::HRTF`] (mono-in / stereo-out binaural filter) — report and
+compensate **exactly like `Delay` nodes**. The convolver reports its
+kernel length as taps; the HRTF node reports the longer of its two
+per-ear IRs and delays both ears by that length so the pair stays
+mutually aligned. The executor renders both with a streaming
+**overlap-add** convolution pipeline whose delay never drifts, so the
+reported taps and the rendered timing agree at any block count.
+
+### Added
+
+- **Convolution node** (`dsp::graph2`) — [`NodeKind::Convolution`] with
+  [`NodeParams::Convolution { kernel }`](NodeParams): convolves the input
+  with an embedded FIR kernel and emits with one kernel-length pipeline
+  delay (the block-partitioned lookahead convention). `node_latency` =
+  `kernel.len()`. `Graph2::add_convolution` builds it.
+- **HRTF node** — [`NodeKind::HRTF`] with
+  [`NodeParams::HRTF { left, right }`](NodeParams): mono in, left/right
+  ear out (ports 0/1), per-ear IR convolution, both ears delayed by the
+  longer IR. `node_latency` = `max(left.len(), right.len())`.
+  `Graph2::add_hrtf` builds it.
+- **Streaming convolution pipeline** (`exec.rs`) — overlap-add across
+  blocks with a constant-length delay queue: `output[k] = (x * h)[k - N]`
+  exactly, at any block count; the per-ear pipeline delay is shared so an
+  HRTF pair stays mutually aligned.
+- **Latency pass** — `analyze`/`compensate` propagate the new taps like
+  any `Delay`: a dry/wet diamond with a 300-tap convolver compensates to a
+  single summed sample at 300, and a binaural branch aligns a dry leg to
+  its 300 taps while preserving node ids.
+
+### Fixed
+
+- None.
+
+### Changed
+
+- None.
+
+## [3.33.0] — 2026-08-29
+
+Golden renders become cacheable: **a render cache keyed by a
+deterministic hash of the aelog session** (plus the graph fingerprint and
+sink) stores captured audio on disk, so identical logs reuse the stored
+render instead of re-rendering. The hash is dependency-free FNV-1a over
+the canonical JSON — identical sessions hash identically, any command
+difference changes the hash — and the cache is best-effort: corrupt or
+missing entries are misses, never wrong renders, and writes are atomic.
+
+### Added
+
+- **Render cache** (`dsp::aelog::cache`) — [`AelogCache`] with
+  [`AelogCache::lookup`] / [`AelogCache::insert`] /
+  [`AelogCache::render_cached`] and a default root under the app data
+  directory; [`log_hash`] / [`graph_fingerprint`] expose the stable
+  hashes. `render_cached` returns the stored capture on a hit (the cheap
+  event stream is recomputed from the log — pure — and only the audio
+  comes from the cache) and renders + stores on a miss.
+- **Keying contract** — the key folds in the graph fingerprint and the
+  sink id because a golden render is a pure function of
+  `(log, graph, sink)`: the same log through a different graph is a
+  separate entry, never a wrong render.
+- **Robustness** — entries carry the hashes and header back and are
+  re-verified on load; a collision or corrupted file degrades to a miss.
+  Writes are temp-file + rename.
+
+### Fixed
+
+- None.
+
+### Changed
+
+- None.
+
+## [3.32.0] — 2026-08-29
+
+Aelog now records **every render input, not just timeline commands**:
+audio fed into the graph and listener motion join the event log, so
+spatial sessions replay exactly. A new `Buffer` source node in Graph 2.0
+plays an embedded clip (one-shot or looping) or an externally supplied
+track; the recorder logs each audio chunk and every listener position as
+master-sample-stamped commands; replay reconstructs the full track and
+listener trajectory and feeds the track back into the executor — the
+final pieces of the guide's deterministic golden-render pipeline.
+
+### Added
+
+- **Buffer source node** (`dsp::graph2`) — [`NodeKind::Buffer`] with
+  [`NodeParams::Buffer { samples, looping }`](NodeParams): a graph input
+  primitive that plays its embedded clip, or the executor's external
+  track when one is attached (`OfflineExecutor::set_external_input`).
+  `Graph2::add_buffer` builds it; `to_dot` labels it.
+- **Audio-input recording** — [`RecordedCommand::InputAudio`]: chunk-wise
+  audio input logs; replay concatenates chunks into the exact session
+  track (`ReplayOutcome::audio_input`) and feeds it into the render so
+  captures are byte-identical.
+- **Listener-motion recording** — [`RecordedCommand::SetListenerPosition`]
+  stamped with the master sample at record time; replay returns the full
+  `(sample, position)` trajectory (`ReplayOutcome::listener_motion`) for
+  spatial renderers to re-apply sample-exactly.
+- **Recorder surface** — [`AelogRecorder::record_audio_input`] and
+  [`AelogRecorder::record_listener_position`] mirror the timeline's
+  mutation discipline: every input is a command, so a session is a pure
+  function of its log.
+
+### Fixed
+
+- None.
+
+### Changed
+
+- `Vec3` (spatial math) gained serde derives, keeping serializable graphs
+  and logs position-exact.
+
 ## [3.31.0] — 2026-08-29
 
 The acoustic world joins the graph: **reflections and baking become

@@ -30,20 +30,24 @@
 //! - this module — [`SessionHeader`], [`RecordedCommand`], [`Aelog`]
 //! - `record.rs` — [`AelogRecorder`]
 //! - `replay.rs` — [`replay_events`], [`replay_render`], [`ReplayOutcome`]
+//! - `cache.rs` — [`AelogCache`], [`log_hash`], [`graph_fingerprint`]
 //!
 //! ## Discipline
 //!
-//! Recording and replay are control/offline-path by design (file IO, JSON,
-//! and graph rendering are the expensive work being cached); nothing here
-//! touches a realtime audio thread.
+//! Recording, replay, and caching are control/offline-path by design (file
+//! IO, JSON, and graph rendering are the expensive work being cached);
+//! nothing here touches a realtime audio thread.
 
+pub mod cache;
 pub mod record;
 pub mod replay;
 
+pub use cache::{graph_fingerprint, log_hash, render_cached, AelogCache};
 pub use record::AelogRecorder;
 pub use replay::{replay_events, replay_render, ReplayError, ReplayOutcome};
 
 use crate::dsp::timeline::{EventPayload, EventTime, Quantize, TransportState};
+use crate::spatial::math::Vec3;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -107,6 +111,16 @@ pub enum RecordedCommand {
     /// Advance the clock `samples` and fire due events; the render driver
     /// feeds one block of that size to the graph.
     Advance(u64),
+    /// A chunk of the session's **audio input** (what was fed into the
+    /// graph's `Buffer` source that block). Chunks concatenate in order to
+    /// reconstruct the full mono track.
+    InputAudio(Vec<f32>),
+    /// A **listener motion** sample: at master sample `at`, the listener
+    /// position becomes `position` (applies from `at` onward).
+    SetListenerPosition {
+        at: u64,
+        position: Vec3,
+    },
 }
 
 /// A complete recorded render session — the `recording.aelog` payload.

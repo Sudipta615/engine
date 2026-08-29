@@ -11,6 +11,7 @@ use crate::dsp::timeline::{
     EventError, EventId, EventPayload, EventTime, Quantize, ScheduledEvent, Timeline,
     TransportState,
 };
+use crate::spatial::math::Vec3;
 
 /// A recording session: owns a [`Timeline`] and logs every mutation.
 #[derive(Debug, Clone)]
@@ -105,6 +106,23 @@ impl AelogRecorder {
         let fired = self.timeline.advance_block(samples);
         self.commands.push(RecordedCommand::Advance(samples));
         fired
+    }
+
+    /// Record a chunk of the session's audio input (what was fed into the
+    /// graph's `Buffer` source this block). Chunks concatenate in order
+    /// during replay to reconstruct the full mono track.
+    pub fn record_audio_input(&mut self, chunk: &[f32]) {
+        self.commands
+            .push(RecordedCommand::InputAudio(chunk.to_vec()));
+    }
+
+    /// Record a listener-motion sample: at the current master sample the
+    /// listener position becomes `position` (applies from there onward),
+    /// so spatial sessions replay the exact trajectory.
+    pub fn record_listener_position(&mut self, position: Vec3) {
+        let at = self.timeline.clock().master_position();
+        self.commands
+            .push(RecordedCommand::SetListenerPosition { at, position });
     }
 
     // ── Finish ──────────────────────────────────────────────────────────────

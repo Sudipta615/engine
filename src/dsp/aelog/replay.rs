@@ -10,6 +10,7 @@
 use super::{Aelog, RecordedCommand};
 use crate::dsp::graph2::{ExecutionOrder, Graph2, NodeId, OfflineExecutor};
 use crate::dsp::timeline::{AudioClock, EventPayload, ScheduledEvent, Timeline};
+use crate::spatial::math::Vec3;
 
 /// Errors produced while replaying a log.
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +43,13 @@ pub struct ReplayOutcome {
     /// For [`replay_render`]: the audio captured at the recorded sink. Empty
     /// for [`replay_events`].
     pub captured: Vec<f32>,
+    /// The reconstructed audio-input track (all `InputAudio` chunks
+    /// concatenated in order).
+    pub audio_input: Vec<f32>,
+    /// The reconstructed listener trajectory: `(master sample, position)`
+    /// pairs in recorded order — the listener motion a spatial renderer
+    /// re-applies sample-exactly.
+    pub listener_motion: Vec<(u64, Vec3)>,
 }
 
 /// Replay a log against a fresh [`Timeline`], reproducing the fired-event
@@ -55,10 +63,13 @@ pub fn replay_events(log: &Aelog) -> Result<ReplayOutcome, ReplayError> {
     let mut timeline = Timeline::new(log.header.sample_rate);
     let mut fired = Vec::new();
     apply_commands(log, &mut timeline, &mut fired)?;
+    let (audio_input, listener_motion) = reconstruct_inputs(log);
     Ok(ReplayOutcome {
         timeline,
         fired,
         captured: Vec::new(),
+        audio_input,
+        listener_motion,
     })
 }
 
@@ -78,8 +89,14 @@ pub fn replay_render(
         return Err(ReplayError::BadSampleRate(log.header.sample_rate));
     }
     let block = log.header.block_frames.max(1) as usize;
+    let (audio_input, listener_motion) = reconstruct_inputs(log);
     let mut ex = OfflineExecutor::new(graph, order, block, log.header.sample_rate)
         .map_err(|_| ReplayError::BadOrder)?;
+    // Feed the recorded audio input into the graph's Buffer sources so the
+    // render uses the exact session audio.
+    if !audio_input.is_empty() {
+        ex.set_external_input(Some(audio_input.clone()));
+    }
 
     let mut timeline = Timeline::new(log.header.sample_rate);
     let mut fired = Vec::new();
@@ -110,6 +127,8 @@ pub fn replay_render(
         timeline,
         fired,
         captured,
+        audio_input,
+        listener_motion,
     })
 }
 
@@ -123,6 +142,23 @@ fn apply_commands(
         apply_command(command, timeline, fired)?;
     }
     Ok(())
+}
+
+/// Reassemble the recorded audio-input track (chunks in order) and the
+/// listener trajectory from the log's commands.
+fn reconstruct_inputs(log: &Aelog) -> (Vec<f32>, Vec<(u64, Vec3)>) {
+    let mut audio = Vec::new();
+    let mut motion = Vec::new();
+    for c in &log.commands {
+        match c {
+            RecordedCommand::InputAudio(chunk) => audio.extend_from_slice(chunk),
+            RecordedCommand::SetListenerPosition { at, position } => {
+                motion.push((*at, *position));
+            }
+            _ => {}
+        }
+    }
+    (audio, motion)
 }
 
 /// Apply one recorded command to a timeline.
@@ -156,6 +192,10 @@ fn apply_command(
         RecordedCommand::Advance(samples) => {
             fired.extend(timeline.advance_block(*samples));
         }
+        // Replay-only inputs: the timeline itself has no audio input or
+        // listener; they are reconstructed into `ReplayOutcome` by
+        // `reconstruct_inputs` and applied by the driver / spatial renderer.
+        RecordedCommand::InputAudio(_) | RecordedCommand::SetListenerPosition { .. } => {}
     }
     Ok(())
 }

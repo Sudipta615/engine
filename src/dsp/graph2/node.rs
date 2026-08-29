@@ -95,6 +95,21 @@ pub enum NodeKind {
     /// one delayed, gain-scaled copy per baked propagation path of the
     /// source position — the acoustic world as a graph-routable primitive.
     Acoustic,
+    /// A recorded-clip source (0-in / 1-out): plays an embedded mono audio
+    /// buffer one-shot (silence after the end) or looping — the graph's
+    /// **audio-input** primitive. When an external track is attached to the
+    /// executor (`OfflineExecutor::set_external_input`) that track plays
+    /// instead (the aelog replay path).
+    Buffer,
+    /// 1:1 FIR convolver: convolves its input with an embedded kernel and
+    /// emits with one kernel-length of pipeline delay (the algorithmic
+    /// latency a block-partitioned convolver pays). Reports `kernel.len()`
+    /// taps to the latency pass.
+    Convolution,
+    /// 1-in / 2-out binaural filter: convolves mono input with per-ear
+    /// HRIRs and emits both ears with the longer IR's pipeline delay, so
+    /// the stereo pair stays mutually aligned. Reports `max(len)` taps.
+    HRTF,
 }
 
 impl NodeKind {
@@ -132,6 +147,19 @@ impl NodeKind {
                 realtime_safe: true,
                 taps: false,
             },
+            NodeKind::Buffer => NodeCapabilities {
+                stateful: true,
+                realtime_safe: true,
+                taps: false,
+            },
+            // Convolvers and binaural filters introduce pipeline latency
+            // (kernel / IR length) that `node_latency` reports and
+            // `compensate` aligns — exactly like Delay.
+            NodeKind::Convolution | NodeKind::HRTF => NodeCapabilities {
+                stateful: true,
+                realtime_safe: true,
+                taps: true,
+            },
         }
     }
 }
@@ -165,6 +193,17 @@ pub enum NodeParams {
     /// the [`BakedScene`](crate::spatial::acoustic::bake::BakedScene)
     /// attached to the executor).
     Acoustic { position: Vec3 },
+    /// `Buffer` — the embedded mono clip and whether it loops.
+    Buffer { samples: Vec<f32>, looping: bool },
+    /// `Convolution` — the FIR kernel to convolve with. The node emits its
+    /// output with `kernel.len()` samples of pipeline delay (the
+    /// block-partitioned lookahead convention), so its reported taps and
+    /// its rendered timing agree.
+    Convolution { kernel: Vec<f32> },
+    /// `HRTF` — per-ear head-related impulse responses (mono in, stereo
+    /// out). Both ears are delayed by the *longer* IR so the pair stays
+    /// aligned; the node reports that length as its taps.
+    HRTF { left: Vec<f32>, right: Vec<f32> },
 }
 
 impl NodeParams {
@@ -182,6 +221,17 @@ impl NodeParams {
             NodeParams::None => String::new(),
             NodeParams::Acoustic { position } => {
                 format!("({:.2}, {:.2}, {:.2})", position.x, position.y, position.z)
+            }
+            NodeParams::Buffer { samples, looping } => {
+                if *looping {
+                    format!("{} samples (loop)", samples.len())
+                } else {
+                    format!("{} samples", samples.len())
+                }
+            }
+            NodeParams::Convolution { kernel } => format!("{} taps", kernel.len()),
+            NodeParams::HRTF { left, right } => {
+                format!("L{} R{}", left.len(), right.len())
             }
         }
     }

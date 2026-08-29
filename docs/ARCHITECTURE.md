@@ -76,16 +76,28 @@ src/
 │
 ├── dsp/                      # ── Signal processing ──
 │   ├── aelog/                # Deterministic recording & replay (Phase 27,
-│   │                         #   v3.29): versioned .aelog render sessions —
-│   │                         #   mod.rs (SessionHeader / RecordedCommand /
-│   │                         #   Aelog + JSON string/file round-trips),
-│   │                         #   record.rs (AelogRecorder — logs every
-│   │                         #   timeline mutation), replay.rs
+│   │                         #   v3.29; Phase 30, v3.32: render inputs):
+│   │                         #   versioned .aelog render sessions — mod.rs
+│   │                         #   (SessionHeader / RecordedCommand —
+│   │                         #   timeline mutations + InputAudio chunks +
+│   │                         #   master-stamped SetListenerPosition / Aelog
+│   │                         #   + JSON string/file round-trips), record.rs
+│   │                         #   (AelogRecorder — logs every timeline
+│   │                         #   mutation + record_audio_input /
+│   │                         #   record_listener_position), replay.rs
 │   │                         #   (replay_events — identical fired stream;
 │   │                         #   replay_render — byte-identical golden
-│   │                         #   capture against a Graph 2.0 executor).
-│   │                         #   CLI: bin/aelog_replay (engine replay
-│   │                         #   recording.aelog)
+│   │                         #   capture against a Graph 2.0 executor,
+│   │                         #   re-feeding the recorded audio track;
+│   │                         #   ReplayOutcome exposes audio_input +
+│   │                         #   listener_motion). cache.rs (Phase 31,
+│   │                         #   v3.33: AelogCache — golden captures keyed
+│   │                         #   by dependency-free FNV-1a over canonical
+│   │                         #   JSON (log_hash × graph_fingerprint × sink);
+│   │                         #   lookup/insert/render_cached, atomic
+│   │                         #   temp-file writes, corrupt entries degrade
+│   │                         #   to misses). CLI: bin/aelog_replay (engine
+│   │                         #   replay recording.aelog)
 │   ├── pipeline/             # DspPipeline — reference chain; bit-exact
 │   │                         #   oracle for the graph equivalence suite
 │   │                         #   (mod.rs + controls/process/format/tests)
@@ -172,7 +184,18 @@ src/
 │   │                         #   position (add_acoustic builder;
 │   │                         #   OfflineExecutor::set_baked_scene; direct
 │   │                         #   pass-through + per-path excess-delay taps;
-│   │                         #   zero pipeline latency; Vec3 now serde). The
+│   │                         #   zero pipeline latency; Vec3 now serde). Phase
+│   │                         #   30 (v3.32): NodeKind::Buffer — audio-input
+│   │                         #   source (embedded clip one-shot/looping, or
+│   │                         #   OfflineExecutor::set_external_input track).
+│   │                         #   Phase 32 (v3.34): NodeKind::Convolution —
+│   │                         #   FIR convolver reporting kernel.len() taps,
+│   │                         #   and NodeKind::HRTF — mono-in/stereo-out
+│   │                         #   binaural filter reporting the longer
+│   │                         #   per-ear IR (both ears share that pipeline
+│   │                         #   delay); streaming overlap-add pipeline in
+│   │                         #   exec.rs so the delay never drifts — both
+│   │                         #   compensate exactly like Delay. The
 │   │                         #   topology, not an authored chain, defines
 │   │                         #   the signal flow — realtime dsp::graph is
 │   │                         #   untouched

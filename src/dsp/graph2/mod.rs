@@ -115,6 +115,16 @@ impl Graph2 {
                 vec![PortSpec::input(SignalType::Audio, 1)],
                 vec![PortSpec::output(SignalType::Audio, 1)],
             ),
+            node::NodeKind::Buffer => (vec![], vec![PortSpec::output(SignalType::Audio, 1)]),
+            node::NodeKind::Convolution => (
+                vec![PortSpec::input(SignalType::Audio, 1)],
+                vec![PortSpec::output(SignalType::Audio, 1)],
+            ),
+            // Binaural: mono in, left + right ear out.
+            node::NodeKind::HRTF => (
+                vec![PortSpec::input(SignalType::Audio, 1)],
+                vec![PortSpec::output(SignalType::Audio, 1); 2],
+            ),
         };
         let id = NodeId(self.next_node);
         self.next_node += 1;
@@ -185,6 +195,39 @@ impl Graph2 {
             NodeKind::Acoustic,
             node::NodeParams::Acoustic { position },
         )
+    }
+
+    /// A recorded-clip source (the graph's audio-input primitive): plays
+    /// `samples` one-shot (silence after the end) or looping. When an
+    /// external track is attached to the executor
+    /// (`OfflineExecutor::set_external_input`) that track plays instead.
+    pub fn add_buffer(&mut self, name: &str, samples: Vec<f32>, looping: bool) -> NodeId {
+        self.add_node(
+            name,
+            NodeKind::Buffer,
+            node::NodeParams::Buffer { samples, looping },
+        )
+    }
+
+    /// A 1:1 FIR convolver: convolves the input with `kernel` and emits
+    /// with one `kernel.len()` pipeline delay (block-partitioned lookahead
+    /// convention), so the latency pass can align parallel branches around
+    /// it exactly like a `Delay`.
+    pub fn add_convolution(&mut self, name: &str, kernel: Vec<f32>) -> NodeId {
+        self.add_node(
+            name,
+            NodeKind::Convolution,
+            node::NodeParams::Convolution { kernel },
+        )
+    }
+
+    /// A 1-in / 2-out binaural filter: convolves mono input with the
+    /// per-ear HRIRs `left` / `right` (output ports 0 = left, 1 = right)
+    /// and delays both ears by the longer IR, keeping the pair mutually
+    /// aligned. Reports `max(left.len(), right.len())` taps to the latency
+    /// pass.
+    pub fn add_hrtf(&mut self, name: &str, left: Vec<f32>, right: Vec<f32>) -> NodeId {
+        self.add_node(name, NodeKind::HRTF, node::NodeParams::HRTF { left, right })
     }
 
     /// A 1-input → `N`-output broadcast. Outputs `0..N` are created in
@@ -393,6 +436,9 @@ fn node_kind_label(kind: NodeKind) -> &'static str {
         NodeKind::Mix => "mix",
         NodeKind::Split => "split",
         NodeKind::Acoustic => "acoustic",
+        NodeKind::Buffer => "buffer",
+        NodeKind::Convolution => "conv",
+        NodeKind::HRTF => "hrtf",
     }
 }
 

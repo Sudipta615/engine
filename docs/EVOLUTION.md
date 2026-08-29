@@ -1531,3 +1531,164 @@ listener → one `Acoustic` node per listener, mixed in the topology), live
 (diffraction low-pass / material spectra) inside the node instead of the
 collapsed broadband gain.
 
+## Phase 30 — Aelog render inputs: audio & listener motion (v3.32.0) — **Implemented**
+
+**Intent.** Phase 27 made aelog the golden-render substrate, but a log
+could only reproduce timeline commands — a spatial session's *render
+inputs* (the audio fed into the graph, and where the listener is at every
+sample) were lost. This phase records the guide's remaining inputs so a
+spatial session replays exactly: the log becomes a pure function of
+*everything* a render consumes.
+
+### Key mechanisms
+
+- **`NodeKind::Buffer` / `NodeParams::Buffer { samples, looping }`** — a
+  graph audio-input source: plays its embedded clip (one-shot or
+  looping), or the executor's external track when attached via
+  [`OfflineExecutor::set_external_input`]. `Graph2::add_buffer` builds it.
+- **Audio-input recording** — [`RecordedCommand::InputAudio`]: chunks are
+  appended per block; replay concatenates them into the exact session
+  track (`ReplayOutcome::audio_input`) and feeds it back into the
+  executor, so `replay_render` captures are byte-identical to the
+  original session.
+- **Listener motion** — [`RecordedCommand::SetListenerPosition`] stamped
+  with the master sample at record time; replay returns the full
+  `(sample, position)` trajectory (`ReplayOutcome::listener_motion`) a
+  spatial renderer re-applies sample-exactly.
+- **Recorder surface** — [`AelogRecorder::record_audio_input`] and
+  [`AelogRecorder::record_listener_position`] follow the mutation
+  discipline: every input is a command, so identical sessions serialize
+  to byte-equal logs.
+
+**Realtime discipline.** The Buffer node is an offline render primitive;
+its hot path is a cursor read from a preallocated track — no allocation
+or lock.
+
+**Acceptance (spec-first).** `tests/fidelity/aelog_inputs.rs` (5 tests)
+— audio chunks reconstruct the exact track; the reconstructed track
+through the graph renders byte-identical to the session audio; listener
+motion replays timestamped `(sample, position)` pairs; a combined session
+(audio + trajectory + a beat-1 `SetGain` gate at sample 24 000) replays
+with silence to the gate then the exact track, the full trajectory, and
+one gate firing sample-exact; the Buffer node plays its embedded clip
+when no external track was recorded. Unit tests in `exec.rs`
+(`buffer_plays_embedded_clip_one_shot_and_loops`,
+`external_input_overrides_buffer_clip`). `engine` and `config` stay in
+lockstep at 3.32.0.
+
+**Unblocks (Horizon).** aelog v2 with an explicit `Buffer` *name* address
+(the external track currently feeds *all* Buffer nodes — a `clip`
+parameter would target one), multi-channel tracks, and recording the
+*baked scene swap* itself so animated worlds replay deterministically.
+
+## Phase 31 — Aelog golden-render cache (v3.33.0) — **Implemented**
+
+**Intent.** Phases 27–30 made a log a pure function of its commands and
+renders a pure function of `(log, graph, sink)` — which means an
+identical session's golden render never needs to be computed twice. This
+phase adds the **render cache**: golden captures keyed by a deterministic
+hash of the log, so CI, hosts, and CLI replays reuse stored renders
+instead of re-rendering.
+
+### Key mechanisms
+
+- **Hashing** — dependency-free **FNV-1a 64-bit** over the canonical JSON
+  bytes: [`log_hash`] (the primary key — the *cause* of the render) and
+  [`graph_fingerprint`]. Deterministic forever: no SipHash random keys, no
+  wall-clock timestamps, identical sessions hash identically, any command
+  difference changes the hash.
+- **Keying contract** — the stored key folds in the graph fingerprint and
+  the sink id, because the same log through a different graph (or
+  captured at a different sink) is different audio. A log-hash-only key
+  would return wrong renders across graphs.
+- **`AelogCache`** — file-backed store (`lookup` / `insert` /
+  `render_cached`, default root under the app data directory). On a hit,
+  the cheap event stream + clock are recomputed from the log (pure) and
+  only the audio comes from the cache — the returned [`ReplayOutcome`] is
+  byte-identical to a fresh [`replay_render`]. On a miss it renders and
+  stores.
+- **Robustness** — entries carry the hashes and header and are re-verified
+  on load, so a hash collision or corrupted file degrades to a miss, never
+  a wrong render; writes are atomic temp-file + rename.
+
+**Realtime discipline.** The cache is control/offline-path by design
+(file IO + JSON + graph rendering are the expensive work being cached);
+nothing here touches a realtime audio thread.
+
+**Acceptance (spec-first).** `tests/fidelity/aelog_cache.rs` (5 tests) —
+two identical recorded sessions hash identically and the second
+`render_cached` returns the stored render byte-identical to a fresh
+`replay_render` (entry file on disk under the log-hash key); the same log
+through a different graph renders different audio and has a different
+fingerprint (never a wrong cross-graph capture); the cache persists across
+instances; a corrupt entry is a miss that re-renders the true capture;
+and the hash is sensitive to any session difference (an extra advance, a
+changed schedule) while replay stays a pure function of the log. Unit
+tests in `cache.rs` (hash determinism/sensitivity, round-trip hit/miss,
+reload + corruption, byte-identical warm render). `engine` and `config`
+stay in lockstep at 3.33.0.
+
+**Unblocks (Horizon).** cache invalidation by *semantic* equivalence (a
+log differing only in label still reuses the render — hash the commands,
+not the header), a size-bounded LRU eviction policy, and sharing the
+cache across machines via content-addressed entries (`sha256` of the
+canonical JSON as the file name).
+
+## Phase 32 — HRTF & convolver taps in the latency pass (v3.34.0) — **Implemented**
+
+**Intent.** Phase 28's latency pass was written so that "a future
+convolution / HRTF node reports its IR length here" — this phase
+delivers those nodes. Binaural and convolution-heavy branches now report
+and compensate **exactly like `Delay`**: the pass's promise (v3.30's
+*first-class latency*) extends to the engine's two signature heavy
+operations.
+
+### Key mechanisms
+
+- **`NodeKind::Convolution` / `NodeParams::Convolution { kernel }`** — a
+  1:1 FIR convolver. `node_latency` = `kernel.len()` (the algorithmic
+  latency a block-partitioned convolver pays), and the executor emits
+  `output[k] = (x * h)[k - kernel.len()]`, so the reported taps and the
+  rendered timing agree at any block count.
+- **`NodeKind::HRTF` / `NodeParams::HRTF { left, right }`** — mono in,
+  stereo out (ports 0 = left, 1 = right), per-ear IR convolution. Both
+  ears are delayed by the *longer* IR (`node_latency` =
+  `max(left.len(), right.len())`), so the pair stays mutually aligned
+  and a downstream `Mix` sees one consistent branch latency.
+- **Streaming overlap-add pipeline** (`exec.rs`) — the crux: each block's
+  convolved result overlaps the next by `kernel.len() - 1` samples, and
+  those addends must be **added**, not dropped. A `tail` accumulator
+  carries the addends; only each block's `emit` final samples enter the
+  constant-length delay queue — so the pipeline delay never drifts, and
+  long renders (thousands of blocks) stay sample-exact. An empty ear IR
+  passes through (delayed by the shared head) with no overlap.
+- **Latency pass** — the new nodes plug straight into `node_latency`;
+  `analyze`/`compensate` need no changes. Compensation preserves node
+  ids, so a timeline `SetGain` on a dry node still lands after a
+  convolver branch is aligned.
+
+**Realtime discipline.** The nodes are offline render primitives; the
+streaming pipeline is a preallocatable ring in principle, and the
+realtime `dsp::convolution` engine remains the hot-path partitioned
+counterpart.
+
+**Acceptance (spec-first).** `tests/fidelity/convolver_taps.rs` (5
+tests) — a dry/wet diamond with a 300-tap convolver renders unaligned
+(dry @0, conv @300) and, after compensation, as one aligned sample at
+300 summing both branches (exactly the v3.30 delay behaviour); an HRTF
+node reports its longer ear and aligns both ears + a dry leg at 300;
+deep convolver chains sum taps (200 + 100 = 300) without compensation;
+a timeline `SetGain` on the dry node id lands sample-exact on the
+compensated graph after 188 blocks; graphs with kernels / HRIRs
+round-trip through JSON. Unit tests in `exec.rs` (pipeline delay,
+kernel-longer-than-block continuity, stereo alignment, and a
+**no-drift** regression: a sine through a 300-tap identity kernel is
+still `x[k-300]` at sample 23 990) and `latency.rs` (taps reporting,
+conv/HRTF compensation). `engine` and `config` stay in lockstep at
+3.34.0.
+
+**Unblocks (Horizon).** partitioned (FFT) convolution in the node with
+real IRs from the `dsp::convolution` engine, per-path spectral
+filtering inside the `Acoustic` node (Phase 29 horizon), and a
+resampler node reporting its own taps.
+
