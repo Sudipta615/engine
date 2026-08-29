@@ -1,6 +1,6 @@
 //! Fidelity tests — Phase 7 S5 room-correction pipeline THROUGH THE GRAPH.
 //!
-//! Roadmap thresholds (`docs/ROADMAP.md` Phase 7):
+//! Evolution thresholds (`docs/EVOLUTION.md` Phase 7):
 //! * pink noise through a corrected synthetic room → octave-band residual
 //!   within **±0.5 dB, 40 Hz–16 kHz**;
 //! * **disabled = bit-exact**: plans without the correction step remain

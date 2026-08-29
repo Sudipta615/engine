@@ -1,6 +1,6 @@
 //! Fidelity tests — S1 sweep measurement (Phase 7 acceptance).
 //!
-//! Roadmap thresholds (`docs/ROADMAP.md` Phase 7):
+//! Evolution thresholds (`docs/EVOLUTION.md` Phase 7):
 //! * a synthetic room (min-phase peaks/dips + pure delay) probed by the
 //!   sweep is recovered within **±0.1 dB, 20 Hz–20 kHz**; delay recovered
 //!   within **1 sample** @ 48 kHz;

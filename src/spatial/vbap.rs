@@ -45,6 +45,7 @@ use crate::buffer::MAX_AUDIO_BLOCK_FRAMES;
 use crate::decode::ChannelId;
 use crate::spatial::object::MAX_SPATIAL_OBJECTS;
 
+use super::acoustic::bake::BakedScene;
 use super::automation::SpatialAudioAutomationFrame;
 use super::bed::render_beds;
 use super::directivity::listener_angle_rad;
@@ -139,6 +140,12 @@ pub struct VbapRenderer {
     meter: SpatialMeterState,
     /// Renderer quality tier (spec §86).
     quality: SpatialQuality,
+    /// Optional v3.26 baked scene: when set and an object's position falls
+    /// in a baked cell, room reflections are placed from the cached
+    /// `BakedScene` response instead of re-running the room image-source
+    /// solve every block. `None` (default) keeps the live solve path
+    /// bit-identical.
+    baked: Option<BakedScene>,
     smooth: f32,
     air_absorption: AirAbsorption,
     sample_rate: f32,
@@ -175,6 +182,7 @@ impl VbapRenderer {
             automation_time: 0.0,
             meter: SpatialMeterState::new(0),
             quality: SpatialQuality::default(),
+            baked: None,
             smooth: one_pole_factor(smooth_ms),
             air_absorption: AirAbsorption::default(),
             sample_rate: 44_100.0,
@@ -185,6 +193,16 @@ impl VbapRenderer {
     /// Public accessor: set the renderer quality tier (spec §86).
     pub fn set_quality(&mut self, q: SpatialQuality) -> &mut Self {
         self.quality = q;
+        self
+    }
+
+    /// Attach a v3.26 baked scene (control path). When set, objects whose
+    /// position falls in a baked cell render their room reflections from the
+    /// cached propagation response instead of re-solving the room geometry
+    /// every block. `None` (the default) keeps the live solve path — output
+    /// is bit-identical to a renderer that never baked.
+    pub fn set_baked(&mut self, baked: Option<BakedScene>) -> &mut Self {
+        self.baked = baked;
         self
     }
 
@@ -658,12 +676,26 @@ impl VbapRenderer {
                 self.room_er.begin_object(obj_idx);
             }
             if room_on && obj.room_send > 0.0 {
-                let n_img = self.room_er.images_for_object(
-                    room,
-                    scene.listener.position,
-                    obj.position,
-                    &mut imgs,
-                );
+                // v3.26: consume a baked response when the object's position
+                // sits in a baked cell (static scene); otherwise fall back to
+                // the live image-source solve (bit-identical to no-bake).
+                let n_img = match self.baked.as_ref() {
+                    Some(baked) => match baked.get(obj.position) {
+                        Some(obj_b) => baked.listener_images(obj_b, &mut imgs),
+                        None => self.room_er.images_for_object(
+                            room,
+                            scene.listener.position,
+                            obj.position,
+                            &mut imgs,
+                        ),
+                    },
+                    None => self.room_er.images_for_object(
+                        room,
+                        scene.listener.position,
+                        obj.position,
+                        &mut imgs,
+                    ),
+                };
                 for (img_i, img) in imgs.iter().take(n_img).enumerate() {
                     let ldir = xf.apply_to_direction(img.dir);
                     let dg = obj

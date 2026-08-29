@@ -1,8 +1,8 @@
 //! Room & headphone correction — measurement-to-correction chain (Phase 7,
 //! control-path S1–S4).
 //!
-//! This module is the **control-thread half** of the Phase 7 roadmap
-//! ([`docs/ROADMAP.md`](../../../docs/ROADMAP.md)): it turns a sweep
+//! This module is the **control-thread half** of the Phase 7 evolution
+//! ([`docs/EVOLUTION.md`](../../../docs/EVOLUTION.md)): it turns a sweep
 //! measurement (or an imported IR file) into a phase-rendered correction
 //! impulse response. The sub-stage map:
 //!

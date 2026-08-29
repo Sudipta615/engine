@@ -11,7 +11,7 @@ harnesses, or pro-audio suites — and it ships with a stable **C FFI** so it ca
 from C, C++, Python, C#, Node.js, and any language that can call C.
 
 > **Documentation:** [Architecture](docs/ARCHITECTURE.md) · [Signal Flow](docs/SIGNAL_FLOW.md) ·
-> [Embedding guide](docs/EMBEDDING.md) · [Roadmap](docs/ROADMAP.md) · [Contributing & versioning](AGENTS.md)
+> [Embedding guide](docs/EMBEDDING.md) · [Evolution](docs/EVOLUTION.md) · [Contributing & versioning](AGENTS.md)
 
 ---
 
@@ -405,13 +405,14 @@ Everything is opt-in; the default set covers everyday playback.
 
 ## 🧪 Testing & quality gates
 
-The repository ships **30 integration/fidelity test files** plus in-crate unit suites —
-over 730 tests. Dedicated suites under [`tests/fidelity/`](tests/fidelity/) cover EQ
+The repository ships **32 integration/fidelity test files** plus in-crate unit suites —
+over 755 tests. Dedicated suites under [`tests/fidelity/`](tests/fidelity/) cover EQ
 frequency response, lookahead-limiter correctness and measurement, dither measurement,
 resampler quality/measurement, EBU R128, golden reference vectors, decoder robustness +
 fuzz mutation, multichannel graph, gapless/crossfade/seamless-seek, timestretch fidelity,
-**graph-vs-pipeline bit-exact equivalence**, concurrent ring-buffer stress, and realtime
-zero-allocation validation. Benchmarks live in [`benches/`](benches/) (Criterion).
+the acoustic world simulation layer and its **acoustic baking** cache, **graph-vs-pipeline bit-exact equivalence**,
+concurrent ring-buffer stress, and realtime zero-allocation validation. Benchmarks live
+in [`benches/`](benches/) (Criterion).
 
 ```bash
 cargo test                                  # unit + headless integration
@@ -473,7 +474,7 @@ cross-target compile check of the native WASAPI/ASIO backends. Always re-run `ca
 │   │                          #   monitor, output profiles, WAV writer, loopback
 │   └── bin/                   # audio-engine-cli, replaygain-scanner
 ├── benches/                   # dsp_bench, pipeline_bench, graph_plan_bench, spatial_bench
-├── docs/                      # ARCHITECTURE.md, SIGNAL_FLOW.md, EMBEDDING.md, ROADMAP.md
+├── docs/                      # ARCHITECTURE.md, SIGNAL_FLOW.md, EMBEDDING.md, EVOLUTION.md
 └── tests/                     # headless_playback.rs, fidelity/ (26 suites)
 ```
 

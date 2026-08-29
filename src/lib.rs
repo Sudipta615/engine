@@ -53,13 +53,15 @@ pub mod prelude {
         source::AudioSource,
         spatial::{
             encode_plane_wave, head_shadow_alpha, rotate_bus_frame, sh_foa, woodworth_itd_sec,
-            AcousticTransmission, AirAbsorption, AmbisonicDecoder, AmbisonicRenderer, BasicPanner,
-            BedId, BinauralRenderer, CustomDirectivity, DecoderPolicy, Directivity, DistanceModel,
-            Ear, FieldId, HeadSample, HeadShadow, HeadTracker, HybridBlockInputs,
-            LayoutCalibration, Listener, ObjectAudioRef, ObjectId, Occlusion, Quat, RenderError,
-            RendererKind, Room, SpatialAudioObject, SpatialBed, SpatialBedStore, SpatialField,
-            SpatialFieldStore, SpatialObjectStore, SpatialRenderer, SpatialScene, Speaker,
-            SpeakerId, SpeakerLayout, TrackingConfig, VbapRenderer, Vec3,
+            AcousticBaker, AcousticPath, AcousticRoom, AcousticTransmission, AcousticWorld,
+            AirAbsorption, AmbisonicDecoder, AmbisonicRenderer, BakePolicy, BakedObject, BakedPath,
+            BakedScene, BasicPanner, BedId, BinauralRenderer, CustomDirectivity, DecoderPolicy,
+            DiffractionEdge, Directivity, DistanceModel, Ear, FieldId, HeadSample, HeadShadow,
+            HeadTracker, HybridBlockInputs, LayoutCalibration, Listener, MaterialKind,
+            MaterialSpectrum, ObjectAudioRef, ObjectId, Occlusion, PathKind, Portal, Quat,
+            RenderError, RendererKind, Room, SpatialAudioObject, SpatialBed, SpatialBedStore,
+            SpatialField, SpatialFieldStore, SpatialObjectStore, SpatialRenderer, SpatialScene,
+            Speaker, SpeakerId, SpeakerLayout, TrackingConfig, VbapRenderer, Vec3, Wall,
         },
     };
     pub use config::{AudioBackend, ChannelPolicy, ResamplerQuality};

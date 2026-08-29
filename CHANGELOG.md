@@ -2,6 +2,115 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.26.0] — 2026-08-29
+
+Acoustic baking (roadmap v3.26): **turn expensive acoustic computation into
+reusable render data.** The v3.25 `AcousticWorld` solver enumerates every
+propagation path (direct, image-source reflections, wedge diffraction, portal
+transmission) between a source and a listener — work that, for a *static*
+scene, is identical block after block yet was being re-run every frame.
+A new [`BakedScene`] is a **position-dependent response cache**: source
+positions are quantised to cubes (default 0.5 m) and the full resolved path
+set — direction, distance, delay, gain, low-pass corner, path kind, and the
+per-band material spectrum where a surface interacted — is stored once per
+cell, then looked up by the renderers at audio time with no solving, no
+allocation, and no locks.
+
+### Added
+
+- **Baking layer** (`spatial::acoustic::bake`) — [`AcousticBaker`] (control
+  path: owns an `AcousticWorld`, bakes a scene's static object positions in
+  one call), [`BakedScene`] (the position-keyed cache with an incremental
+  `bake` for hosts that accumulate cells), [`BakedObject`] (one resolved
+  response per cell) and [`BakedPath`] (a light, `Copy` path record).
+  [`BakePolicy`] lets a host retain only the path kinds it actually renders.
+- **Renderer consumption** — `BasicPanner`, `VbapRenderer` and
+  `BinauralRenderer` each gain `set_baked(Option<BakedScene>)`. When an
+  object's position falls in a baked cell, room reflections are placed from
+  the cached response via [`BakedScene::listener_images`] (which converts
+  cached paths into the renderers' existing `ListenerImage` tap format with
+  the same excess-delay convention as `images_for_object`); objects outside
+  the bake fall back to the live solve. With no bake attached the renderers
+  are bit-identical to v3.25 — the bake is a cache, not a new model.
+- **Frequency-domain data survives the bake** — each baked reflection
+  carries its full per-band [`MaterialSpectrum`] so offline/reference
+  renderers can do true frequency-domain processing instead of the collapsed
+  low-pass corner.
+- **Fidelity suite** — `tests/fidelity/acoustic_bake.rs` (7 tests):
+  baked-vs-live equivalence for all three renderers, position-keyed caching
+  (distinct cells distinct, same-cell reuse), live-solve fallback for
+  unbaked objects, fabric-wall darkening of the reflection low-pass, and
+  deterministic bake+render.
+
+### Changed
+
+- `AcousticWorld::probe_reflection_spectra` exposes the per-reflection
+  frequency spectra to the baker (was solver-internal).
+
+## [3.25.0] — 2026-08-29
+
+Acoustic world simulation (roadmap v3.25 — the guide's Direction 6/7/8/9):
+the **first purely simulation-side layer**, built to *separate acoustic
+simulation from acoustic rendering*. A new `spatial::acoustic` module turns a
+geometric description of a space (walls with frequency-dependent materials,
+openings, diffraction edges) into a concrete set of propagation paths that
+any renderer — binaural, panner, or an offline baker — consumes. It ships the
+**geometry**, **materials**, **portals**, **propagation-path** and
+**diffraction** primitives the guide lists, and moves the room from a single
+scalar absorption coefficient to per-octave-band spectra.
+
+### Added
+
+- **Frequency-dependent acoustic materials** (`spatial::acoustic::material`)
+  — [`MaterialSpectrum`]: per-ISO-octave-band (63 Hz–16 kHz) absorption /
+  specular-reflection / transmission spectra, with log-frequency
+  interpolation, a `broadband` reduction (geometric-mean gain + −3 dB
+  low-pass corner) for the realtime renderers, and the named presets
+  Direction 8 calls for ([`MaterialKind`]: Concrete / Wood / Glass / Fabric /
+  Carpet / Metal / OpenMesh), each with a documented ISO-class spectrum.
+- **Acoustic geometry** (`spatial::acoustic::geometry`) — [`AcousticRoom`]
+  (an axis-aligned box with **per-wall** materials — the seam the old
+  [`Room::absorption`](crate::spatial::room::Room::absorption) documented),
+  [`Portal`] (an opening in a wall coupling two spaces, with its own
+  transmissive material), and [`DiffractionEdge`] (a freestanding
+  fin/mullion sound bends around), plus the jamb edges of a doorway.
+- **Propagation paths** (`spatial::acoustic::path`) — [`AcousticPath`]: the
+  simulation→render contract exactly as the guide specifies
+  (`kind`, `direction`, `distance`, `delay_samples`, `gain`, `lowpass_hz`,
+  `flags`, interacting wall), with [`PathKind`] (Direct / Reflected /
+  Diffracted / Transmitted / Diffuse) and [`PathFlags`]
+  (spectral-collapse / crosses-boundary metadata).
+- **World + path solver** (`spatial::acoustic::solver`) — [`AcousticWorld`]
+  owns the geometry and, given a source/listener pair, enumerates the path
+  set: the **direct** path, **image-source reflections** (order 1 → 6,
+  order 2 → 24, mirroring the renderer's room geometry — the excess-path
+  delays are pinned to match), **wedge diffraction** around each portal jamb
+  (and any freestanding edge) via the shortest source→edge→listener bend
+  with an HF roll-off that grows with the bend angle, and **transmission**
+  through each portal filtered by its material. Disabled world = an exact
+  single direct path. Deterministic, bounded to `MAX_PATHS`.
+- **Separation of concerns** — nothing here runs on the audio thread:
+  solving is control/offline-path (heap-happy by design, like correction);
+  the realtime renderers consume only the fixed-size resulting paths.
+
+### Tests
+
+- Unit suites in each new module (`material.rs`, `geometry.rs`, `path.rs`,
+  `solver.rs`): flat/rising/material-spectrum reduction, per-wall plane
+  geometry, portal centres/jambs, direct-path delay, path flags,
+  order-1/order-2 reflection enumeration, portal transmission + diffraction,
+  and bend-angle geometry.
+- Acceptance suite `tests/fidelity/acoustic_world.rs` (8 tests): order-1 box
+  → one direct + six reflections with finite physically-placed delays; the
+  left-wall reflection's excess-path delay matches the renderer's own
+  image-source geometry to half a sample; a fully-open portal transmits
+  brightly (gain > 0.5) and diffracts around its jambs; a fabric wall
+  low-passes its reflections well below a concrete wall's; the disabled
+  world is an exact direct path; a freestanding fin diffracts a path;
+  solves are deterministic and capped; and `diffract_around_edge` reports
+  the correct 1/r distance + delay.
+- `config` and `engine` crates stay in lockstep at 3.26.0.
+
 ## [3.24.1] — 2026-08-29
 
 ### Fixed

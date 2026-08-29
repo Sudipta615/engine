@@ -5,7 +5,7 @@ flow through the DSP chain, see [`SIGNAL_FLOW.md`](SIGNAL_FLOW.md). For
 runnable embedding examples (Rust `EngineHandle` + C FFI), see
 [`EMBEDDING.md`](EMBEDDING.md). For the phased evolution from the
 single-stream player to the multi-stream graph runtime, see
-[`ROADMAP.md`](ROADMAP.md).
+[`EVOLUTION.md`](EVOLUTION.md).
 
 ## Module map
 
@@ -138,7 +138,22 @@ src/
 │                             #   on generation swap; MC masters pass
 │                             #   through untouched)
 │
-├── spatial/                  # ── Spatial audio (Phases 8–19, opt-in) ──
+├── spatial/                  # ── Spatial audio (Phases 8–24, opt-in) ──
+│   ├── acoustic/             # Acoustic world simulation + baking (Phases
+│   │                         #   23–24, v3.25–v3.26): material.rs
+│   │                         #   (per-octave-band MaterialSpectrum
+│   │                         #   absorption/reflection/transmission + material
+│   │                         #   presets), geometry.rs (AcousticRoom with per-
+│   │                         #   wall materials, Portal openings, DiffractionEdge
+│   │                         #   fins + doorway jambs), path.rs (AcousticPath /
+│   │                         #   PathKind / PathFlags — the sim→render
+│   │                         #   contract), solver.rs (AcousticWorld::solve —
+│   │                         #   direct + image-source reflections + wedge
+│   │                         #   diffraction + portal transmission paths),
+│   │                         #   bake.rs (BakedScene position-dependent
+│   │                         #   response cache + AcousticBaker; renderers
+│   │                         #   consume via set_baked / listener_images —
+│   │                         #   cache, not a new model)
 │   ├── math.rs               # Vec3 / Quat + the single documented coordinate
 │   │                         #   system (+X right, +Y front, +Z up; metres /
 │   │                         #   radians / linear gain) — no linear-algebra dep

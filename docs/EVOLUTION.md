@@ -1,10 +1,11 @@
-# Roadmap: single-stream player → multi-stream graph runtime
+# Engine evolution: single-stream player → multi-stream graph runtime
 
-This document captures the phased evolution of the engine from a
-single-stream, pipeline-driven player into a multi-stream, node-graph mixing
-runtime. Each phase is grounded in the code as it exists on `main`; status is
-one of **Done** (merged), **Designed** (specified, not yet implemented), or
-**Horizon** (planned).
+This document records how the engine evolved — a phased history of two
+completed campaigns: the transformation from a single-stream, pipeline-driven
+player into a multi-stream, node-graph mixing runtime (Phases 1–7), and the
+speaker-independent spatial layer (Phases 8–22, plus the v3.24 seams). Each
+phase is grounded in the code as it exists on `main`; all phases are **Done**
+(merged), so this is a historical record rather than a forward-looking plan.
 
 The architecture reference is [`ARCHITECTURE.md`](ARCHITECTURE.md); the
 signal path is in [`SIGNAL_FLOW.md`](SIGNAL_FLOW.md). Every phase follows one
@@ -1100,4 +1101,135 @@ optimized paths). `spatial_bench` pins the numbers going forward.
 **Unblocks (Horizon).** SIMD (portable `std::simd` on stable) for the FIR
 convolution and mix sum, and per-architecture tuning of the renderer
 inner loops.
+
+---
+
+## Phase 23 — Acoustic world simulation (v3.25.0) — **Implemented**
+
+**Intent.** The guide's directive for v3.25: **separate acoustic simulation
+from acoustic rendering.** Everything before this phase either rendered an
+audio *signal* (direct path, reflections, binaural) or dressed a scalar
+parameter (the old `Room::absorption`) — but there was no *simulation* layer
+that owns a space's acoustic identity and computes how sound propagates
+through it. This phase adds that: a new `spatial::acoustic` module turns a
+goal description of a space — walls with **frequency-dependent materials**,
+**portals** (openings), and **diffraction edges** — into a concrete set of
+[`AcousticPath`]s a renderer consumes. The renderers never re-derive
+propagation; they place, filter and attenuate paths.
+
+### Key mechanisms
+
+- **`material`** — [`MaterialSpectrum`]: per-ISO-octave-band (63 Hz–16 kHz)
+  absorption / specular reflection / transmission, log-frequency
+  interpolation, a `broadband` reduction (geometric-mean gain + −3 dB
+  low-pass corner) for the realtime renderers, and the guide's Direction-8
+  presets ([`MaterialKind`]: Concrete / Wood / Glass / Fabric / Carpet /
+  Metal / OpenMesh). A wall no longer has one number.
+- **`geometry`** — [`AcousticRoom`] (axis-aligned box with **per-wall**
+  materials — the seam the old `Room::absorption` documented), [`Portal`]
+  (an opening in a wall coupling two spaces, with its own transmissive
+  material), [`DiffractionEdge`] (freestanding fin/mullion), doorway jamb
+  edges. Pure control-path data.
+- **`path`** — [`AcousticPath`] is the simulation→render contract, exactly
+  the guide's shape: `kind, direction (from the listener), distance,
+  delay_samples, gain, lowpass_hz, flags, interacting wall`. [`PathKind`]
+  (Direct / Reflected / Diffracted / Transmitted / Diffuse) and
+  [`PathFlags`] (spectral-collapse / crosses-boundary) tell a renderer how
+  to handle each path.
+- **`solver`** — [`AcousticWorld`] owns the geometry; `solve(source,
+  listener)` enumerates the path set: the **direct** path; **image-source
+  reflections** (order 1 → 6, order 2 → 24, mirroring the renderer's
+  `room::image_sources` geometry so the excess-path delays agree to half a
+  sample); **wedge diffraction** around each portal jamb / freestanding
+  edge via the shortest source→edge→listener bend, with an HF roll-off
+  growing with the bend angle (bass bends, treble doesn't); and
+  **transmission** through each portal filtered by its material. Disabled
+  world = exact single direct path. Deterministic; bounded to `MAX_PATHS`.
+
+**Realtime discipline.** The whole module runs on the control / offline
+path — solving is heap-happy by design (like correction), and the realtime
+renderers consume only the fixed-size resulting [`AcousticPath`]s. No new
+allocation or lock is introduced anywhere on the audio path.
+
+**Acceptance (spec-first).** `tests/fidelity/acoustic_world.rs` (8 tests)
+— order-1 box → direct + 6 reflections with finite physically-placed
+delays; the left-wall reflection's excess-path delay matches the renderer's
+own image geometry; a fully-open portal transmits brightly (gain > 0.5)
+and diffracts around its jambs; a fabric wall low-passes its reflections
+well below a concrete wall's, both bounded to the audio band; the disabled
+world is an exact direct path; a freestanding fin diffracts a path; solves
+are deterministic, capped, and finite; and `diffract_around_edge` reports
+the exact 1/r distance + delay. Unit suites in each new module (15 tests
+total). `engine` and `config` stay in lockstep at 3.25.0.
+
+
+
+**Unblocks (Horizon).** v3.26 acoustic **baking** (cache solved paths per
+static source/listener — the solver's deterministic, bounded path set is
+the exact input an offline baker needs), per-room coupling topology and
+room graphs, and feeding solved [`AcousticPath`]s into the
+binaural/panner renderers so room reflections become simulation-driven
+rather than recomputed in the render loop.
+
+---
+
+## Phase 24 — Acoustic baking (v3.26.0) — **Implemented**
+
+**Intent.** The guide's directive for v3.26: **turn expensive acoustic
+computation into reusable render data.** Phase 23's solver enumerates every
+propagation path between a source and a listener — direct, image-source
+reflections, wedge diffraction, portal transmission. For a *static* scene
+that enumeration is identical block after block, yet the renderers would
+re-run it every frame. This phase adds the cache that makes the simulation
+pay for itself: a **position-dependent response cache** (`BakedScene`)
+pre-solves the world for a set of static source positions against a fixed
+listener, and the binaural / panner / VBAP renderers consume the cached
+responses at audio time.
+
+### Key mechanisms
+
+- **`bake`** — [`AcousticBaker`] (control path: owns an `AcousticWorld`,
+  bakes a scene's static object positions in one `bake_scene` call),
+  [`BakedScene`] (position→response map keyed by the containing 0.5 m
+  cube; incremental `bake` for hosts that accumulate cells),
+  [`BakedObject`] (one resolved response per cell) and [`BakedPath`] (a
+  light, `Copy` path record: direction, distance, delay, gain, low-pass
+  corner, path kind, interacting wall, and the **full per-band
+  [`MaterialSpectrum`]** where a surface interacted). [`BakePolicy`]
+  retains only the path kinds a host renders.
+- **Renderer consumption** — `BasicPanner`, `VbapRenderer` and
+  `BinauralRenderer` gain `set_baked(Option<BakedScene>)`. When an
+  object's position falls in a baked cell, room reflections are placed
+  from the cached response via [`BakedScene::listener_images`], which
+  converts cached paths into the renderers' existing `ListenerImage` tap
+  format with the *same excess-delay convention* as `images_for_object`;
+  objects outside the bake fall back to the live solve. No bake attached
+  → bit-identical to Phase 23: the bake is a cache, not a new model.
+- **Frequency-domain data survives** — each baked reflection carries its
+  full spectrum so offline / reference renderers can do true
+  frequency-domain processing rather than the collapsed low-pass corner.
+
+**Realtime discipline.** Baking is control / offline-path and heap-happy
+by design (it is the expensive work being cached). Render-time is a read
+of a `HashMap` plus a flat copy into a fixed `[ListenerImage; MAX_IMAGES]`
+— no solving, no allocation, no locks on the audio path.
+
+**Acceptance (spec-first).** `tests/fidelity/acoustic_bake.rs` (7 tests)
+— baked-vs-live equivalence for all three renderers within tight
+relative tolerance (identical geometry; the ±1 ulp difference comes from
+`Vec3::normalized` division vs the live reciprocal multiply, not the
+model); the cache is position-keyed (distinct cells distinct, same-cell
+re-bakes reuse); unbaked objects fall back to the live solve
+(deterministic, finite); a fabric-wall bake darkens the reflected
+low-pass corner below a concrete bake while both stay in-band; and
+bake+render is deterministic. Unit suites in `bake.rs` (7 tests; total
+acoustic unit count 22). `engine` and `config` stay in lockstep at
+3.26.0.
+
+**Unblocks (Horizon).** v3.27 **Graph 2.0** (arbitrary topology — the
+baked scene is already an explicit `position → response` dependency a
+general graph could represent as nodes/edges), v3.28 timeline/scheduler
+(bake invalidation on scene mutation), and multi-listener bakes (one
+`BakedScene` per listener — the cache is already keyed per listener
+position, so N listeners is N scenes).
 

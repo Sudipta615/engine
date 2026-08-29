@@ -159,6 +159,52 @@ device's actual crystal (offset reported in ppm) instead of its nominal
 clock. Same-rate endpoints reuse the master's already-limited block
 untouched.
 
+### Acoustic world simulation (opt-in, v3.25.0)
+
+A **simulation-side** layer that computes how sound propagates through a
+space, separate from rendering. Controlling/acoustic geometry is described
+with frequency-dependent materials:
+
+```
+AcousticRoom (per-wall MaterialSpectrum) + Portal(s) + DiffractionEdge(s)
+        │  AcousticWorld::solve(source, listener)
+        ▼
+[AcousticPath; N]  — Direct / Reflected / Diffracted / Transmitted
+        │  each: direction, distance, delay_samples, gain, lowpass_hz, flags
+        ▼
+renders (binaural / pan / offline baker) consume the paths
+```
+
+The solver runs on the control / offline path (heap-happy by design, like
+correction); the realtime renderers consume only the fixed-size paths. An
+order-1 box yields one direct + six image-source reflections whose
+`delay_samples` match the renderer's own room-image geometry; portals add a
+material-filtered transmission path plus wedge diffraction around their
+jambs.
+
+### Acoustic baking (opt-in, v3.26.0)
+
+For **static** scenes the solve above is identical block after block — so it
+is baked once and cached, then consumed at audio time:
+
+```
+AcousticBaker (control path)
+        │  bake_scene(object positions, listener)
+        ▼
+BakedScene — position → response cache (0.5 m cells)
+        │  listener_images(BakedObject) → [ListenerImage; MAX_IMAGES]
+        ▼
+BasicPanner / VbapRenderer / BinauralRenderer (set_baked)
+        │  object in baked cell?  ──yes──▶ cached taps (no solve)
+        └──no──▶ live AcousticWorld::solve fallback (Phase 23)
+```
+
+Baking is control/offline-path; render-time is a `HashMap` read plus a flat
+copy into the fixed `ListenerImage` buffer — no solving, allocation, or
+locks. With no bake attached the renderers are bit-identical to v3.25; each
+baked reflection also keeps its full per-band material spectrum for offline
+frequency-domain renderers.
+
 ### Spatial rendering (opt-in, v3.11.0 → v3.19.0)
 
 ```

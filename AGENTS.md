@@ -61,7 +61,7 @@ drive the whole surface.
 │   │                           #   + device_monitor, output_profile, rate_policy
 │   └── bin/                    # `audio-engine-cli`, `replaygain-scanner`
 ├── benches/                    # dsp_bench, pipeline_bench, graph_plan_bench, spatial_bench
-├── docs/                       # ARCHITECTURE.md, SIGNAL_FLOW.md, EMBEDDING.md, ROADMAP.md
+├── docs/                       # ARCHITECTURE.md, SIGNAL_FLOW.md, EMBEDDING.md, EVOLUTION.md
 └── tests/                      # headless + `tests/fidelity/` DSP/decoder suites
 ```
 
@@ -203,7 +203,7 @@ Before considering a change "complete", verify:
       feature builds (`tag-write`, `fingerprint`, `c-ffi`, `network-streaming`,
       `wasapi-native`, `asio-native`) compile when the change touches those paths.
 - [ ] **Docs consistent**: `README.md`, `docs/ARCHITECTURE.md`, `docs/SIGNAL_FLOW.md`,
-      `docs/EMBEDDING.md`, and `docs/ROADMAP.md` still describe the real layout and
+      `docs/EMBEDDING.md`, and `docs/EVOLUTION.md` still describe the real layout and
       behavior; update the module map when you add/move/remove a module.
 - [ ] **License file present**: `LICENSE-APACHE` exists at the repo root (do not
       remove it), the Cargo.toml `license` field is `Apache-2.0`, and the README

@@ -54,6 +54,7 @@ use crate::buffer::MAX_AUDIO_BLOCK_FRAMES;
 use crate::decode::ChannelId;
 use crate::spatial::object::MAX_SPATIAL_OBJECTS;
 
+use super::acoustic::bake::BakedScene;
 use super::automation::SpatialAudioAutomationFrame;
 use super::bed::MAX_BEDS;
 use super::directivity::listener_angle_rad;
@@ -211,6 +212,12 @@ pub struct BinauralRenderer {
     /// Application-driven automation time (seconds, spec §47). Drives any
     /// object automation curves set on the scene.
     automation_time: f32,
+    /// Optional v3.26 baked scene: when set and an object's position falls
+    /// in a baked cell, room reflections are placed from the cached
+    /// `BakedScene` response instead of re-running the room image-source
+    /// solve every block. `None` (default) keeps the live solve path
+    /// bit-identical.
+    baked: Option<BakedScene>,
 }
 
 impl BinauralRenderer {
@@ -259,6 +266,7 @@ impl BinauralRenderer {
             meter: SpatialMeterState::new(2),
             admission: vec![VoiceAdmission::Full; MAX_SPATIAL_OBJECTS],
             automation_time: 0.0,
+            baked: None,
         }
     }
 
@@ -296,6 +304,16 @@ impl BinauralRenderer {
     /// The active quality tier (spec §86).
     pub fn quality(&self) -> SpatialQuality {
         self.quality
+    }
+
+    /// Attach a v3.26 baked scene (control path). When set, objects whose
+    /// position falls in a baked cell render their room reflections from the
+    /// cached propagation response instead of re-solving the room geometry
+    /// every block. `None` (the default) keeps the live solve path — output
+    /// is bit-identical to a renderer that never baked.
+    pub fn set_baked(&mut self, baked: Option<BakedScene>) -> &mut Self {
+        self.baked = baked;
+        self
     }
 
     /// Enable/disable output metering (spec §70). Disabled = dormant meter
@@ -588,15 +606,29 @@ impl BinauralRenderer {
             }
 
             // Room: image sources for this object (skipped for degraded
-            // voices — the largest per-object cost, spec §86 tiers).
+            // voices — the largest per-object cost, spec §86 tiers). v3.26:
+            // consume a baked response when the object's position sits in a
+            // baked cell (static scene); otherwise fall back to the live
+            // image-source solve (bit-identical to no-bake).
             let mut n_img = 0usize;
             if room_on && !degraded && obj.room_send > 0.0 {
-                n_img = self.room_er.images_for_object(
-                    &scene.room,
-                    scene.listener.position,
-                    pos,
-                    &mut imgs,
-                );
+                n_img = match self.baked.as_ref() {
+                    Some(baked) => match baked.get(pos) {
+                        Some(obj_b) => baked.listener_images(obj_b, &mut imgs),
+                        None => self.room_er.images_for_object(
+                            &scene.room,
+                            scene.listener.position,
+                            pos,
+                            &mut imgs,
+                        ),
+                    },
+                    None => self.room_er.images_for_object(
+                        &scene.room,
+                        scene.listener.position,
+                        pos,
+                        &mut imgs,
+                    ),
+                };
                 for i in 0..n_img {
                     let ldir = xf.apply_to_direction(imgs[i].dir);
                     let az = ldir.azimuth_rad();

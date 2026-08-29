@@ -1,6 +1,6 @@
 //! Unit tests for the correction chain (S1–S4). The heavyweight fidelity
 //! acceptance suites live under `tests/fidelity/` (see
-//! `docs/ROADMAP.md` Phase 7); these cover the small invariants inline.
+//! `docs/EVOLUTION.md` Phase 7); these cover the small invariants inline.
 
 use std::path::PathBuf;
 

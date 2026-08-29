@@ -1,6 +1,6 @@
 //! Fidelity tests — S4 correction derivation (Phase 7 acceptance).
 //!
-//! Roadmap thresholds (`docs/ROADMAP.md` Phase 7):
+//! Evolution thresholds (`docs/EVOLUTION.md` Phase 7):
 //! * a synthetic ±6 dB room corrected to a flat target leaves a residual
 //!   within **±0.5 dB, 40 Hz–16 kHz**;
 //! * where injected SNR < 10 dB the inverse clamps to `max_boost_db`; no

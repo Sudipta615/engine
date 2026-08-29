@@ -3,7 +3,7 @@ members = [".", "crates/config"]
 
 [package]
 name = "engine"
-version = "3.24.1"
+version = "3.26.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"
@@ -415,3 +415,11 @@ path = "tests/fidelity/correction_inverse.rs"
 [[test]]
 name = "room_correction_pipeline"
 path = "tests/fidelity/room_correction_pipeline.rs"
+
+[[test]]
+name = "acoustic_world"
+path = "tests/fidelity/acoustic_world.rs"
+
+[[test]]
+name = "acoustic_bake"
+path = "tests/fidelity/acoustic_bake.rs"

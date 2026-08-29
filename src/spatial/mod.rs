@@ -32,6 +32,14 @@
 //!
 //! ## Module map
 //!
+//! - `acoustic/` — simulation-side acoustic world (v3.25) + baking
+//!   (v3.26): per-octave [`MaterialSpectrum`] materials + named presets,
+//!   [`AcousticRoom`] geometry with per-wall materials, [`Portal`]
+//!   openings and [`DiffractionEdge`]s, the [`AcousticWorld`] path solver
+//!   that enumerates direct / reflected / diffracted / transmitted
+//!   [`AcousticPath`]s — separating simulation from rendering — and the
+//!   [`AcousticBaker`] / [`BakedScene`] position-dependent response cache
+//!   the renderers consume via `set_baked` (cache, not a new model).
 //! - `math.rs` — [`Vec3`], [`Quat`] and the single documented coordinate
 //!   system (§17–18).
 //! - `level.rs` — [`DistanceModel`], [`AirAbsorption`] (level laws, §38–39).
@@ -130,6 +138,7 @@
 //! The spatial layer contains **no** Dolby/DTS codecs, bitstreams, metadata,
 //! or trademarks — it is an independent implementation (§3, §115).
 
+pub mod acoustic;
 pub mod ambisonic;
 pub mod automation;
 pub mod bed;
@@ -159,7 +168,12 @@ pub mod tracking;
 pub mod upmix;
 pub mod vbap;
 pub mod voice;
-
+pub use acoustic::{
+    diffract_around_edge, wall_index, AcousticBaker, AcousticPath, AcousticRoom, AcousticWorld,
+    BakePolicy, BakedObject, BakedPath, BakedScene, DiffractionEdge, MaterialKind,
+    MaterialSpectrum, PathFlags, PathKind, Portal, Wall, ALL_WALLS, DEFAULT_BAKE_CELL_M, MAX_PATHS,
+    MAX_REFLECTION_ORDER, OCTAVE_BANDS, OCTAVE_BANDS_HZ,
+};
 pub use ambisonic::{
     channel_count, encode_plane_wave, encode_plane_wave_n, rotate_bus_frame, rotate_bus_frame_n,
     sh_foa, sh_n, AmbisonicDecoder, AmbisonicRenderer, DecoderPolicy, AMBISONIC_CHANNELS,
