@@ -13,6 +13,7 @@ use super::enums::{
     PrecisionMode, ResamplerQuality, SpeedMode, TimeStretchQuality, TransitionMode, VolumeMode,
 };
 use super::rate_policy::SampleRatePolicy;
+use super::spatial_render::{SpatialMeterConfig, SpatialQuality, SpatialVoiceConfig};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EngineConfig {
@@ -196,6 +197,15 @@ pub struct SpatialConfig {
     pub listener_pitch_deg: f32,
     #[serde(default)]
     pub listener_roll_deg: f32,
+    /// Renderer quality tier (spec §86).
+    #[serde(default)]
+    pub quality: SpatialQuality,
+    /// Voice management budget (spec §76).
+    #[serde(default)]
+    pub voice: SpatialVoiceConfig,
+    /// Output metering enable (spec §70).
+    #[serde(default)]
+    pub metering: SpatialMeterConfig,
 }
 
 fn default_spatial_half_width() -> f32 {
@@ -214,6 +224,9 @@ impl Default for SpatialConfig {
             listener_yaw_deg: 0.0,
             listener_pitch_deg: 0.0,
             listener_roll_deg: 0.0,
+            quality: SpatialQuality::default(),
+            voice: SpatialVoiceConfig::default(),
+            metering: SpatialMeterConfig::default(),
         }
     }
 }

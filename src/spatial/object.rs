@@ -10,9 +10,12 @@
 //! many instances; the actual per-block audio flows through the renderer's
 //! input planes.
 
+use super::automation::SpatialAutomation;
 use super::directivity::Directivity;
-use super::level::DistanceModel;
+use super::doppler::Doppler;
+use super::level::{AirAbsorption, DistanceModel};
 use super::math::{Quat, Vec3};
+use super::nearfield::NearField;
 use super::occlusion::Occlusion;
 use crate::AudioSource;
 
@@ -75,6 +78,18 @@ pub struct SpatialAudioObject {
     pub directivity: Directivity,
     /// Occlusion: broadband attenuation + low-pass roll-off (spec §43–44).
     pub occlusion: Occlusion,
+    /// Applied high-frequency air absorption (spec §39; disabled = exact
+    /// passthrough in both gain and filter).
+    pub air_absorption: AirAbsorption,
+    /// Near-field correction: proximity gain + LF lift (spec §40; disabled =
+    /// exact passthrough).
+    pub near_field: NearField,
+    /// Doppler from the relative source/listener velocity (spec §42;
+    /// disabled = exact passthrough).
+    pub doppler: Doppler,
+    /// Optional automation override for position/orientation/gain/spread
+    /// (spec §47; control path applies it to the render fields).
+    pub automation: SpatialAutomation,
     /// Distance attenuation law.
     pub distance_model: DistanceModel,
     /// Distance reference (metres) for laws that use one.
@@ -101,6 +116,10 @@ impl SpatialAudioObject {
             spread: 0.0,
             directivity: Directivity::default(),
             occlusion: Occlusion::default(),
+            air_absorption: AirAbsorption::default(),
+            near_field: NearField::default(),
+            doppler: Doppler::default(),
+            automation: SpatialAutomation::default(),
             distance_model: DistanceModel::InverseReference,
             reference_distance: 1.0,
             room_send: 0.0,

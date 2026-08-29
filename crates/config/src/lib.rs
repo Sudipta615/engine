@@ -9,6 +9,7 @@ mod engine_config;
 mod enums;
 mod rate_policy;
 mod scene_config;
+mod spatial_render;
 
 pub use dsp_config::{
     BandConfig, BassManagementConfig, ChannelEqConfig, ChannelEqEntry, ChannelMixConfig,
@@ -29,9 +30,11 @@ pub use enums::{
 };
 pub use rate_policy::{apply_fallback, base_rate, clock_family, nearest_rate, SampleRatePolicy};
 pub use scene_config::{
-    is_valid_role, SceneListenerConfig, SpatialBedConfig, SpatialFieldConfig, SpatialObjectConfig,
+    is_valid_role, CurveQuatConfig, CurveScalarConfig, CurveVec3Config, SceneListenerConfig,
+    SpatialAutomationConfig, SpatialBedConfig, SpatialFieldConfig, SpatialObjectConfig,
     SpatialSceneConfig,
 };
+pub use spatial_render::{SpatialMeterConfig, SpatialQuality, SpatialVoiceConfig, VoicePriority};
 
 pub mod types {
     pub mod enums {

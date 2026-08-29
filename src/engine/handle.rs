@@ -394,6 +394,54 @@ impl EngineHandle {
         let _ = self.send_command(EngineCommand::SetCorrectionEnabled(enabled));
     }
 
+    // ── Spatial master (Phase 17) ────────────────────────────────────
+
+    /// Set the spatial master's renderer quality tier (spec §86).
+    pub fn set_spatial_quality(&self, q: config::SpatialQuality) {
+        let _ = self.send_command(EngineCommand::SetSpatialQuality(q));
+    }
+
+    /// Set / replace the spatial master's voice budget (spec §76).
+    /// `enabled == false` clears it (full admission).
+    pub fn set_spatial_voice(
+        &self,
+        enabled: bool,
+        capacity: usize,
+        full_quality_capacity: usize,
+        policy: config::VoicePriority,
+    ) {
+        let _ = self.send_command(EngineCommand::SetSpatialVoice {
+            enabled,
+            capacity,
+            full_quality_capacity,
+            policy,
+        });
+    }
+
+    /// Attach a scalar automation curve (gain or spread) to a program object
+    /// (0 = L, 1 = R) and set the scene automation clock (spec §47). Pass
+    /// `None` to clear the curve. The curve is built off the audio thread
+    /// and evaluated allocation-free at block rate.
+    pub fn set_spatial_automation(
+        &self,
+        object: u8,
+        kind: u8,
+        curve: Option<std::sync::Arc<crate::spatial::CurveScalar>>,
+        time_secs: f32,
+    ) {
+        let _ = self.send_command(EngineCommand::SetSpatialAutomation {
+            object,
+            kind,
+            curve,
+            time_secs,
+        });
+    }
+
+    /// Drive program-object automation at `seconds` (spec §47).
+    pub fn set_spatial_automation_time(&self, seconds: f32) {
+        let _ = self.send_command(EngineCommand::SetSpatialAutomationTime(seconds));
+    }
+
     /// Live wet/dry depth in [0, 1] (1.0 = fully corrected).
     pub fn set_correction_depth(&self, depth: f32) {
         let _ = self.send_command(EngineCommand::SetCorrectionDepth(depth));

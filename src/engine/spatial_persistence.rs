@@ -76,6 +76,11 @@ fn snapshot(graph: &DspGraph) -> SpatialConfig {
         listener_yaw_deg,
         listener_pitch_deg,
         listener_roll_deg,
+        // Render knobs are host-level (not node state); snapshot the defaults
+        // so a persisted file round-trips a complete SpatialConfig.
+        quality: Default::default(),
+        voice: Default::default(),
+        metering: Default::default(),
     }
 }
 

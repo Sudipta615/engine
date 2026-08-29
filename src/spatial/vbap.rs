@@ -45,13 +45,18 @@ use crate::buffer::MAX_AUDIO_BLOCK_FRAMES;
 use crate::decode::ChannelId;
 use crate::spatial::object::MAX_SPATIAL_OBJECTS;
 
+use super::automation::SpatialAudioAutomationFrame;
 use super::bed::render_beds;
 use super::directivity::listener_angle_rad;
+use super::doppler::{Doppler, DopplerState};
 use super::field::AmbisonicFieldMixer;
-use super::level::AirAbsorption;
+use super::level::{AbsorptionState, AirAbsorption};
 use super::math::Vec3;
+use super::metering::SpatialMeterState;
+use super::nearfield::NearFieldState;
 use super::occlusion::OcclusionState;
 use super::panner::DEFAULT_SMOOTHING_MS;
+use super::quality::SpatialQuality;
 use super::render::{HybridBlockInputs, RenderError, SpatialRenderer};
 use super::room::{EarlyReflections, ListenerImage, RoomLateField, MAX_IMAGES};
 use super::scene::{ListenerTransform, SpatialScene};
@@ -122,6 +127,18 @@ pub struct VbapRenderer {
     room_late: RoomLateField,
     /// Block-sized scratch for the late-field plane.
     late_scratch: Vec<f32>,
+    /// Per-object applied air-absorption filter state (MAX_OBJECTS).
+    abs: Vec<AbsorptionState>,
+    /// Per-object near-field filter state (MAX_OBJECTS).
+    nf: Vec<NearFieldState>,
+    /// Per-object Doppler resampler state (MAX_OBJECTS).
+    doppler: Vec<DopplerState>,
+    /// Application-driven automation time (seconds).
+    automation_time: f32,
+    /// Output metering (spec §70).
+    meter: SpatialMeterState,
+    /// Renderer quality tier (spec §86).
+    quality: SpatialQuality,
     smooth: f32,
     air_absorption: AirAbsorption,
     sample_rate: f32,
@@ -152,11 +169,34 @@ impl VbapRenderer {
             room_er: EarlyReflections::new(),
             room_late: RoomLateField::new(),
             late_scratch: vec![0.0; MAX_AUDIO_BLOCK_FRAMES],
+            abs: vec![AbsorptionState::default(); MAX_SPATIAL_OBJECTS],
+            nf: vec![NearFieldState::default(); MAX_SPATIAL_OBJECTS],
+            doppler: vec![DopplerState::default(); MAX_SPATIAL_OBJECTS],
+            automation_time: 0.0,
+            meter: SpatialMeterState::new(0),
+            quality: SpatialQuality::default(),
             smooth: one_pole_factor(smooth_ms),
             air_absorption: AirAbsorption::default(),
             sample_rate: 44_100.0,
             prepared: false,
         }
+    }
+
+    /// Public accessor: set the renderer quality tier (spec §86).
+    pub fn set_quality(&mut self, q: SpatialQuality) -> &mut Self {
+        self.quality = q;
+        self
+    }
+
+    /// Public accessor: drive automation at `seconds` (spec §47).
+    pub fn set_automation_time(&mut self, seconds: f32) -> &mut Self {
+        self.automation_time = seconds;
+        self
+    }
+
+    /// Public accessor: the output meters snapshot (control thread).
+    pub fn meters(&self) -> &SpatialMeterState {
+        &self.meter
     }
 
     /// Configure the optional air-absorption model (disabled by default =
@@ -228,6 +268,11 @@ impl VbapRenderer {
         self.sm = vec![0.0; MAX_SPATIAL_OBJECTS * speaker_count.max(1)];
         self.sm_lfe = vec![0.0; MAX_SPATIAL_OBJECTS];
         self.occ = vec![OcclusionState::default(); MAX_SPATIAL_OBJECTS];
+        self.abs = vec![AbsorptionState::default(); MAX_SPATIAL_OBJECTS];
+        self.nf = vec![NearFieldState::default(); MAX_SPATIAL_OBJECTS];
+        self.doppler = vec![DopplerState::default(); MAX_SPATIAL_OBJECTS];
+        self.meter = SpatialMeterState::new(speaker_count);
+        self.meter.set_lfe_index(lfe_index);
         self.bed_roles = layout
             .speakers
             .iter()
@@ -477,6 +522,10 @@ impl SpatialRenderer for VbapRenderer {
         }
         self.fields
             .render(scene, inputs.fields, frames, out, &self.out_trim);
+        // Output metering (spec §70).
+        let need = self.speaker_count * frames;
+        self.meter.clear();
+        self.meter.feed_block(&out[..need], frames);
         Ok(())
     }
 }
@@ -506,13 +555,25 @@ impl VbapRenderer {
         let mut imgs = [ListenerImage::ZERO; MAX_IMAGES];
         for (obj_ordinal, (slot, obj)) in scene.objects.iter_enabled().enumerate() {
             let obj_idx = slot;
-            let local = xf.apply_to_point(obj.position);
+
+            // Automation override (spec §47).
+            let mut automating = SpatialAudioAutomationFrame::none();
+            if obj.automation.has_any() {
+                obj.automation.apply(self.automation_time, &mut automating);
+            }
+            let (pos, gain, spread) = (
+                automating.position.unwrap_or(obj.position),
+                automating.gain.unwrap_or(obj.gain),
+                automating.spread.unwrap_or(obj.spread),
+            );
+
+            let local = xf.apply_to_point(pos);
             let dist = local.length();
             let dir = local.normalized().unwrap_or(Vec3::Y);
 
             // Level chain (spec §68): VBAP places full 3D, so no off-plane
             // `cos(elevation)` term — distance · directivity · occlusion
-            // transmission model amplitude only.
+            // transmission · near-field proximity model amplitude only.
             let dist_gain = obj
                 .distance_model
                 .distance_gain(dist, obj.reference_distance);
@@ -529,10 +590,33 @@ impl VbapRenderer {
             } else {
                 (1.0, None)
             };
-            let obj_gain = obj.gain * dist_gain * dir_gain * occ_gain;
+            // Applied air absorption (spec §39).
+            let abs_cutoff = obj.air_absorption.cutoff_hz(dist, self.sample_rate);
+            let abs_coeffs = obj
+                .air_absorption
+                .enabled
+                .then(|| self.abs[obj_idx].coeffs(abs_cutoff, self.sample_rate, self.smooth))
+                .flatten();
+            // Near field (spec §40).
+            let nf_gain = obj.near_field.proximity_gain(dist);
+            let nf_boost_db = 20.0 * obj.near_field.lf_boost_gain(dist).log10();
+            let nf_coeffs = if obj.near_field.enabled {
+                Some(self.nf[obj_idx].shelf_coeffs(nf_boost_db, self.sample_rate, self.smooth))
+            } else {
+                None
+            };
+            // Doppler (spec §42).
+            let doppler_on = obj.doppler.enabled;
+            if doppler_on {
+                let rel = obj.velocity - scene.listener.velocity;
+                let v_r = Doppler::radial_velocity(rel, dir);
+                let ratio = obj.doppler.ratio(v_r);
+                self.doppler[obj_idx].set_ratio(ratio, self.smooth);
+            }
+            let obj_gain = gain * dist_gain * dir_gain * occ_gain * nf_gain;
 
-            if obj.spread > 0.0 {
-                self.solve_spread(dir, obj.spread, &mut gains);
+            if spread > 0.0 {
+                self.solve_spread(dir, spread, &mut gains);
             } else {
                 self.solve(dir, &mut gains);
             }
@@ -590,7 +674,7 @@ impl VbapRenderer {
                         if g == 0.0 {
                             continue;
                         }
-                        let target = obj.gain * obj.room_send * img.coeff * dg * g;
+                        let target = gain * obj.room_send * img.coeff * dg * g;
                         if target != 0.0 {
                             self.room_er.add_tap(obj_idx, img_i, spk, img.delay, target);
                         }
@@ -604,11 +688,21 @@ impl VbapRenderer {
             }
             for frame in 0..frames {
                 let mut s = input[frame];
-                // Occlusion low-passes the object input *before* panning
-                // (spec §43); the filtered sample feeds both the pan paths
-                // and the LFE send. Passthrough when not occluded.
+                // Object processing order (spec §141): Doppler (pitch) →
+                // occlusion (low-pass) → air absorption (HF roll-off) →
+                // near-field LF lift — before the pan sends. Exact passthrough
+                // when disabled.
+                if doppler_on {
+                    s = self.doppler[obj_idx].process(s, true);
+                }
                 if let Some(c) = occ_coeffs {
                     s = self.occ[obj_idx].process(s, &c);
+                }
+                if let Some(c) = abs_coeffs {
+                    s = self.abs[obj_idx].process(s, &c);
+                }
+                if let Some(c) = nf_coeffs {
+                    s = self.nf[obj_idx].process(s, &c);
                 }
                 for &(spk, coeff) in gains.iter() {
                     if coeff == 0.0 {
@@ -631,7 +725,7 @@ impl VbapRenderer {
                     self.room_er.object_frame(
                         obj_idx,
                         s,
-                        obj.gain * obj.room_send,
+                        gain * obj.room_send,
                         frame,
                         n_spk,
                         out,

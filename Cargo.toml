@@ -3,7 +3,7 @@ members = [".", "crates/config"]
 
 [package]
 name = "engine"
-version = "3.23.0"
+version = "3.24.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"
@@ -62,6 +62,13 @@ codec-tta = []
 # generate deterministic `.wv` fixtures at test time (no binary assets).
 codec-wavpack = ["dep:wavicle"]
 codec-musepack = []
+
+# Native NetCDF-classic (CDF) SOFA / AES69 HRTF importer (`spatial::sofa::import_sofa`),
+# pure-Rust and dependency-free: parses the NetCDF-3 classic subset the SOFA C API
+# writes in SOFA_NETCDF3 / SOFA_NETCDF3_CLASSIC mode and reduces it to `HrtfCorpus`
+# for the existing `HrtfDataset` pipeline. NetCDF-4/HDF5 (`nc4`) SOFA is refused
+# with a typed error (documented HDF5 seam).
+sofa-import = []
 
 # Stream audio files over HTTP(S) using Range requests, enabling the engine
 # to decode from URLs without downloading the entire file first. Adds the

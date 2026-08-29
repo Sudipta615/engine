@@ -124,6 +124,38 @@ pub struct PlaybackInfo {
     /// telemetry cadence (enabled, phase mode, IR length, added latency,
     /// per-channel max gain, depth).
     pub correction: CorrectionInfo,
+    /// Spatial master output telemetry (Phase 17): the `SpatialNode`'s
+    /// per-ear output meters (peak/RMS dBFS) and its live voice-budget plan
+    /// (full / degraded / dropped voice counts), mirrored on the telemetry
+    /// cadence. `None` until the first refresh.
+    pub spatial: Option<SpatialTelemetry>,
+}
+
+/// Spatial master output telemetry (Phase 17). Mirrored from the
+/// [`crate::dsp::graph::nodes::SpatialNode`] on the telemetry cadence: the
+/// binaural output's left/right-ear peak & RMS (dBFS) and the per-block
+/// voice-budget admission counts (spec §76). Hosts read this from the
+/// lock-free [`PlaybackInfo`] snapshot.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SpatialTelemetry {
+    /// Whether the spatial master stage is enabled.
+    pub enabled: bool,
+    /// Whether a voice budget is configured (and thus being applied).
+    pub voice_active: bool,
+    /// Full-quality voices admitted last block.
+    pub voice_full_voices: usize,
+    /// Degraded voices admitted last block.
+    pub voice_degraded_voices: usize,
+    /// Voices dropped last block (silenced).
+    pub voice_dropped_voices: usize,
+    /// Left-ear output peak, dBFS (binaural two-ear output).
+    pub peak_db_l: f32,
+    /// Right-ear output peak, dBFS.
+    pub peak_db_r: f32,
+    /// Left-ear output RMS, dBFS.
+    pub rms_db_l: f32,
+    /// Right-ear output RMS, dBFS.
+    pub rms_db_r: f32,
 }
 
 /// Phase-7 S5 room/headphone correction telemetry.
@@ -243,6 +275,10 @@ impl Default for PlaybackInfo {
             aux_insert_enabled: false,
             aux_insert_wet_mix: 0.5,
             correction: CorrectionInfo::default(),
+            // Always present (matches `correction`): an inactive stage at
+            // rest, overwritten with live values on the telemetry cadence
+            // while the spatial master is processing.
+            spatial: Some(SpatialTelemetry::default()),
         }
     }
 }

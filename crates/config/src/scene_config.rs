@@ -67,6 +67,10 @@ pub struct SpatialObjectConfig {
     /// LFE effects send in [0, 1].
     #[serde(default)]
     pub lfe_send: f32,
+    /// Optional per-object parameter automation (position/orientation/gain/
+    /// spread curves, spec §47).
+    #[serde(default)]
+    pub automation: SpatialAutomationConfig,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 }
@@ -78,6 +82,62 @@ fn default_enabled() -> bool {
     true
 }
 
+/// A piecewise-linear scalar curve: time-ordered `(seconds, value)` keyframes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CurveScalarConfig {
+    #[serde(default)]
+    pub points: Vec<(f32, f32)>,
+}
+
+impl CurveScalarConfig {
+    pub fn is_empty(&self) -> bool {
+        self.points.is_empty()
+    }
+}
+
+/// A piecewise-linear positional `Vec3` curve: `(seconds, [x, y, z])` in
+/// metres.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CurveVec3Config {
+    #[serde(default)]
+    pub points: Vec<(f32, [f32; 3])>,
+}
+
+/// A piecewise-linear orientation `Quat` curve: `(seconds, [x, y, z, w])`,
+/// unit-norm quaternions, spherical nlerped between keyframes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CurveQuatConfig {
+    #[serde(default)]
+    pub points: Vec<(f32, [f32; 4])>,
+}
+
+/// Optional parameter automation for one object (spec §47): one curve per
+/// automatable parameter, positional in scene seconds. A curve in `Some`
+/// drives the object's parameter over time; `None` leaves it static.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct SpatialAutomationConfig {
+    #[serde(default)]
+    pub position: Option<CurveVec3Config>,
+    #[serde(default)]
+    pub orientation: Option<CurveQuatConfig>,
+    #[serde(default)]
+    pub gain: Option<CurveScalarConfig>,
+    #[serde(default)]
+    pub spread: Option<CurveScalarConfig>,
+}
+
+impl SpatialAutomationConfig {
+    pub fn has_any(&self) -> bool {
+        self.gain.as_ref().is_some_and(|c| !c.is_empty())
+            || self.spread.as_ref().is_some_and(|c| !c.is_empty())
+            || self.position.as_ref().is_some_and(|c| !c.points.is_empty())
+            || self
+                .orientation
+                .as_ref()
+                .is_some_and(|c| !c.points.is_empty())
+    }
+}
+
 impl Default for SpatialObjectConfig {
     fn default() -> Self {
         Self {
@@ -87,6 +147,7 @@ impl Default for SpatialObjectConfig {
             spread: 0.0,
             room_send: 0.0,
             lfe_send: 0.0,
+            automation: SpatialAutomationConfig::default(),
             enabled: true,
         }
     }
@@ -208,6 +269,39 @@ impl SpatialSceneConfig {
             }
             if !o.lfe_send.is_finite() || !(0.0..=1.0).contains(&o.lfe_send) {
                 return Err(format!("object {i}: invalid lfe_send {}", o.lfe_send));
+            }
+            let a = &o.automation;
+            if let Some(c) = &a.position {
+                if c.points
+                    .iter()
+                    .any(|(t, p)| !t.is_finite() || p.iter().any(|v| !v.is_finite()))
+                {
+                    return Err(format!("object {i}: non-finite position automation"));
+                }
+            }
+            if let Some(c) = &a.orientation {
+                if c.points
+                    .iter()
+                    .any(|(t, q)| !t.is_finite() || q.iter().any(|v| !v.is_finite()))
+                {
+                    return Err(format!("object {i}: non-finite orientation automation"));
+                }
+            }
+            if let Some(c) = &a.gain {
+                if c.points
+                    .iter()
+                    .any(|(t, v)| !t.is_finite() || !v.is_finite())
+                {
+                    return Err(format!("object {i}: non-finite gain automation"));
+                }
+            }
+            if let Some(c) = &a.spread {
+                if c.points
+                    .iter()
+                    .any(|(t, v)| !t.is_finite() || !v.is_finite())
+                {
+                    return Err(format!("object {i}: non-finite spread automation"));
+                }
             }
         }
         for (i, b) in self.beds.iter().enumerate() {

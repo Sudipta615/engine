@@ -21,7 +21,7 @@ pub mod spatial;
 // Re-exports for convenience
 pub use commands::EngineCommand;
 pub use events::EngineEvent;
-pub use playback_info::{PlaybackInfo, PlaybackState};
+pub use playback_info::{PlaybackInfo, PlaybackState, SpatialTelemetry};
 pub use playlist::{Playlist, RepeatMode};
 pub use source::AudioSource;
 

@@ -121,39 +121,61 @@
 //! [`save_scene_json`] / [`load_scene_json`]. And the spatial layer is a
 //! first-class part of the production graph via the `SpatialNode`
 //! (`crate::dsp::graph`), which spatializes the stereo master through the
-//! head model at the block boundary. Still future: order-4+, measured HRTF
-//! corpus loading, and spatial recording.
+//! head model at the block boundary. Measured HRTF corpora load from the
+//! JSON interchange or, with the optional `sofa-import` feature, natively
+//! from the NetCDF-classic subset of a `.sofa` file ([`sofa`]). Still
+//! future: order-4+, native NetCDF-4/HDF5 (`nc4`) SOFA (a documented seam),
+//! and spatial recording.
 //!
 //! The spatial layer contains **no** Dolby/DTS codecs, bitstreams, metadata,
 //! or trademarks — it is an independent implementation (§3, §115).
 
 pub mod ambisonic;
+pub mod automation;
 pub mod bed;
 pub mod binaural;
+pub mod diagnostics;
 pub mod directivity;
+pub mod doppler;
 pub mod field;
 pub mod hrtf;
 pub mod level;
 pub mod math;
+pub mod metering;
+pub mod nearfield;
 pub mod object;
 pub mod occlusion;
 pub mod panner;
+pub mod provider;
+pub mod quality;
 pub mod render;
 pub mod room;
 pub mod scene;
+#[cfg(feature = "sofa-import")]
+pub mod sofa;
 pub mod speaker;
 pub mod spread;
 pub mod tracking;
+pub mod upmix;
 pub mod vbap;
+pub mod voice;
 
 pub use ambisonic::{
     channel_count, encode_plane_wave, encode_plane_wave_n, rotate_bus_frame, rotate_bus_frame_n,
     sh_foa, sh_n, AmbisonicDecoder, AmbisonicRenderer, DecoderPolicy, AMBISONIC_CHANNELS,
     AMBISONIC_CHANNELS_ORDER_2, AMBISONIC_ORDER, MAX_AMBISONIC_ORDER,
 };
+pub use automation::{
+    AutomationMode, CurveQuat, CurveScalar, CurveVec3, SpatialAudioAutomationFrame,
+    SpatialAutomation,
+};
 pub use bed::{BedId, SpatialBed, SpatialBedStore, MAX_BEDS};
 pub use binaural::{BinauralRenderer, VIRTUAL_RING_SPEAKERS};
+pub use diagnostics::{
+    build_debug_view, ObjectDebugInfo, ReflectionDebugInfo, SpatialDebugView, SpeakerDebugInfo,
+};
 pub use directivity::{CustomDirectivity, Directivity};
+pub use doppler::{Doppler, DopplerState};
 pub use field::{FieldId, SpatialField, SpatialFieldStore, MAX_FIELDS};
 pub use hrtf::{
     ear_delay_sec, elevation_notch_depth_db, elevation_notch_hz, head_shadow_alpha,
@@ -161,18 +183,26 @@ pub use hrtf::{
     ElevationNotch, HeadShadow, HrtfCorpus, HrtfDataset, HrtfLoadError, HrtfLoadOptions,
     HrtfMeasurement, HrtfNormalize, DEFAULT_HEAD_RADIUS, DEFAULT_SPEED_OF_SOUND, MAX_HRTF_TAPS,
 };
-pub use level::{AirAbsorption, DistanceModel};
+pub use level::{AbsorptionState, AirAbsorption, DistanceModel};
 pub use math::{Quat, Vec3};
+pub use metering::{SpatialMeterState, SpatialMeters};
+pub use nearfield::{NearField, NearFieldState, NEAR_FIELD_SHELF_HZ};
 pub use object::{
     ObjectAudioRef, ObjectId, SpatialAudioObject, SpatialObjectStore, SpatialSourceType,
     MAX_SPATIAL_OBJECTS,
 };
 pub use occlusion::{AcousticTransmission, Occlusion};
 pub use panner::BasicPanner;
+pub use provider::{HrtfCorpusProvider, HrtfDatasetProvider, HrtfProvider};
+pub use quality::SpatialQuality;
 pub use render::{HybridBlockInputs, RenderError, RendererKind, SpatialRenderer, VbapRenderer};
 pub use room::{EarlyReflections, Room, RoomLateField};
 pub use scene::{
     load_scene_json, save_scene_json, Listener, ListenerTransform, SceneFileError, SpatialScene,
 };
+#[cfg(feature = "sofa-import")]
+pub use sofa::{import_sofa, SofaImportError};
 pub use speaker::{LayoutCalibration, Speaker, SpeakerId, SpeakerLayout};
 pub use tracking::{HeadSample, HeadTracker, TrackingConfig};
+pub use upmix::{UpmixMode, UpmixTrims};
+pub use voice::{BudgetCandidate, VoiceAdmission, VoiceBudget, VoicePlan, VoicePriority};

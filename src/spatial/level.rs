@@ -8,6 +8,8 @@
 //! No module silently chooses its own units — **distance is in metres** and
 //! **position/length is in metres** throughout the spatial layer (spec §18).
 
+use crate::dsp::biquad::{BiquadCoeffsF32, BiquadStateF32};
+
 /// Distance attenuation law applied to an object's direct path (spec §38).
 ///
 /// `Custom` is a declared seam; this phase implements the three analytic
@@ -96,6 +98,65 @@ impl AirAbsorption {
         let d = distance.max(0.0);
         let falloff = (1.0 / (1.0 + self.per_meter * d)).clamp(0.05, 1.0);
         (self.base_cutoff_hz * falloff).clamp(500.0, sample_rate * 0.45)
+    }
+}
+
+/// Renderer-owned per-object air-absorption filter state (spec §39, applied).
+///
+/// This is the *applied* counterpart to [`AirAbsorption::cutoff_hz`]: a
+/// one-pole smoothed low-pass whose cutoff tracks the distance-dependent
+/// model at block rate. Disabled (or a cutoff at Nyquist) is an exact
+/// passthrough — the biquad is not run when there is nothing to filter, so
+/// the conventional paths stay bit-identical.
+#[derive(Debug, Clone, Copy)]
+pub struct AbsorptionState {
+    /// Smoothed log-cutoff (Hz). `0.0` = uninitialised (first block snaps).
+    cutoff_log: f32,
+    filter: BiquadStateF32,
+}
+
+impl Default for AbsorptionState {
+    fn default() -> Self {
+        Self {
+            cutoff_log: 0.0,
+            filter: BiquadStateF32::default(),
+        }
+    }
+}
+
+impl AbsorptionState {
+    /// Advance the block-rate cutoff smoothing and return the fresh low-pass
+    /// coefficients. `None` when nothing should be applied (disabled or a
+    /// cutoff at/over Nyquist) — the caller skips filtering entirely in that
+    /// case, keeping the path bit-exact. `smooth = 1.0` snaps exactly.
+    pub fn coeffs(
+        &mut self,
+        cutoff_hz: f32,
+        sample_rate: f32,
+        smooth: f32,
+    ) -> Option<BiquadCoeffsF32> {
+        let nyquist = sample_rate * 0.5;
+        let cutoff = cutoff_hz.clamp(20.0, nyquist);
+        if cutoff >= nyquist * 0.99 {
+            // Nothing to filter: snap the smoothed state to full band and
+            // signal passthrough.
+            self.cutoff_log = nyquist.ln();
+            return None;
+        }
+        let target = cutoff.ln();
+        if self.cutoff_log == 0.0 {
+            self.cutoff_log = target;
+        } else if smooth < 1.0 {
+            self.cutoff_log += smooth * (target - self.cutoff_log);
+        }
+        let c = self.cutoff_log.exp().clamp(20.0, nyquist * 0.99);
+        Some(BiquadCoeffsF32::lowpass(sample_rate, c, 0.707))
+    }
+
+    /// Filter one sample through the current coefficients.
+    #[inline]
+    pub fn process(&mut self, sample: f32, coeffs: &BiquadCoeffsF32) -> f32 {
+        self.filter.process(sample, coeffs)
     }
 }
 

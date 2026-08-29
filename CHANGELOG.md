@@ -2,6 +2,106 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.24.0] — 2026-08-29
+
+Completed the DSP seams and added the spatial scene infrastructure layers
+listed in the architecture guide (Rules 3–10).
+
+### Added
+
+- **Near-field correction (§40)** — `spatial::nearfield`: bounded proximity
+  gain (`MAX_GAIN = 2.0`) plus an optional low-shelf LF lift, per-object and
+  block-rate smoothed.
+- **Applied air absorption (§39)** — `AbsorptionState` in `spatial::level`:
+  the distance-dependent `AirAbsorption::cutoff_hz` is now actually applied as
+  a smoothed biquad low-pass (previously it was computed and discarded).
+- **Doppler (§42)** — `spatial::doppler`: smoothed, variable-ratio fractional
+  resampler driven by radial relative velocity, bounded to stay clear of the
+  speed-of-sound, with deterministic re-anchoring for sustained approach.
+- **Quality tiers (§86)** — `spatial::quality::SpatialQuality` (Low/Medium/
+  High/Reference) backing the room-reflection depth on the hybrid paths.
+- **Automation (§47)** — `spatial::automation`: generic piecewise-linear
+  `Curve` (scalar/Vec3/Quaternion) with block-rate and sample-accurate
+  evaluation, plus a `SpatialAudioAutomationFrame` per-object override.
+- **Voice budget (§88)** — `spatial::voice`: `VoiceBudget` / `VoicePriority`
+  (Fixed/DistanceWeighted/GainWeighted/UserDefined) scheduler producing a per-
+  slot Full/Degraded/Dropped plan.
+- **Metering (§70)** — `spatial::metering::SpatialMeter`: per-speaker / bus /
+  LFE peak + RMS output meters.
+- **Diagnostics (§107)** — `spatial::diagnostics`: allocation-free scene
+  diagnostics + host-rasterizable reflection rays from `EarlyReflections`.
+- **HRTF provider (§60–61)** — `spatial::provider::HrtfProvider` trait with a
+  normalized-corpus adapter, isolating data import from the runtime renderer.
+- **Upmix policies** — `spatial::upmix::UpmixMode` (ForceDownmixStereo /
+  MatchOutput / SpatialRender) with deterministic gain policies.
+- **Declarative render knobs in `config` (§86, §76, §70, §47)** — the new
+  spatial quality / voice / metering / automation knobs are now serde fields
+  hosts configure in files/JSON: `SpatialConfig` gains `quality`
+  (`config::SpatialQuality`), `voice` (`SpatialVoiceConfig`: capacity /
+  full-quality capacity / `VoicePriority` policy), and `metering`
+  (`SpatialMeterConfig` enable); `SpatialObjectConfig` gains `automation`
+  (per-object position/orientation/gain/spread curves via
+  `CurveVec3Config` / `CurveQuatConfig` / `CurveScalarConfig`).
+  `SpatialNode::apply_config` applies quality + metering to its binaural
+  renderer and stores the converted `VoiceBudget`; `SpatialScene::
+  from_config`/`to_config` round-trip the automation curves losslessly
+  (new `Curve*::keyframes` accessors). Every new field is
+  `#[serde(default)]`, so old configs and scene files keep deserializing.
+- **Native NetCDF-classic SOFA importer (§61, optional `sofa-import` feature)**
+  — `spatial::sofa`: a dependency-free, pure-Rust reader for the NetCDF-3
+  classic subset of the AES69 `.sofa` format (the `SOFA_NETCDF3` /
+  `SOFA_NETCDF3_CLASSIC` container) that validates the `Conventions` gate and
+  reduces `SourcePosition` + `Data.IR` + `Data.SamplingRate` into an
+  [`HrtfCorpus`] for the existing `HrtfDataset::from_corpus` pipeline.
+  Big/little-endian CDF-1 supported; directions are mapped onto the layer's
+  coordinate frame (SOFA CCW-left azimuth → engine CW-right `+X`); modern
+  NetCDF-4/HDF5 (`nc4`) files are refused with a typed [`SofaImportError`]
+  and the format-specific guidance (documented HDF5 seam). Ships synthetic
+  CDF fixtures testing endian round-trips, the L/R stride, the direction
+  convention, and rejection of bad magic / non-SOFA conventions /
+  truncated data.
+- **Spatial knobs exposed through C FFI (Phase 17, §47, §76, §86)** —
+  `engine_set_spatial_quality` (tier 0–3), `engine_set_spatial_voice`
+  (enabled / capacity / full-quality capacity / `VoicePriority` 0–3), and
+  `engine_set_spatial_automation` (per-program-object gain/spread keyframe
+  arrays, bounded + finite-validated, cleared with 0 points) / `
+  engine_set_spatial_automation_time` (scene automation clock) let
+  C/C++ hosts configure the spatial master they previously could only
+  read (`engine_spatial_info`). Commands are dispatched through
+  `EngineCommand` (`SetSpatialQuality` / `SetSpatialVoice` /
+  `SetSpatialAutomation` / `SetSpatialAutomationTime`) into the graph's
+  `SpatialNode` off the audio thread; automation curves now also apply
+  live in the binaural object loop (`set_automation_time` + per-object
+  gain/spread overrides applied at block rate).
+
+### Changed
+
+- `BasicPanner`, `VbapRenderer`, and `BinauralRenderer` now run the per-object
+  cascade (Doppler → occlusion → air absorption → near-field) before the pan /
+  head model; each stage is an exact passthrough when disabled, so the
+  conventional paths remain bit-identical.
+- Renderers expose `set_quality`, `set_automation_time`, and `meters()`
+  accessors; `SpatialAudioObject` gained `doppler`, `near_field`, and
+  `air_absorption` runtime knobs whose defaults keep existing scenes unchanged.
+- **Voice admission applied end-to-end (`SpatialNode`, spec §76)** —
+  `SpatialNode` now runs its configured voice budget over the scene's
+  objects and feeds the per-slot `VoiceAdmission` plan into the renderer's
+  object loop. `VoiceBudget::plan_into` is a new allocation-free sibling of
+  `plan` (selection-rank ranking into caller buffers) so the budget can run
+  on the audio path; the `BinauralRenderer` gained `set_voice_admission` /
+  `clear_voice_admission` and honours admission per object (Dropped = silence
+  with level-chain smoothing still advancing; Degraded = direct path only,
+  no room reflections, point spread).  No budget configured = full admission,
+  so conventional paths stay bit-identical.
+- **Spatial telemetry in `PlaybackInfo` (Phase 17)** — the `SpatialNode`
+  now publishes its live per-ear output meters (peak/RMS dBFS) and its
+  voice-admission counts (full / degraded / dropped) as
+  `PlaybackInfo::spatial` (`Option<SpatialTelemetry>`, always present,
+  inactive at rest) on the lock-free snapshot's telemetry cadence, plus a C
+  FFI `engine_spatial_info` getter mirroring `engine_correction_info`. Hosts
+  read spatial levels / dropped-voice count from the already-atomic
+  `ArcSwap<PlaybackInfo>` without touching the audio thread.
+
 ## [3.23.0] — 2026-08-29
 
 Hot-path optimization of the binaural renderer (Phase 22). Per-frame-

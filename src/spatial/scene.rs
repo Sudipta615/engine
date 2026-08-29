@@ -10,6 +10,7 @@
 //! objects appear to move exactly as the listener rotates, which is the
 //! foundation for head tracking / VR later.
 
+use super::automation::{CurveQuat, CurveScalar, CurveVec3, SpatialAutomation};
 use super::bed::{BedId, SpatialBed, SpatialBedStore, MAX_BEDS};
 use super::field::{FieldId, SpatialField, SpatialFieldStore, MAX_FIELDS};
 use super::math::{Quat, Vec3};
@@ -209,6 +210,34 @@ impl SpatialScene {
             obj.room_send = o.room_send;
             obj.lfe_send = o.lfe_send;
             obj.enabled = o.enabled;
+            let a = &o.automation;
+            obj.automation = SpatialAutomation {
+                position: a.position.as_ref().and_then(|c| {
+                    CurveVec3::from_points(
+                        &c.points
+                            .iter()
+                            .map(|(t, p)| (*t, Vec3::new(p[0], p[1], p[2])))
+                            .collect::<Vec<_>>(),
+                    )
+                }),
+                orientation: a.orientation.as_ref().and_then(|c| {
+                    CurveQuat::from_points(
+                        &c.points
+                            .iter()
+                            .map(|(t, q)| (*t, Quat::new(q[0], q[1], q[2], q[3])))
+                            .collect::<Vec<_>>(),
+                    )
+                }),
+                gain: a
+                    .gain
+                    .as_ref()
+                    .and_then(|c| CurveScalar::from_points(&c.points)),
+                spread: a
+                    .spread
+                    .as_ref()
+                    .and_then(|c| CurveScalar::from_points(&c.points)),
+                sample_rate: cfg.sample_rate as f32,
+            };
         }
         for b in &cfg.beds {
             let ids: Result<Vec<ChannelId>, RenderError> = b
@@ -274,6 +303,42 @@ impl SpatialScene {
                     spread: o.spread,
                     room_send: o.room_send,
                     lfe_send: o.lfe_send,
+                    automation: config::SpatialAutomationConfig {
+                        position: o
+                            .automation
+                            .position
+                            .as_ref()
+                            .map(|c| config::CurveVec3Config {
+                                points: c
+                                    .keyframes()
+                                    .iter()
+                                    .map(|(t, p)| (*t, [p.x, p.y, p.z]))
+                                    .collect(),
+                            }),
+                        orientation: o.automation.orientation.as_ref().map(|c| {
+                            config::CurveQuatConfig {
+                                points: c
+                                    .keyframes()
+                                    .iter()
+                                    .map(|(t, q)| (*t, [q.x, q.y, q.z, q.w]))
+                                    .collect(),
+                            }
+                        }),
+                        gain: o
+                            .automation
+                            .gain
+                            .as_ref()
+                            .map(|c| config::CurveScalarConfig {
+                                points: c.keyframes().to_vec(),
+                            }),
+                        spread: o
+                            .automation
+                            .spread
+                            .as_ref()
+                            .map(|c| config::CurveScalarConfig {
+                                points: c.keyframes().to_vec(),
+                            }),
+                    },
                     enabled: o.enabled,
                 })
                 .collect(),
@@ -486,5 +551,50 @@ mod tests {
             scene.object(c).unwrap().source,
             ObjectAudioRef::None
         ));
+    }
+
+    #[test]
+    fn automation_curves_round_trip_through_config() {
+        // A scene authored with automation must survive config -> live ->
+        // config losslessly (curves drive object params over time, spec §47).
+        let cfg = config::SpatialSceneConfig {
+            objects: vec![config::SpatialObjectConfig {
+                position: [2.0, 0.0, 0.0],
+                automation: config::SpatialAutomationConfig {
+                    position: Some(config::CurveVec3Config {
+                        points: vec![(0.0, [0.0, 0.0, 0.0]), (1.0, [0.0, 2.0, 0.0])],
+                    }),
+                    gain: Some(config::CurveScalarConfig {
+                        points: vec![(0.0, 1.0), (2.0, 0.0)],
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        cfg.validate().expect("valid automation config");
+
+        // Config -> live scene: the object carries the automation curves.
+        let scene = SpatialScene::from_config(&cfg).expect("build");
+        let obj = scene.objects.iter().next().expect("one object");
+        assert!(obj.automation.position.is_some());
+        assert!(obj.automation.gain.is_some());
+        assert!(obj.automation.orientation.is_none());
+        assert!(obj.automation.spread.is_none());
+        // Position path interpolates: at t=0.5 the object should sit at y=1.
+        let mut af = crate::spatial::SpatialAudioAutomationFrame::default();
+        obj.automation.apply(0.5, &mut af);
+        let pos = af.position.expect("position curve drives");
+        assert!((pos.y - 1.0).abs() < 1e-4, "curved position {pos:?}");
+
+        // Live scene -> config: curves round-trip with the same keyframes.
+        let out = scene.to_config();
+        let oa = &out.objects[0].automation;
+        let pos_key = oa.position.as_ref().expect("position curve");
+        assert_eq!(pos_key.points.len(), 2);
+        assert!(pos_key.points[1].0 == 1.0 && (pos_key.points[1].1[1] - 2.0).abs() < 1e-6);
+        let gain_key = oa.gain.as_ref().expect("gain curve");
+        assert_eq!(gain_key.points, vec![(0.0, 1.0), (2.0, 0.0)]);
     }
 }

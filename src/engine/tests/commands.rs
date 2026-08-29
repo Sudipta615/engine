@@ -149,6 +149,51 @@ fn test_tick_without_start() {
 }
 
 #[test]
+fn test_tick_publishes_spatial_telemetry() {
+    // Phase 17: the SpatialNode's output meters + voice plan land on the
+    // lock-free PlaybackInfo snapshot every telemetry tick.
+    let mut engine = AudioEngine::new_default().unwrap();
+    engine.tick();
+    let info = engine.playback_info();
+    let spatial = info
+        .spatial
+        .expect("spatial telemetry published on the first tick");
+    assert!(spatial.peak_db_l.is_finite() && spatial.peak_db_r.is_finite());
+    assert!(spatial.rms_db_l.is_finite() && spatial.rms_db_r.is_finite());
+}
+
+#[test]
+fn test_spatial_quality_and_voice_config_via_handle() {
+    // Phase 17: hosts configure SpatialQuality / VoicePriority through the
+    // engine handle, and the commands reach the graph's SpatialNode.
+    let mut engine = AudioEngine::new_default().unwrap();
+    let handle = engine.handle();
+    handle.set_spatial_quality(config::SpatialQuality::High);
+    handle.set_spatial_voice(true, 3, 1, config::VoicePriority::GainWeighted);
+    engine.tick(); // drain the commands
+    assert_eq!(
+        engine.graph.spatial().quality(),
+        crate::spatial::SpatialQuality::High
+    );
+    let budget = engine
+        .graph
+        .spatial()
+        .voice_budget()
+        .expect("voice budget applied");
+    assert_eq!(budget.capacity, 3);
+    assert_eq!(budget.full_quality_capacity, 1);
+    assert!(matches!(
+        budget.policy,
+        crate::spatial::VoicePriority::GainWeighted
+    ));
+
+    // A disable clears the budget (full admission).
+    handle.set_spatial_voice(false, 0, 0, config::VoicePriority::Fixed);
+    engine.tick();
+    assert!(engine.graph.spatial().voice_budget().is_none());
+}
+
+#[test]
 fn test_seek_command_validation() {
     let engine = AudioEngine::new_default().unwrap();
     engine.send_command(EngineCommand::Seek(-1.0));

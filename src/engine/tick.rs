@@ -443,6 +443,9 @@ impl AudioEngine {
                     latency_ms: corr.latency_ms,
                     max_gain_db: corr.max_gain_db,
                 };
+                // Phase 17: mirror the spatial master's output meters and
+                // voice-budget admission counts onto the lock-free snapshot.
+                next.spatial = Some(self.graph.spatial().spatial_telemetry());
                 #[cfg(feature = "audio-output")]
                 {
                     next.output_info = out_info.clone();

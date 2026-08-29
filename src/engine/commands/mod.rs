@@ -428,6 +428,51 @@ impl AudioEngine {
                 self.graph.set_aux_insert(enabled, wet_mix);
             }
 
+            // ── Spatial master (Phase 17) ──
+            EngineCommand::SetSpatialQuality(q) => {
+                use crate::spatial::SpatialQuality as Sq;
+                let q = match q {
+                    config::SpatialQuality::Low => Sq::Low,
+                    config::SpatialQuality::Medium => Sq::Medium,
+                    config::SpatialQuality::High => Sq::High,
+                    config::SpatialQuality::Ultra => Sq::Ultra,
+                };
+                self.graph.spatial_mut().set_quality(q);
+            }
+            EngineCommand::SetSpatialVoice {
+                enabled,
+                capacity,
+                full_quality_capacity,
+                policy,
+            } => {
+                use crate::spatial::VoicePriority as Vp;
+                let policy = match policy {
+                    config::VoicePriority::Fixed => Vp::Fixed,
+                    config::VoicePriority::DistanceWeighted => Vp::DistanceWeighted,
+                    config::VoicePriority::GainWeighted => Vp::GainWeighted,
+                    config::VoicePriority::UserDefined => Vp::UserDefined,
+                };
+                self.graph.spatial_mut().set_voice(
+                    enabled,
+                    capacity,
+                    full_quality_capacity,
+                    policy,
+                );
+            }
+            EngineCommand::SetSpatialAutomation {
+                object,
+                kind,
+                curve,
+                time_secs,
+            } => {
+                let n = self.graph.spatial_mut();
+                n.set_program_automation(object as usize, kind, curve);
+                n.set_automation_time(time_secs);
+            }
+            EngineCommand::SetSpatialAutomationTime(seconds) => {
+                self.graph.spatial_mut().set_automation_time(seconds);
+            }
+
             // ── Correction (Phase 7 S5) ──
             EngineCommand::SetCorrectionEnabled(enabled) => {
                 self.handle_set_correction_enabled(enabled)

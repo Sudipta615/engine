@@ -97,6 +97,28 @@ pub enum EngineCommand {
         enabled: bool,
         wet_mix: f32,
     },
+    /// Phase-17 spatial master: renderer quality tier (spec §86).
+    SetSpatialQuality(config::SpatialQuality),
+    /// Phase-17 spatial master: voice budget (spec §76). `enabled == false`
+    /// clears it (full admission).
+    SetSpatialVoice {
+        enabled: bool,
+        capacity: usize,
+        full_quality_capacity: usize,
+        policy: config::VoicePriority,
+    },
+    /// Phase-17 spatial master: attach/clear a scalar automation curve
+    /// (gain or spread) to a program object (0 = L, 1 = R), and set the
+    /// scene automation clock to `time_secs`. The curve is built off the
+    /// audio thread and evaluated allocation-free at block rate (spec §47).
+    SetSpatialAutomation {
+        object: u8,
+        kind: u8,
+        curve: Option<std::sync::Arc<crate::spatial::automation::CurveScalar>>,
+        time_secs: f32,
+    },
+    /// Phase-17 spatial master: drive program-object automation at `seconds`.
+    SetSpatialAutomationTime(f32),
     /// Phase-7 S5 correction: live enabled toggle (the loaded IR stays;
     /// disabled = the plan step is skipped, bit-exact).
     SetCorrectionEnabled(bool),

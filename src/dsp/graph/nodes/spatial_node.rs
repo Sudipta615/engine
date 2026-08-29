@@ -41,14 +41,19 @@ use crate::buffer::{MAX_AUDIO_BLOCK_FRAMES, MAX_CHANNELS};
 use crate::dsp::graph::node::DspNode;
 use crate::dsp::pipeline::{DspStageCapability, StageChannelSupport, StagePrecision};
 use crate::spatial::{
+    automation::CurveScalar,
     binaural::BinauralRenderer,
     level::DistanceModel,
     math::{Quat, Vec3},
-    object::ObjectId,
+    metering::SpatialMeterState,
+    object::{ObjectId, MAX_SPATIAL_OBJECTS},
+    quality::SpatialQuality,
     render::{HybridBlockInputs, SpatialRenderer},
     scene::SpatialScene,
     speaker::SpeakerLayout,
+    voice::{BudgetCandidate, VoiceAdmission, VoiceBudget, VoicePriority},
 };
+use std::sync::Arc;
 
 /// Program radius (m): the virtual screen sits 2 m in front, matching the
 /// speaker presets' nominal radius.
@@ -79,6 +84,15 @@ pub struct SpatialNode {
     obj_l: ObjectId,
     obj_r: ObjectId,
     sample_rate: f32,
+    /// Voice budget (spec §76) honored from the node's config; `None` =
+    /// engine default budgeting (no cap from config).
+    voice: Option<VoiceBudget>,
+    /// Live voice admission counts from the last `apply_voice_budget` (the
+    /// audio thread), published into `PlaybackInfo` telemetry.
+    voice_active: bool,
+    voice_full: usize,
+    voice_degraded: usize,
+    voice_dropped: usize,
     /// Sample rate at last successful `prepare` (re-prepare on change).
     prepared_rate: f32,
     prepared: bool,
@@ -117,6 +131,11 @@ impl SpatialNode {
             obj_l,
             obj_r,
             sample_rate: sample_rate.max(1.0),
+            voice: None,
+            voice_active: false,
+            voice_full: 0,
+            voice_degraded: 0,
+            voice_dropped: 0,
             prepared_rate: -1.0,
             prepared: false,
         };
@@ -176,6 +195,29 @@ impl SpatialNode {
     pub fn apply_config(&mut self, cfg: &config::SpatialConfig, sample_rate: f32) {
         self.sample_rate = sample_rate.max(1.0);
         self.enabled = cfg.enabled;
+        // Render knobs (spec §86, §76, §70): quality tier, metering enable,
+        // and the voice budget.
+        self.binaural.set_quality(match cfg.quality {
+            config::SpatialQuality::Low => SpatialQuality::Low,
+            config::SpatialQuality::Medium => SpatialQuality::Medium,
+            config::SpatialQuality::High => SpatialQuality::High,
+            config::SpatialQuality::Ultra => SpatialQuality::Ultra,
+        });
+        self.binaural.set_metering_enabled(cfg.metering.enabled);
+        self.voice = if cfg.voice.enabled {
+            Some(VoiceBudget {
+                capacity: cfg.voice.capacity,
+                full_quality_capacity: cfg.voice.full_quality_capacity,
+                policy: match cfg.voice.policy {
+                    config::VoicePriority::Fixed => VoicePriority::Fixed,
+                    config::VoicePriority::DistanceWeighted => VoicePriority::DistanceWeighted,
+                    config::VoicePriority::GainWeighted => VoicePriority::GainWeighted,
+                    config::VoicePriority::UserDefined => VoicePriority::UserDefined,
+                },
+            })
+        } else {
+            None
+        };
         self.apply_screen(
             cfg.center_azimuth_deg,
             cfg.half_width_deg,
@@ -203,6 +245,170 @@ impl SpatialNode {
 
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
+    }
+
+    /// Set the renderer quality tier at runtime (spec §86).
+    pub fn set_quality(&mut self, q: SpatialQuality) {
+        self.binaural.set_quality(q);
+    }
+
+    /// The active quality tier (spec §86).
+    pub fn quality(&self) -> SpatialQuality {
+        self.binaural.quality()
+    }
+
+    /// Set / replace the voice budget at runtime (spec §76). `enabled ==
+    /// false` clears it (full admission). Control path — the budget is read
+    /// allocation-free at block rate.
+    pub fn set_voice(
+        &mut self,
+        enabled: bool,
+        capacity: usize,
+        full_quality_capacity: usize,
+        policy: VoicePriority,
+    ) {
+        self.voice = if enabled {
+            Some(VoiceBudget {
+                capacity,
+                full_quality_capacity,
+                policy,
+            })
+        } else {
+            None
+        };
+    }
+
+    /// Attach a scalar automation curve (gain or spread) to one program
+    /// object (`object` 0 = L, 1 = R). `None` clears it. Control path: the
+    /// curve is built / moved off the audio thread and then evaluated
+    /// allocation-free at block rate. `kind` 0 = gain, 1 = spread.
+    pub fn set_program_automation(
+        &mut self,
+        object: usize,
+        kind: u8,
+        curve: Option<Arc<CurveScalar>>,
+    ) {
+        let id = match object {
+            0 => self.obj_l,
+            1 => self.obj_r,
+            _ => return,
+        };
+        let Some(obj) = self.scene.object_mut(id) else {
+            return;
+        };
+        let curved = curve.map(|c| (*c).clone());
+        match kind {
+            0 => obj.automation.gain = curved,
+            1 => obj.automation.spread = curved,
+            _ => {}
+        }
+    }
+
+    /// Drive program-object automation at `seconds` (spec §47).
+    pub fn set_automation_time(&mut self, seconds: f32) {
+        self.binaural.set_automation_time(seconds);
+    }
+
+    /// The output meters snapshot (control thread read; spec §70).
+    pub fn meters(&self) -> &SpatialMeterState {
+        self.binaural.meters()
+    }
+
+    /// The voice budget honored from config, if enabled (spec §76). A host
+    /// can apply it via the spatial `VoiceBudget::plan` scheduler.
+    pub fn voice_budget(&self) -> Option<&VoiceBudget> {
+        self.voice.as_ref()
+    }
+
+    /// Run the voice budget over the scene's objects (spec §76) and feed the
+    /// resulting admission plan into the renderer's object loop. Allocation-
+    /// free (stack staging + bounded copy), so it is safe on the audio path;
+    /// called once per `render_block`. When no voice budget is configured the
+    /// renderer is reset to full admission (bit-exact passthrough).
+    fn apply_voice_budget(&mut self) {
+        let Some(budget) = &self.voice else {
+            self.binaural.clear_voice_admission();
+            self.voice_active = false;
+            self.voice_full = 0;
+            self.voice_degraded = 0;
+            self.voice_dropped = 0;
+            return;
+        };
+        let mut candidates = [BudgetCandidate {
+            index: 0,
+            gain: 0.0,
+            distance: 0.0,
+            priority: 0,
+        }; MAX_SPATIAL_OBJECTS];
+        let mut n = 0usize;
+        for (slot, obj) in self.scene.objects.iter_enabled() {
+            if n >= MAX_SPATIAL_OBJECTS {
+                break;
+            }
+            candidates[n] = BudgetCandidate {
+                index: slot,
+                gain: obj.gain,
+                distance: (obj.position - self.scene.listener.position).length(),
+                priority: 0,
+            };
+            n += 1;
+        }
+        let n_slots = self.scene.objects.len().min(MAX_SPATIAL_OBJECTS);
+        let mut scratch = [0usize; MAX_SPATIAL_OBJECTS];
+        let mut admission = [VoiceAdmission::Dropped; MAX_SPATIAL_OBJECTS];
+        budget.plan_into(
+            &candidates[..n],
+            n_slots,
+            &mut scratch[..n.max(1)],
+            &mut admission[..n_slots.max(1)],
+        );
+        self.binaural
+            .set_voice_admission(&admission[..n_slots.max(1)]);
+        // Record the admission plan for telemetry (spec §76).
+        let (mut full, mut degraded, mut dropped) = (0usize, 0usize, 0usize);
+        for &a in admission[..n_slots.max(1)].iter() {
+            match a {
+                VoiceAdmission::Full => full += 1,
+                VoiceAdmission::Degraded => degraded += 1,
+                VoiceAdmission::Dropped => dropped += 1,
+            }
+        }
+        self.voice_active = true;
+        self.voice_full = full;
+        self.voice_degraded = degraded;
+        self.voice_dropped = dropped;
+    }
+
+    /// Live spatial telemetry snapshot (control thread): the per-ear output
+    /// meters (peak/RMS dBFS) and the voice-admission counts, published into
+    /// `PlaybackInfo`. Reads the renderer's meters on the engine's single
+    /// audio/control thread, then the value is atomically published via
+    /// `ArcSwap<PlaybackInfo>` for lock-free host reads.
+    pub fn spatial_telemetry(&self) -> crate::playback_info::SpatialTelemetry {
+        use crate::playback_info::SpatialTelemetry;
+        let m = self.binaural.meters().snapshot();
+        let db = |lin: f32| -> f32 {
+            if lin <= 1e-9 {
+                -96.0
+            } else {
+                20.0 * lin.log10()
+            }
+        };
+        let peak_l = m.speaker_peak.first().copied().unwrap_or(0.0);
+        let peak_r = m.speaker_peak.get(1).copied().unwrap_or(0.0);
+        let rms_l = m.speaker_rms.first().copied().unwrap_or(0.0);
+        let rms_r = m.speaker_rms.get(1).copied().unwrap_or(0.0);
+        SpatialTelemetry {
+            enabled: self.enabled,
+            voice_active: self.voice_active,
+            voice_full_voices: self.voice_full,
+            voice_degraded_voices: self.voice_degraded,
+            voice_dropped_voices: self.voice_dropped,
+            peak_db_l: db(peak_l),
+            peak_db_r: db(peak_r),
+            rms_db_l: db(rms_l),
+            rms_db_r: db(rms_r),
+        }
     }
 
     /// Move the two program objects onto the virtual screen and set the
@@ -288,6 +494,8 @@ impl SpatialNode {
         if planes.len() < 2 {
             return;
         }
+        // Voice budget → admission (spec §76), allocation-free, this block.
+        self.apply_voice_budget();
         self.prog_l[..frames].copy_from_slice(&planes[0][..frames]);
         self.prog_r[..frames].copy_from_slice(&planes[1][..frames]);
         let need = 2 * frames;
@@ -324,6 +532,8 @@ impl SpatialNode {
         if planes.len() < 2 {
             return;
         }
+        // Voice budget → admission (spec §76), allocation-free, this block.
+        self.apply_voice_budget();
         for (f, (&l, &r)) in planes[0]
             .iter()
             .zip(planes[1].iter())
@@ -442,6 +652,45 @@ mod tests {
             (A / C) * (std::f32::consts::PI - az + az.sin())
         };
         t * sample_rate as f32
+    }
+
+    #[test]
+    fn apply_config_sets_quality_metering_and_voice_budget() {
+        // The declarative config surface (spec §86, §76, §70) must reach the
+        // live node's renderer and voice budget.
+        let mut node = SpatialNode::new(48_000.0);
+        let cfg = config::SpatialConfig {
+            quality: config::SpatialQuality::High,
+            metering: config::SpatialMeterConfig { enabled: true },
+            voice: config::SpatialVoiceConfig {
+                capacity: 24,
+                full_quality_capacity: 8,
+                policy: config::VoicePriority::GainWeighted,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        node.apply_config(&cfg, 48_000.0);
+
+        let budget = node.voice_budget().expect("voice enabled");
+        assert_eq!(budget.capacity, 24);
+        assert_eq!(budget.full_quality_capacity, 8);
+        assert!(matches!(budget.policy, VoicePriority::GainWeighted));
+
+        // A serialized SpatialConfig round-trips the new knobs.
+        let j = serde_json::to_string(&cfg).unwrap();
+        let back: config::SpatialConfig = serde_json::from_str(&j).unwrap();
+        assert_eq!(back.quality, config::SpatialQuality::High);
+        assert!(back.metering.enabled);
+        assert_eq!(back.voice.capacity, 24);
+        assert_eq!(back.metering, cfg.metering);
+
+        // Legacy object missing the new fields still deserializes (defaults).
+        let legacy = r#"{"enabled":true}"#;
+        let old: config::SpatialConfig = serde_json::from_str(legacy).unwrap();
+        assert_eq!(old.quality, config::SpatialQuality::Medium);
+        assert!(old.metering.enabled);
+        assert!(!old.voice.enabled || old.voice.capacity == 48);
     }
 
     #[test]
@@ -642,5 +891,194 @@ mod tests {
         for (ch, p) in planes.iter().enumerate() {
             assert_eq!(p, &before[ch], "channel {ch} untouched");
         }
+    }
+
+    #[test]
+    fn voice_budget_drops_a_program_object_end_to_end() {
+        // The SpatialNode's config voice budget must reach the renderer's
+        // object loop (spec §76). Both program objects share gain/screen
+        // radius, so GainWeighted ties by store index: with a capacity of 1
+        // the second program voice is dropped, cutting the output energy
+        // roughly in half; with no budget both render (full admission).
+        let frames = 1024;
+        let render_energy = |voice: config::SpatialVoiceConfig| -> f64 {
+            let mut node = SpatialNode::new(48_000.0);
+            node.prepare(48_000.0, 2);
+            node.set_enabled(true);
+            let cfg = config::SpatialConfig {
+                enabled: true,
+                voice,
+                ..Default::default()
+            };
+            node.apply_config(&cfg, 48_000.0);
+            node.apply_screen(0.0, 30.0, 0.0, 1.0);
+            let mut l: Vec<f32> = (0..frames).map(|i| (i as f32 * 0.01).sin()).collect();
+            let mut r: Vec<f32> = (0..frames).map(|i| (i as f32 * 0.02).cos()).collect();
+            let mut planes: Vec<&mut [f32]> = vec![l.as_mut_slice(), r.as_mut_slice()];
+            node.process_block_f32(&mut planes);
+            planes
+                .iter()
+                .map(|p| p.iter().map(|&v| (v as f64).powi(2)).sum::<f64>())
+                .sum::<f64>()
+        };
+        let full = config::SpatialVoiceConfig {
+            capacity: 2,
+            full_quality_capacity: 2,
+            policy: config::VoicePriority::GainWeighted,
+            ..Default::default()
+        };
+        let tight = config::SpatialVoiceConfig {
+            capacity: 1,
+            full_quality_capacity: 1,
+            policy: config::VoicePriority::GainWeighted,
+            ..Default::default()
+        };
+        let disabled = config::SpatialVoiceConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let e_full = render_energy(full);
+        let e_tight = render_energy(tight);
+        let e_off = render_energy(disabled);
+        // No budget == both admitted, so identical energy to a roomy budget.
+        assert!((e_full - e_off).abs() < 1e-6 * e_full.max(1.0));
+        // Dropping one of two equal programme voices cuts the output energy.
+        assert!(
+            e_tight < e_full * 0.9,
+            "tight budget must drop a voice: {e_tight} vs {e_full}"
+        );
+        assert!(e_full.is_finite() && e_tight.is_finite());
+    }
+
+    #[test]
+    fn voice_budget_drop_is_deterministic_given_same_initial_state() {
+        // Renderers are stateful (rings/filter one-poles warm up), so the
+        // determinism guarantee is: two fresh nodes with the same scene +
+        // budget produce byte-identical output, and the result is finite.
+        let frames = 512;
+        let build = || -> SpatialNode {
+            let mut n = SpatialNode::new(48_000.0);
+            n.prepare(48_000.0, 2);
+            n.set_enabled(true);
+            let cfg = config::SpatialConfig {
+                enabled: true,
+                voice: config::SpatialVoiceConfig {
+                    capacity: 1,
+                    full_quality_capacity: 1,
+                    policy: config::VoicePriority::GainWeighted,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            n.apply_config(&cfg, 48_000.0);
+            n.apply_screen(0.0, 30.0, 0.0, 1.0);
+            n
+        };
+        let run = |mut node: SpatialNode| -> Vec<f32> {
+            let mut l: Vec<f32> = (0..frames).map(|i| (i as f32 * 0.01).sin()).collect();
+            let mut r: Vec<f32> = (0..frames).map(|i| (i as f32 * 0.02).cos()).collect();
+            let mut planes: Vec<&mut [f32]> = vec![l.as_mut_slice(), r.as_mut_slice()];
+            node.process_block_f32(&mut planes);
+            let mut out = Vec::with_capacity(2 * frames);
+            for (f, (&l, &rr)) in planes[0]
+                .iter()
+                .zip(planes[1].iter())
+                .enumerate()
+                .take(frames)
+            {
+                out.push(l);
+                out.push(rr);
+                let _ = f;
+            }
+            out
+        };
+        let a = run(build());
+        let b = run(build());
+        assert_eq!(a, b);
+        assert!(a.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn spatial_telemetry_reports_voice_plan_and_meters() {
+        // The SpatialNode publishes its voice admission counts and the
+        // renderer's per-ear output meters into telemetry (spec §76).
+        let mut node = SpatialNode::new(48_000.0);
+        node.prepare(48_000.0, 2);
+        node.set_enabled(true);
+        let cfg = config::SpatialConfig {
+            enabled: true,
+            voice: config::SpatialVoiceConfig {
+                capacity: 1,
+                full_quality_capacity: 1,
+                policy: config::VoicePriority::GainWeighted,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        node.apply_config(&cfg, 48_000.0);
+        node.apply_screen(0.0, 30.0, 0.0, 1.0);
+        let frames = 512;
+        let mut l: Vec<f32> = (0..frames).map(|i| (i as f32 * 0.01).sin()).collect();
+        let mut r: Vec<f32> = (0..frames).map(|i| (i as f32 * 0.02).cos()).collect();
+        let mut planes: Vec<&mut [f32]> = vec![l.as_mut_slice(), r.as_mut_slice()];
+        node.process_block_f32(&mut planes);
+
+        let t = node.spatial_telemetry();
+        assert!(t.enabled);
+        assert!(t.voice_active);
+        assert_eq!(t.voice_full_voices, 1);
+        assert_eq!(t.voice_degraded_voices, 0);
+        assert_eq!(t.voice_dropped_voices, 1);
+        // Nonzero program audio reached the binaural ears.
+        assert!(t.peak_db_l > -30.0, "L peak {}", t.peak_db_l);
+        assert!(t.peak_db_r > -30.0, "R peak {}", t.peak_db_r);
+        assert!(t.peak_db_l.is_finite() && t.rms_db_r.is_finite());
+    }
+
+    #[test]
+    fn program_gain_automation_reduces_a_program_object() {
+        // FFI/engine automation (spec §47): a gain curve attached to one
+        // program object overrides its level at the set automation clock.
+        let render_energy = |node: &mut SpatialNode| -> f64 {
+            let frames = 512;
+            let mut l: Vec<f32> = (0..frames).map(|i| (i as f32 * 0.01).sin()).collect();
+            let mut r: Vec<f32> = (0..frames).map(|i| (i as f32 * 0.02).cos()).collect();
+            let mut planes: Vec<&mut [f32]> = vec![l.as_mut_slice(), r.as_mut_slice()];
+            node.process_block_f32(&mut planes);
+            planes
+                .iter()
+                .map(|p| p.iter().map(|&v| (v as f64).powi(2)).sum::<f64>())
+                .sum::<f64>()
+        };
+        let mut node = SpatialNode::new(48_000.0);
+        node.prepare(48_000.0, 2);
+        node.set_enabled(true);
+        node.apply_config(
+            &config::SpatialConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            48_000.0,
+        );
+        node.apply_screen(0.0, 30.0, 0.0, 1.0);
+        // Baseline: no gain automation -> both programme voices at unity.
+        node.set_automation_time(10.0);
+        let full = render_energy(&mut node);
+        // Zero the Left programme voice via a gain curve evaluated at t=0.
+        let curve = crate::spatial::CurveScalar::from_points(&[(0.0, 0.0), (1.0, 0.0)]).unwrap();
+        node.set_program_automation(0, 0, Some(Arc::new(curve)));
+        node.set_automation_time(0.0);
+        let reduced = render_energy(&mut node);
+        assert!(
+            reduced < full * 0.9,
+            "gain automation must cut a programme voice: {reduced} vs {full}"
+        );
+        // Clearing it restores both voices (the renderer's filter/ring state
+        // carries warm-up between blocks, so we assert restoration is large
+        // and near the baseline rather than bit-identical).
+        node.set_program_automation(0, 0, None);
+        let back = render_energy(&mut node);
+        assert!(back > reduced, "automation cleared restores energy");
+        assert!((back - full).abs() < 0.05 * full.max(1.0));
     }
 }

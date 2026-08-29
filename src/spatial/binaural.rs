@@ -54,20 +54,27 @@ use crate::buffer::MAX_AUDIO_BLOCK_FRAMES;
 use crate::decode::ChannelId;
 use crate::spatial::object::MAX_SPATIAL_OBJECTS;
 
+use super::automation::SpatialAudioAutomationFrame;
 use super::bed::MAX_BEDS;
 use super::directivity::listener_angle_rad;
+use super::doppler::{Doppler, DopplerState};
 use super::field::AmbisonicFieldMixer;
 use super::hrtf::{
     ear_delay_sec, head_shadow_alpha, max_itd_sec, read_delayed, Ear, ElevationNotch, HeadShadow,
     HrtfDataset, DEFAULT_HEAD_RADIUS, DEFAULT_SPEED_OF_SOUND,
 };
+use super::level::AbsorptionState;
 use super::math::Vec3;
+use super::metering::SpatialMeterState;
+use super::nearfield::NearFieldState;
 use super::occlusion::OcclusionState;
+use super::quality::SpatialQuality;
 use super::render::{HybridBlockInputs, RenderError, SpatialRenderer};
 use super::room::{EarlyReflections, ListenerImage, RoomLateField, MAX_IMAGES};
 use super::scene::{ListenerTransform, SpatialScene};
 use super::speaker::SpeakerLayout;
 use super::spread::{ring_directions, RING_SAMPLES, SPREAD_MAX_HALF_ANGLE_RAD};
+use super::voice::VoiceAdmission;
 
 /// Direction budget per object: the exact direction plus the 3 spread ring
 /// samples (`1 + RING_SAMPLES`).
@@ -138,6 +145,12 @@ pub struct BinauralRenderer {
 
     /// Per-object occlusion low-pass state.
     occ: Vec<OcclusionState>,
+    /// Per-object applied air-absorption filter state.
+    abs: Vec<AbsorptionState>,
+    /// Per-object near-field filter state.
+    nf: Vec<NearFieldState>,
+    /// Per-object Doppler resampler state.
+    doppler: Vec<DopplerState>,
     /// Per-object ITD ring (flat `MAX_OBJECTS × itd_len`); both ears read
     /// the same ring at their own fractional delays.
     obj_itd: Vec<f32>,
@@ -187,6 +200,17 @@ pub struct BinauralRenderer {
     virtual_scratch: Vec<f32>,
     vs_itd: Vec<f32>,
     vs_shelf: Vec<HeadShadow>,
+
+    /// Renderer quality tier (spec §86), host-advisory.
+    quality: SpatialQuality,
+    /// Output metering (spec §70): per-ear peak/RMS over the stereo output.
+    meter: SpatialMeterState,
+    /// Per-slot voice admission (spec §76), preallocated Flat. Indexed by
+    /// store slot (`obj_idx`); defaults to `Full` for everyone.
+    admission: Vec<VoiceAdmission>,
+    /// Application-driven automation time (seconds, spec §47). Drives any
+    /// object automation curves set on the scene.
+    automation_time: f32,
 }
 
 impl BinauralRenderer {
@@ -205,6 +229,9 @@ impl BinauralRenderer {
             out_trim: [1.0; 2],
             prepared: false,
             occ: vec![OcclusionState::default(); MAX_SPATIAL_OBJECTS],
+            abs: vec![AbsorptionState::default(); MAX_SPATIAL_OBJECTS],
+            nf: vec![NearFieldState::default(); MAX_SPATIAL_OBJECTS],
+            doppler: vec![DopplerState::default(); MAX_SPATIAL_OBJECTS],
             obj_itd: Vec::new(),
             obj_shelf: vec![HeadShadow::new(); MAX_SPATIAL_OBJECTS * MAX_DIRS * Ear::COUNT],
             obj_notch: vec![ElevationNotch::new(); MAX_SPATIAL_OBJECTS * MAX_DIRS * Ear::COUNT],
@@ -228,7 +255,59 @@ impl BinauralRenderer {
             virtual_scratch: vec![0.0; VIRTUAL_RING_SPEAKERS * MAX_AUDIO_BLOCK_FRAMES],
             vs_itd: Vec::new(),
             vs_shelf: vec![HeadShadow::new(); VIRTUAL_RING_SPEAKERS * Ear::COUNT],
+            quality: SpatialQuality::default(),
+            meter: SpatialMeterState::new(2),
+            admission: vec![VoiceAdmission::Full; MAX_SPATIAL_OBJECTS],
+            automation_time: 0.0,
         }
+    }
+
+    /// Drive automation at `seconds` (spec §47). `automation` curves set on
+    /// any scene object are evaluated at this scene clock.
+    pub fn set_automation_time(&mut self, seconds: f32) -> &mut Self {
+        self.automation_time = seconds;
+        self
+    }
+
+    /// Feed a per-slot voice admission plan (spec §76) from the control /
+    /// caller side. Each entry is indexed by the object's store slot; the
+    /// rest default to `Full`. Bounded copy into the preallocated buffer —
+    /// allocation-free, so it is safe to call on the audio path.
+    pub fn set_voice_admission(&mut self, plan: &[VoiceAdmission]) -> &mut Self {
+        self.admission.fill(VoiceAdmission::Full);
+        let n = plan.len().min(MAX_SPATIAL_OBJECTS);
+        self.admission[..n].copy_from_slice(&plan[..n]);
+        self
+    }
+
+    /// Reset every object to full admission (no voice budget).
+    pub fn clear_voice_admission(&mut self) -> &mut Self {
+        self.admission.fill(VoiceAdmission::Full);
+        self
+    }
+
+    /// Set the renderer quality tier (spec §86). Stored at control path;
+    /// applied where a tier refines the (already-correct) render.
+    pub fn set_quality(&mut self, q: SpatialQuality) -> &mut Self {
+        self.quality = q;
+        self
+    }
+
+    /// The active quality tier (spec §86).
+    pub fn quality(&self) -> SpatialQuality {
+        self.quality
+    }
+
+    /// Enable/disable output metering (spec §70). Disabled = dormant meter
+    /// (zero cost, zero reported levels).
+    pub fn set_metering_enabled(&mut self, enabled: bool) -> &mut Self {
+        self.meter.set_enabled(enabled);
+        self
+    }
+
+    /// The output meters snapshot (control thread read).
+    pub fn meters(&self) -> &SpatialMeterState {
+        &self.meter
     }
 
     /// Override the head parameters (radius in metres, speed of sound in
@@ -371,7 +450,20 @@ impl BinauralRenderer {
 
         for (obj_ordinal, (slot, obj)) in scene.objects.iter_enabled().enumerate() {
             let obj_idx = slot; // stable id = store slot
-            let local = xf.apply_to_point(obj.position);
+
+            // Automation override (spec §47): curves, if any, override the
+            // object's authored position/gain/spread at the current wall clock.
+            let mut automating = SpatialAudioAutomationFrame::none();
+            if obj.automation.has_any() {
+                obj.automation.apply(self.automation_time, &mut automating);
+            }
+            let (pos, gain, spread) = (
+                automating.position.unwrap_or(obj.position),
+                automating.gain.unwrap_or(obj.gain),
+                automating.spread.unwrap_or(obj.spread),
+            );
+
+            let local = xf.apply_to_point(pos);
             let dist = local.length();
             let dir_v = local.normalized().unwrap_or(Vec3::Y);
 
@@ -395,11 +487,54 @@ impl BinauralRenderer {
             } else {
                 (1.0, None)
             };
-            let obj_gain = obj.gain * dist_gain * dir_gain * occ_gain;
+            // Applied air absorption (spec §39): distance-dependent HF roll-off.
+            let abs_cutoff = obj.air_absorption.cutoff_hz(dist, self.sample_rate);
+            let abs_coeffs = obj
+                .air_absorption
+                .enabled
+                .then(|| self.abs[obj_idx].coeffs(abs_cutoff, self.sample_rate, self.smooth))
+                .flatten();
+            // Near field (spec §40): bounded proximity gain + optional LF lift.
+            let nf_gain = obj.near_field.proximity_gain(dist);
+            let nf_boost_db = 20.0 * obj.near_field.lf_boost_gain(dist).log10();
+            let nf_coeffs = if obj.near_field.enabled {
+                Some(self.nf[obj_idx].shelf_coeffs(nf_boost_db, self.sample_rate, self.smooth))
+            } else {
+                None
+            };
+            // Doppler (spec §42): ratio from the radial relative velocity.
+            let doppler_on = obj.doppler.enabled;
+            if doppler_on {
+                let rel = obj.velocity - scene.listener.velocity;
+                let v_r = Doppler::radial_velocity(rel, dir_v);
+                let ratio = obj.doppler.ratio(v_r);
+                self.doppler[obj_idx].set_ratio(ratio, self.smooth);
+            }
+            let obj_gain = gain * dist_gain * dir_gain * occ_gain * nf_gain;
+
+            // Voice admission (spec §76): a dropped voice renders silence
+            // (the level-chain smoothing above already advanced, so
+            // re-admission does not click), while a degraded voice renders
+            // the direct path but skips the expensive room reflections and
+            // collapses spread to a point.
+            let admission = self
+                .admission
+                .get(obj_idx)
+                .copied()
+                .unwrap_or(VoiceAdmission::Full);
+            if admission == VoiceAdmission::Dropped {
+                continue;
+            }
+            let degraded = admission == VoiceAdmission::Degraded;
 
             // Directions: the exact direction plus (for spread > 0) the
             // angular-region ring samples, each with its own head cues.
-            let s = obj.spread.clamp(0.0, 1.0);
+            // Degraded voices collapse to a point source (cheaper).
+            let s = if degraded {
+                0.0
+            } else {
+                spread.clamp(0.0, 1.0)
+            };
             dirs[0] = (dir_v, 1.0 - s);
             let mut n_dirs = 1usize;
             if s > 0.0 {
@@ -452,13 +587,14 @@ impl BinauralRenderer {
                 }
             }
 
-            // Room: image sources for this object.
+            // Room: image sources for this object (skipped for degraded
+            // voices — the largest per-object cost, spec §86 tiers).
             let mut n_img = 0usize;
-            if room_on && obj.room_send > 0.0 {
+            if room_on && !degraded && obj.room_send > 0.0 {
                 n_img = self.room_er.images_for_object(
                     &scene.room,
                     scene.listener.position,
-                    obj.position,
+                    pos,
                     &mut imgs,
                 );
                 for i in 0..n_img {
@@ -468,7 +604,7 @@ impl BinauralRenderer {
                     let dg = obj
                         .distance_model
                         .distance_gain(imgs[i].dist, obj.reference_distance);
-                    let target = obj.gain * obj.room_send * imgs[i].coeff * dg;
+                    let target = gain * obj.room_send * imgs[i].coeff * dg;
                     for ear in 0..Ear::COUNT {
                         let idx = obj_idx * (MAX_IMAGES * Ear::COUNT) + i * Ear::COUNT + ear;
                         let e = Ear::from_index(ear);
@@ -531,11 +667,22 @@ impl BinauralRenderer {
             let fir_ring_base = obj_idx * fir_len;
             for frame in 0..frames {
                 let mut s = input[frame];
-                // Occlusion low-passes before the head model (spec §43); the
-                // filtered sample feeds the direct paths, the LFE fold and
-                // the room.
+                // Object cascade (spec §141 data flow): Doppler (pitch) →
+                // occlusion (low-pass) → air absorption (HF roll-off) →
+                // near-field LF lift, all before the head model. Each stage
+                // is an exact passthrough when disabled; the filtered sample
+                // feeds the direct paths, the LFE fold and the room.
+                if doppler_on {
+                    s = self.doppler[obj_idx].process(s, true);
+                }
                 if let Some(c) = occ_coeffs {
                     s = self.occ[obj_idx].process(s, &c);
+                }
+                if let Some(c) = abs_coeffs {
+                    s = self.abs[obj_idx].process(s, &c);
+                }
+                if let Some(c) = nf_coeffs {
+                    s = self.nf[obj_idx].process(s, &c);
                 }
                 if use_fir {
                     // FIR path: one ring per object, convolved with each
@@ -613,7 +760,7 @@ impl BinauralRenderer {
                         }
                     }
                     if obj.room_send > 0.0 {
-                        self.room_er.add_send(frame, s * obj.gain * obj.room_send);
+                        self.room_er.add_send(frame, s * gain * obj.room_send);
                     }
                 }
 
@@ -801,6 +948,9 @@ impl SpatialRenderer for BinauralRenderer {
         if self.dataset.is_some() {
             self.fir_pos = (self.fir_pos + frames) % self.fir_len;
         }
+        // Output metering (spec §70): channel-aware peak/RMS over the final
+        // interleaved stereo buffer. Allocation-free.
+        self.meter.feed_block(out, frames);
         Ok(())
     }
 }

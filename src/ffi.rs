@@ -544,6 +544,206 @@ pub extern "C" fn engine_correction_info(
     EngineStatus::Ok as i32
 }
 
+/// Read the spatial master output telemetry (Phase 17): the binaural
+/// output's left/right-ear peak & RMS (dBFS) and the live voice-budget
+/// admission counts (spec §76). Mirrored from the lock-free `PlaybackInfo`
+/// snapshot on the telemetry cadence.
+///
+/// Out-params: `enabled`, `voice_active`, `voice_full_voices`,
+/// `voice_degraded_voices`, `voice_dropped_voices` (i32), and `peak_db_l`,
+/// `peak_db_r`, `rms_db_l`, `rms_db_r` (f32).
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn engine_spatial_info(
+    handle: *mut EngineHandleFFI,
+    enabled: *mut i32,
+    voice_active: *mut i32,
+    voice_full_voices: *mut i32,
+    voice_degraded_voices: *mut i32,
+    voice_dropped_voices: *mut i32,
+    peak_db_l: *mut f32,
+    peak_db_r: *mut f32,
+    rms_db_l: *mut f32,
+    rms_db_r: *mut f32,
+) -> i32 {
+    let h = match unsafe { handle.as_ref() } {
+        Some(h) => h,
+        None => return EngineStatus::InvalidHandle as i32,
+    };
+    if enabled.is_null()
+        || voice_active.is_null()
+        || voice_full_voices.is_null()
+        || voice_degraded_voices.is_null()
+        || voice_dropped_voices.is_null()
+        || peak_db_l.is_null()
+        || peak_db_r.is_null()
+        || rms_db_l.is_null()
+        || rms_db_r.is_null()
+    {
+        return EngineStatus::InvalidArgument as i32;
+    }
+    let info = h.handle.playback_info().spatial;
+    // A not-yet-published stage reports a coherent inactive set.
+    unsafe {
+        *enabled = info.as_ref().map(|i| i.enabled as i32).unwrap_or(0);
+        *voice_active = info.as_ref().map(|i| i.voice_active as i32).unwrap_or(0);
+        *voice_full_voices = info
+            .as_ref()
+            .map(|i| i.voice_full_voices as i32)
+            .unwrap_or(0);
+        *voice_degraded_voices = info
+            .as_ref()
+            .map(|i| i.voice_degraded_voices as i32)
+            .unwrap_or(0);
+        *voice_dropped_voices = info
+            .as_ref()
+            .map(|i| i.voice_dropped_voices as i32)
+            .unwrap_or(0);
+        *peak_db_l = info.as_ref().map(|i| i.peak_db_l).unwrap_or(-96.0);
+        *peak_db_r = info.as_ref().map(|i| i.peak_db_r).unwrap_or(-96.0);
+        *rms_db_l = info.as_ref().map(|i| i.rms_db_l).unwrap_or(-96.0);
+        *rms_db_r = info.as_ref().map(|i| i.rms_db_r).unwrap_or(-96.0);
+    }
+    EngineStatus::Ok as i32
+}
+
+/// Set the spatial master renderer quality tier (Phase 17, spec §86).
+/// `quality` uses `EngineSpatialQuality` (0 = Low, 1 = Medium, 2 = High,
+/// 3 = Ultra).
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn engine_set_spatial_quality(handle: *mut EngineHandleFFI, quality: i32) -> i32 {
+    let h = match unsafe { handle.as_ref() } {
+        Some(h) => h,
+        None => return EngineStatus::InvalidHandle as i32,
+    };
+    let q = match quality {
+        0 => config::SpatialQuality::Low,
+        1 => config::SpatialQuality::Medium,
+        2 => config::SpatialQuality::High,
+        3 => config::SpatialQuality::Ultra,
+        _ => return EngineStatus::InvalidArgument as i32,
+    };
+    h.handle.set_spatial_quality(q);
+    EngineStatus::Ok as i32
+}
+
+/// Set the spatial master's voice budget (Phase 17, spec §76):
+/// `enabled != 0` applies `capacity` (concurrent voices) with
+/// `full_quality_capacity` full-quality voices, ranked by `policy`
+/// (`EngineVoicePriority`: 0 = Fixed, 1 = DistanceWeighted,
+/// 2 = GainWeighted, 3 = UserDefined). `enabled == 0` clears the budget
+/// (full admission).
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn engine_set_spatial_voice(
+    handle: *mut EngineHandleFFI,
+    enabled: i32,
+    capacity: i32,
+    full_quality_capacity: i32,
+    policy: i32,
+) -> i32 {
+    let h = match unsafe { handle.as_ref() } {
+        Some(h) => h,
+        None => return EngineStatus::InvalidHandle as i32,
+    };
+    if capacity < 0 || full_quality_capacity < 0 {
+        return EngineStatus::InvalidArgument as i32;
+    }
+    let policy = match policy {
+        0 => config::VoicePriority::Fixed,
+        1 => config::VoicePriority::DistanceWeighted,
+        2 => config::VoicePriority::GainWeighted,
+        3 => config::VoicePriority::UserDefined,
+        _ => return EngineStatus::InvalidArgument as i32,
+    };
+    h.handle.set_spatial_voice(
+        enabled != 0,
+        capacity as usize,
+        full_quality_capacity as usize,
+        policy,
+    );
+    EngineStatus::Ok as i32
+}
+
+/// Set a scalar automation curve on a spatial program object (Phase 17,
+/// spec §47). `object` 0 = Left, 1 = Right; `kind` 0 = gain, 1 = spread.
+/// `points_count` keyframes are given as parallel `times` (seconds) and
+/// `values` (linear) arrays (clamped to a bounded count); the scene
+/// automation clock is set to `time_secs`. Pass `points_count == 0` to clear
+/// the curve. The curve is built on the control (caller) thread and applied
+/// allocation-free at block rate.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn engine_set_spatial_automation(
+    handle: *mut EngineHandleFFI,
+    object: i32,
+    kind: i32,
+    times: *const f32,
+    values: *const f32,
+    points_count: i32,
+    time_secs: f32,
+) -> i32 {
+    let h = match unsafe { handle.as_ref() } {
+        Some(h) => h,
+        None => return EngineStatus::InvalidHandle as i32,
+    };
+    if object != 0 && object != 1 {
+        return EngineStatus::InvalidArgument as i32;
+    }
+    if kind != 0 && kind != 1 {
+        return EngineStatus::InvalidArgument as i32;
+    }
+    if points_count < 0 {
+        return EngineStatus::InvalidArgument as i32;
+    }
+    if points_count > 0 && (times.is_null() || values.is_null()) {
+        return EngineStatus::InvalidArgument as i32;
+    }
+    if points_count == 0 {
+        h.handle
+            .set_spatial_automation(object as u8, kind as u8, None, time_secs);
+        return EngineStatus::Ok as i32;
+    }
+    let count = (points_count as usize).min(64);
+    let times_slice = unsafe { std::slice::from_raw_parts(times, count) };
+    let values_slice = unsafe { std::slice::from_raw_parts(values, count) };
+    if times_slice.iter().any(|t| !t.is_finite()) || values_slice.iter().any(|v| !v.is_finite()) {
+        return EngineStatus::InvalidArgument as i32;
+    }
+    let points: Vec<(f32, f32)> = times_slice
+        .iter()
+        .cloned()
+        .zip(values_slice.iter().cloned())
+        .collect();
+    let Some(curve) = crate::spatial::CurveScalar::from_points(&points) else {
+        return EngineStatus::InvalidArgument as i32;
+    };
+    h.handle.set_spatial_automation(
+        object as u8,
+        kind as u8,
+        Some(std::sync::Arc::new(curve)),
+        time_secs,
+    );
+    EngineStatus::Ok as i32
+}
+
+/// Drive the spatial master's program-object automation at `seconds`
+/// (Phase 17, spec §47).
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn engine_set_spatial_automation_time(
+    handle: *mut EngineHandleFFI,
+    seconds: f32,
+) -> i32 {
+    let h = match unsafe { handle.as_ref() } {
+        Some(h) => h,
+        None => return EngineStatus::InvalidHandle as i32,
+    };
+    h.handle.set_spatial_automation_time(seconds);
+    EngineStatus::Ok as i32
+}
+
 // ── Additional output endpoints (routing matrix) ───────────────────────────
 
 /// Add or replace one additional output endpoint. `id` is the stable
@@ -912,6 +1112,137 @@ mod tests {
         );
         shutdown(&mut ffi);
         let _ = std::fs::remove_file(&ir_path);
+    }
+
+    #[test]
+    fn ffi_spatial_configuration_rejects_bad_args() {
+        let (mut ffi, ptr) = ffi_with_engine(EngineConfig::default());
+
+        // Invalid quality / policy enum values are rejected, not mapped.
+        assert_eq!(
+            engine_set_spatial_quality(ptr, 42),
+            EngineStatus::InvalidArgument as i32
+        );
+        assert_eq!(
+            engine_set_spatial_voice(ptr, 1, 4, 2, 77),
+            EngineStatus::InvalidArgument as i32
+        );
+        assert_eq!(
+            engine_set_spatial_voice(ptr, 1, -1, 2, 0),
+            EngineStatus::InvalidArgument as i32
+        );
+
+        // Automation: null arrays with a nonzero point count are rejected.
+        assert_eq!(
+            engine_set_spatial_automation(ptr, 0, 0, std::ptr::null(), std::ptr::null(), 3, 0.0,),
+            EngineStatus::InvalidArgument as i32
+        );
+        // A bad object / kind index is rejected.
+        let times = [0.0f32, 1.0, 2.0];
+        assert_eq!(
+            engine_set_spatial_automation(ptr, 7, 0, times.as_ptr(), times.as_ptr(), 3, 0.0,),
+            EngineStatus::InvalidArgument as i32
+        );
+        assert_eq!(
+            engine_set_spatial_automation(ptr, 0, 9, times.as_ptr(), times.as_ptr(), 3, 0.0,),
+            EngineStatus::InvalidArgument as i32
+        );
+        // Non-finite keyframe values are rejected.
+        let bad_vals = [0.0f32, f32::NAN, 1.0];
+        assert_eq!(
+            engine_set_spatial_automation(ptr, 0, 0, times.as_ptr(), bad_vals.as_ptr(), 3, 0.0,),
+            EngineStatus::InvalidArgument as i32
+        );
+
+        // Null handle is rejected across the whole surface.
+        assert_eq!(
+            engine_set_spatial_quality(std::ptr::null_mut(), 1),
+            EngineStatus::InvalidHandle as i32
+        );
+        assert_eq!(
+            engine_set_spatial_voice(std::ptr::null_mut(), 1, 4, 2, 0),
+            EngineStatus::InvalidHandle as i32
+        );
+        assert_eq!(
+            engine_set_spatial_automation_time(std::ptr::null_mut(), 0.5),
+            EngineStatus::InvalidHandle as i32
+        );
+
+        shutdown(&mut ffi);
+    }
+
+    #[test]
+    fn ffi_spatial_configuration_round_trips_into_node() {
+        let (mut ffi, ptr) = ffi_with_engine(EngineConfig::default());
+
+        // Valid quality + voice budget dispatches through the handle channel
+        // into the graph's SpatialNode once the tick thread drains it.
+        assert_eq!(
+            engine_set_spatial_quality(ptr, 2), // High
+            EngineStatus::Ok as i32
+        );
+        assert_eq!(
+            engine_set_spatial_voice(ptr, 1, 3, 1, 2), // GainWeighted
+            EngineStatus::Ok as i32
+        );
+        // A gain automation curve on the left object feeds the scene clock.
+        let times = [0.0f32, 1.0, 2.0];
+        let vals = [1.0f32, 0.5, 0.25];
+        assert_eq!(
+            engine_set_spatial_automation(ptr, 0, 0, times.as_ptr(), vals.as_ptr(), 3, 1.5,),
+            EngineStatus::Ok as i32
+        );
+
+        // Reading SpatialTelemetry returns a coherent (inactive) set — the
+        // stage exists but no playback has produced levels yet.
+        let mut enabled = 99i32;
+        let mut active = 99i32;
+        let mut full = 99i32;
+        let mut degraded = 99i32;
+        let mut dropped = 99i32;
+        let mut pl = -99.0f32;
+        let mut pr = -99.0f32;
+        let mut rl = -99.0f32;
+        let mut rr = -99.0f32;
+        assert_eq!(
+            engine_spatial_info(
+                ptr,
+                &mut enabled,
+                &mut active,
+                &mut full,
+                &mut degraded,
+                &mut dropped,
+                &mut pl,
+                &mut pr,
+                &mut rl,
+                &mut rr,
+            ),
+            EngineStatus::Ok as i32
+        );
+        assert_eq!(enabled, 0);
+        assert_eq!(active, 0);
+        assert_eq!(full, 0);
+        assert_eq!(degraded, 0);
+        assert_eq!(dropped, 0);
+
+        // Null out-pointers are rejected.
+        assert_eq!(
+            engine_spatial_info(
+                ptr,
+                &mut enabled,
+                std::ptr::null_mut(),
+                &mut full,
+                &mut degraded,
+                &mut dropped,
+                &mut pl,
+                &mut pr,
+                &mut rl,
+                &mut rr,
+            ),
+            EngineStatus::InvalidArgument as i32
+        );
+
+        shutdown(&mut ffi);
     }
 
     #[test]
