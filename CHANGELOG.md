@@ -2,6 +2,43 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.31.0] — 2026-08-29
+
+The acoustic world joins the graph: **reflections and baking become
+graph-routable primitives**. A new [`NodeKind::Acoustic`] in Graph 2.0
+renders the baked room response of a source position from a
+[`BakedScene`] attached to the executor — an impulse into the node comes
+out as the direct path plus one delayed, gain-scaled copy per baked
+propagation path. Wet rooms route through `Split`/`Mix`/`Gain` like any
+other signal.
+
+### Added
+
+- **Acoustic node** (`dsp::graph2`) — [`NodeKind::Acoustic`] with
+  [`NodeParams::Acoustic { position }`](NodeParams): 1-in/1-out; the
+  input plane passes through (scaled by the baked direct gain) plus each
+  non-direct path at its excess delay with its gain, via a per-node tapped
+  delay line sized to the longest tap.
+- **Executor hook** — [`OfflineExecutor::set_baked_scene`]: attach a
+  v3.26 `BakedScene`; `Acoustic` nodes look up their configured position's
+  cell. An unbaked position or a missing scene passes the input through
+  unchanged (deterministic fallback, matching the renderers' live-solve
+  fallback semantics).
+- **Latency semantics** — the acoustic node reports **zero pipeline
+  latency** (the direct path passes immediately; the tail is wet content,
+  not alignment delay), so `analyze`/`compensate` treat a room exactly
+  like a signal with no latency to align — documented in
+  `dsp::graph2::latency::node_latency`.
+- **Serializable** — [`Vec3`] gains serde derives, so a graph containing
+  acoustic nodes round-trips through JSON position-exactly.
+- **Fidelity suite** — `tests/fidelity/acoustic_graph.rs` (6 tests): an
+  impulse into the node reproduces the baked response **exactly** (oracle
+  built from the same paths); a wet room + dry `Gain` route through
+  `Split`/`Mix` with reflections summed per-excess-delay; unbaked
+  positions and missing scenes pass through; the node adds no pipeline
+  latency; the graph serializes/round-trips with positions intact; and a
+  fabric-wall bake changes the rendered taps (weaker reflections).
+
 ## [3.30.0] — 2026-08-29
 
 Graph-wide latency and alignment (roadmap v3.30 — the final roadmap phase;
@@ -279,7 +316,7 @@ scalar absorption coefficient to per-octave-band spectra.
   world is an exact direct path; a freestanding fin diffracts a path;
   solves are deterministic and capped; and `diffract_around_edge` reports
   the correct 1/r distance + delay.
-- `config` and `engine` crates stay in lockstep at 3.30.0.
+- `config` and `engine` crates stay in lockstep at 3.31.0.
 
 ## [3.24.1] — 2026-08-29
 

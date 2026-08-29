@@ -28,10 +28,11 @@
 //! - Handedness: a positive rotation about a unit axis follows the
 //!   right-hand rule (a positive yaw about +Z turns +X toward +Y).
 
+use serde::{Deserialize, Serialize};
 use std::ops::{Add, Mul, Neg, Sub};
 
 /// A vector in 3D world space (metres by convention).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Vec3 {
     pub x: f32,
     pub y: f32,

@@ -34,6 +34,9 @@ use super::Graph2;
 /// The intrinsic sample-latency a node adds to its outgoing signal.
 /// Today only [`NodeKind::Delay`] adds taps; a future convolution / HRTF /
 /// resampler / lookahead node reports its IR length / filter taps here.
+/// [`NodeKind::Acoustic`] reports `0`: its direct path passes through
+/// immediately, and the per-path delayed copies are a reverb *tail* — the
+/// wet content is intentionally late, not a pipeline delay to align.
 pub fn node_latency(node: &NodeDef) -> u64 {
     match node.params {
         NodeParams::Delay { samples } => samples as u64,

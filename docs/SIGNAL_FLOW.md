@@ -317,6 +317,28 @@ compensate(graph) → edited Graph2
 The pass is control/offline-path; compensation edits the topology the
 offline executor renders, and never touches a realtime audio thread.
 
+### Acoustic world as graph nodes (offline, v3.31.0)
+
+The acoustic world is a graph-routable primitive: an `Acoustic` node
+renders the baked room response of a source position from the scene attached
+to the executor — reflections become ordinary taps in the topology.
+
+```
+AcousticBaker → BakedScene (v3.26)
+        │  OfflineExecutor::set_baked_scene
+        ▼
+Source ──▶ Acoustic{position} ──┐            (direct pass-through +
+   │                             ├─▶ Mix       per-path excess-delay taps)
+   └─▶ Gain(0.3, dry) ──────────┘
+        │  wet room + dry branch route like any signal
+```
+
+An unbaked position or a missing scene passes the input through unchanged;
+the direct path adds **zero pipeline latency** (the tail is wet content, so
+`analyze`/`compensate` treat the room as latency-free). Baking and the node's
+control hooks are offline-path; the node's render-time work is a preallocated
+ring read + multiply.
+
 ### Spatial rendering (opt-in, v3.11.0 → v3.19.0)
 
 ```

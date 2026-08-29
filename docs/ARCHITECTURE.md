@@ -166,7 +166,13 @@ src/
 │   │                         #   node_latency taps + LatencyReport upstream
 │   │                         #   propagation + compensate — automatic delay
 │   │                         #   alignment splicing Delay nodes onto faster
-│   │                         #   branches while preserving node ids). The
+│   │                         #   branches while preserving node ids). Phase
+│   │                         #   29 (v3.31): NodeKind::Acoustic renders a
+│   │                         #   BakedScene room response from a source
+│   │                         #   position (add_acoustic builder;
+│   │                         #   OfflineExecutor::set_baked_scene; direct
+│   │                         #   pass-through + per-path excess-delay taps;
+│   │                         #   zero pipeline latency; Vec3 now serde). The
 │   │                         #   topology, not an authored chain, defines
 │   │                         #   the signal flow — realtime dsp::graph is
 │   │                         #   untouched

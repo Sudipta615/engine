@@ -20,6 +20,8 @@ use super::node::{NodeDef, NodeId, NodeKind, NodeParams, PortId, TestSignal};
 use super::sort::ExecutionOrder;
 use super::validate::Graph2Error;
 use super::Graph2;
+use crate::spatial::acoustic::bake::{BakedObject, BakedScene};
+use crate::spatial::acoustic::path::PathKind;
 
 /// Renders a compiled topology over time. Snapshot semantics: construct from
 /// a `(&Graph2, &ExecutionOrder)` pair; mutate the graph only through a
@@ -41,6 +43,18 @@ pub struct OfflineExecutor {
     /// Pending per-node gain steps `(gain, local block index)` applied by
     /// `run_gain` at the exact frame — sample-accurate parameter changes.
     gain_steps: HashMap<NodeId, (f32, usize)>,
+    /// The acoustic world response cache consumed by `Acoustic` nodes
+    /// (baked scene; see `set_baked_scene`).
+    baked: Option<BakedScene>,
+    /// Per-node tapped delay lines for `Acoustic` node room responses.
+    acoustics: HashMap<NodeId, AcousticState>,
+}
+
+/// Ring buffer + cursor for an `Acoustic` node's tapped delay line.
+#[derive(Debug, Default)]
+struct AcousticState {
+    buf: Vec<f32>,
+    pos: usize,
 }
 
 #[derive(Debug, Default)]
@@ -97,6 +111,8 @@ impl OfflineExecutor {
             sources: HashMap::new(),
             captures: HashMap::new(),
             gain_steps: HashMap::new(),
+            baked: None,
+            acoustics: HashMap::new(),
         })
     }
 
@@ -120,6 +136,7 @@ impl OfflineExecutor {
                 NodeKind::Delay => self.run_delay(node_id),
                 NodeKind::Mix => self.run_mix(node_id),
                 NodeKind::Split => self.run_split(node_id),
+                NodeKind::Acoustic => self.run_acoustic(node_id),
             }
         }
         Ok(())
@@ -154,6 +171,15 @@ impl OfflineExecutor {
         // Drop any pending step for this node (a fresh absolute set wins).
         self.gain_steps.remove(&node);
         Ok(())
+    }
+
+    /// Attach (or detach) a v3.31 baked acoustic scene. `Acoustic` nodes
+    /// render the room response of their configured source position from
+    /// this cache; with no scene (or an unbaked position) they pass their
+    /// input through unchanged (deterministic fallback).
+    pub fn set_baked_scene(&mut self, scene: Option<BakedScene>) {
+        self.baked = scene;
+        self.acoustics.clear();
     }
 
     /// Schedule a gain step at a **local index within the current block**,
@@ -301,6 +327,49 @@ impl OfflineExecutor {
         }
     }
 
+    fn run_acoustic(&mut self, id: NodeId) {
+        let position = match self.nodes.get(&id).map(|n| n.params.clone()) {
+            Some(NodeParams::Acoustic { position }) => position,
+            _ => return,
+        };
+        let in_plane = match self.read_input(id, PortId::IN) {
+            Some(p) => p.to_vec(),
+            None => vec![0.0; self.block],
+        };
+        // Direct path passes through (scaled by the baked direct gain).
+        let mut out = in_plane.clone();
+        let Some(obj) = self.baked.as_ref().and_then(|s| s.get(position)) else {
+            self.broadcast(id, PortId::OUT, &out);
+            return;
+        };
+        let direct_gain = obj.direct().map(|d| d.gain).unwrap_or(1.0);
+        for s in out.iter_mut() {
+            *s *= direct_gain;
+        }
+        // Non-direct paths: one delayed, gain-scaled copy each (excess
+        // delay relative to direct — the renderer's own convention).
+        let taps = acoustic_taps(obj);
+        let max_excess = taps.iter().map(|(ex, _)| *ex).max().unwrap_or(0);
+        if max_excess == 0 {
+            self.broadcast(id, PortId::OUT, &out);
+            return;
+        }
+        let len = (max_excess + 1) as usize;
+        let st = self.acoustics.entry(id).or_default();
+        if st.buf.len() < len {
+            st.buf.resize(len, 0.0);
+        }
+        for i in 0..self.block {
+            st.buf[st.pos] = in_plane[i];
+            for &(excess, gain) in &taps {
+                let idx = (st.pos as i64 - excess).rem_euclid(st.buf.len() as i64) as usize;
+                out[i] += gain * st.buf[idx];
+            }
+            st.pos = (st.pos + 1) % st.buf.len();
+        }
+        self.broadcast(id, PortId::OUT, &out);
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     /// The plane of the single edge feeding `node`'s input port, if any.
@@ -326,6 +395,21 @@ impl OfflineExecutor {
             }
         }
     }
+}
+
+/// The renderable taps of a baked response: `(excess_delay, gain)` per
+/// non-direct path, using the renderers' excess-delay convention (the
+/// `listener_images` arithmetic). The direct path is the base pass-through.
+fn acoustic_taps(obj: &BakedObject) -> Vec<(i64, f32)> {
+    let direct_delay = obj.direct().map(|d| d.delay_samples).unwrap_or(0.0);
+    obj.paths
+        .iter()
+        .filter(|p| p.kind != PathKind::Direct)
+        .map(|p| {
+            let excess = (p.delay_samples - direct_delay).max(0.0).round() as i64;
+            (excess, p.gain)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -455,5 +539,70 @@ mod tests {
             cap2[abs],
             2.0 * raw(abs)
         );
+    }
+
+    #[test]
+    fn acoustic_node_reproduces_baked_room_response() {
+        use crate::spatial::acoustic::bake::{AcousticBaker, BakePolicy};
+        use crate::spatial::acoustic::geometry::AcousticRoom;
+        use crate::spatial::acoustic::material::MaterialSpectrum;
+        use crate::spatial::acoustic::solver::AcousticWorld;
+        use crate::spatial::math::Vec3;
+        use crate::spatial::room::Room;
+
+        let room = Room {
+            enabled: true,
+            width: 12.0,
+            depth: 10.0,
+            height: 3.0,
+            absorption: 0.2,
+            reflection_order: 1,
+            rt60_ms: 800.0,
+            late_mix: 0.0,
+            speed_of_sound: 343.0,
+        };
+        let world = AcousticWorld::new(
+            AcousticRoom::from_render_room(
+                &room,
+                MaterialSpectrum::flat_reflective(room.absorption),
+            ),
+            SR,
+        );
+        let pos = Vec3::new(1.0, 5.0, 1.5);
+        let lst = Vec3::new(6.0, 5.0, 1.5);
+        let scene = AcousticBaker::new(world, 0.5).bake_single(pos, lst, SR, BakePolicy::default());
+
+        // Oracle first (releases the scene borrow): direct at 0 (direct
+        // gain), plus each non-direct path at its excess delay with its
+        // gain — the same arithmetic the node runs.
+        let obj = scene.get(pos).expect("baked object");
+        let direct_delay = obj.direct().unwrap().delay_samples;
+        let mut expected = vec![0.0f32; 2048];
+        expected[0] = obj.direct().unwrap().gain;
+        for p in obj.paths.iter().filter(|p| p.kind != PathKind::Direct) {
+            let excess = (p.delay_samples - direct_delay).max(0.0).round() as usize;
+            if excess < 2048 {
+                expected[excess] += p.gain;
+            }
+        }
+        assert!(
+            expected.iter().skip(1).any(|s| s.abs() > 1e-6),
+            "bake has reflections"
+        );
+
+        let mut g = Graph2::new();
+        let src = g.add_source("imp");
+        let room_node = g.add_acoustic("room", pos);
+        let sink = g.add_sink("out");
+        g.add_edge(src, PortId::OUT, room_node, PortId::IN).unwrap();
+        g.add_edge(room_node, PortId::OUT, sink, PortId::IN)
+            .unwrap();
+        let order = g.compile().unwrap().clone();
+
+        let mut ex = OfflineExecutor::new(&g, &order, 512, SR).unwrap();
+        ex.set_baked_scene(Some(scene));
+        ex.process_blocks(4).unwrap(); // 2048 frames — covers the reflection tail
+        let cap = ex.capture(sink).unwrap();
+        assert_eq!(cap, expected, "graph acoustic node == baked response");
     }
 }

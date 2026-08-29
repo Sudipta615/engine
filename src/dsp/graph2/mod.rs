@@ -111,6 +111,10 @@ impl Graph2 {
             ),
             node::NodeKind::Mix => (vec![], vec![PortSpec::output(SignalType::Audio, 0)]),
             node::NodeKind::Split => (vec![PortSpec::input(SignalType::Audio, 0)], vec![]),
+            node::NodeKind::Acoustic => (
+                vec![PortSpec::input(SignalType::Audio, 1)],
+                vec![PortSpec::output(SignalType::Audio, 1)],
+            ),
         };
         let id = NodeId(self.next_node);
         self.next_node += 1;
@@ -167,6 +171,20 @@ impl Graph2 {
             .map(|_| PortSpec::input(SignalType::Audio, 0))
             .collect();
         id
+    }
+
+    /// A room-response node: the input plane passes through (direct) plus
+    /// one delayed, gain-scaled copy per baked path of `position` — the
+    /// acoustic world as a graph-routable primitive. The response comes from
+    /// the [`BakedScene`](crate::spatial::acoustic::bake::BakedScene)
+    /// attached to the executor (`OfflineExecutor::set_baked_scene`); an
+    /// unbaked position (or no scene) passes the input through unchanged.
+    pub fn add_acoustic(&mut self, name: &str, position: crate::spatial::math::Vec3) -> NodeId {
+        self.add_node(
+            name,
+            NodeKind::Acoustic,
+            node::NodeParams::Acoustic { position },
+        )
     }
 
     /// A 1-input → `N`-output broadcast. Outputs `0..N` are created in
@@ -374,6 +392,7 @@ fn node_kind_label(kind: NodeKind) -> &'static str {
         NodeKind::Delay => "delay",
         NodeKind::Mix => "mix",
         NodeKind::Split => "split",
+        NodeKind::Acoustic => "acoustic",
     }
 }
 

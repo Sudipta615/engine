@@ -1479,3 +1479,55 @@ aligns to the slowest (200 + 100 taps inserted, all three summed at sample
 the guide's v3.25 → v3.30 roadmap (acoustic world → baking → Graph 2.0 →
 timeline → determinism → latency).
 
+---
+
+## Phase 29 — The acoustic world joins the graph (v3.31.0) — **Implemented**
+
+**Intent.** Post-roadmap integration that closes the loop Phases 23–28
+opened: the simulation (acoustic world), its cache (baking), and the
+topology (Graph 2.0) were built in separate layers — this phase makes the
+acoustic world a **graph-routable primitive**. A new [`NodeKind::Acoustic`]
+renders the baked room response of a source position from a [`BakedScene`]
+attached to the executor: an impulse into the node exits as the direct path
+plus one delayed, gain-scaled copy per baked propagation path. Reflections
+and baking become ordinary signals in the topology — a wet room routes
+through `Split`/`Mix`/`Gain` like any other node.
+
+### Key mechanisms
+
+- **`NodeKind::Acoustic` / `NodeParams::Acoustic { position }`** — 1-in /
+  1-out; `Graph2::add_acoustic(name, position)` builder.
+- **Executor** — [`OfflineExecutor::set_baked_scene`] attaches the v3.26
+  cache; `run_acoustic` passes the input through (scaled by the baked
+  direct gain) plus each non-direct path at its **excess delay** (the
+  renderers' own convention) with its gain, via a per-node tapped delay
+  line sized to the longest tap. Unbaked positions and missing scenes pass
+  through unchanged — the graph analogue of the renderers' live-solve
+  fallback.
+- **Latency semantics** — the direct path passes immediately, so the node
+  reports **zero pipeline latency**; the reflection tail is wet content,
+  not alignment delay. `analyze`/`compensate` therefore treat a room like
+  a latency-free signal.
+- **Serialization** — [`Vec3`] gains serde derives so graphs containing
+  acoustic nodes round-trip through JSON position-exactly.
+
+**Realtime discipline.** Baking stays control/offline-path; the node's
+render-time work is a preallocated ring read + multiply — no allocation or
+lock on any audio thread.
+
+**Acceptance (spec-first).** `tests/fidelity/acoustic_graph.rs` (6 tests)
+— an impulse into the node reproduces the baked response **exactly**
+(oracle built from the same paths); a wet room + dry `Gain` route through
+`Split`/`Mix` with reflections summed per-excess-delay; unbaked positions
+and missing scenes pass through; the node adds no pipeline latency; the
+graph serializes/round-trips with positions intact; and a fabric-wall bake
+changes the rendered taps (weaker reflections). Unit test in `exec.rs`
+(`acoustic_node_reproduces_baked_room_response`). `engine` and `config`
+stay in lockstep at 3.31.0.
+
+**Unblocks (Horizon).** multi-listener bakes (one `BakedScene` per
+listener → one `Acoustic` node per listener, mixed in the topology), live
+`set_baked_scene` swapping for animated scenes, and per-path filters
+(diffraction low-pass / material spectra) inside the node instead of the
+collapsed broadband gain.
+

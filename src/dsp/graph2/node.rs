@@ -8,6 +8,7 @@
 //! implicit in the arena order; here a node declares what it consumes and
 //! what it emits, and edges (not ordering) define the signal flow.
 
+use crate::spatial::math::Vec3;
 use serde::{Deserialize, Serialize};
 
 /// Stable identity of a graph node.
@@ -90,6 +91,10 @@ pub enum NodeKind {
     Mix,
     /// 1-in → N-out broadcast (input port 0, output ports `0..N`).
     Split,
+    /// 1:1 room-response node: the input plane passes through (direct) plus
+    /// one delayed, gain-scaled copy per baked propagation path of the
+    /// source position — the acoustic world as a graph-routable primitive.
+    Acoustic,
 }
 
 impl NodeKind {
@@ -116,6 +121,14 @@ impl NodeKind {
             },
             NodeKind::Mix | NodeKind::Split => NodeCapabilities {
                 stateful: false,
+                realtime_safe: true,
+                taps: false,
+            },
+            // The direct path passes through with zero pipeline latency; the
+            // per-path delayed copies are a reverb *tail*, not alignment
+            // latency (see `dsp::graph2::latency::node_latency`).
+            NodeKind::Acoustic => NodeCapabilities {
+                stateful: true,
                 realtime_safe: true,
                 taps: false,
             },
@@ -147,6 +160,11 @@ pub enum NodeParams {
     Delay { samples: u32 },
     /// `Mix` / `Split` — structure-only, no parameters.
     None,
+    /// `Acoustic` — the source position in the baked acoustic world whose
+    /// room response this node renders (the listener + response come from
+    /// the [`BakedScene`](crate::spatial::acoustic::bake::BakedScene)
+    /// attached to the executor).
+    Acoustic { position: Vec3 },
 }
 
 impl NodeParams {
@@ -162,6 +180,9 @@ impl NodeParams {
             NodeParams::Gain { gain } => format!("{gain}"),
             NodeParams::Delay { samples } => format!("{samples} samples"),
             NodeParams::None => String::new(),
+            NodeParams::Acoustic { position } => {
+                format!("({:.2}, {:.2}, {:.2})", position.x, position.y, position.z)
+            }
         }
     }
 }
