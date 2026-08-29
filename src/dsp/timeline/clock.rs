@@ -20,8 +20,10 @@
 //! scheduler keys events against — scheduled events fire once, exactly once,
 //! regardless of looping.
 
+use serde::{Deserialize, Serialize};
+
 /// Transport state of the clock.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransportState {
     Playing,
     Paused,

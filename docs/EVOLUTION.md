@@ -1370,3 +1370,61 @@ at 3.28.0.
 an event-recording/`aelog`-replay layer needs); v3.30 graph-wide latency;
 and musical automation (tempo-mapped control curves riding this clock).
 
+---
+
+## Phase 27 — Reference rendering and determinism (v3.29.0) — **Implemented**
+
+**Intent.** The guide's directive for v3.29: **make high-quality rendering
+reproducible, testable, and scalable** — concretely, Direction 17's
+*deterministic event recording and replay*. Phases 23–26 made the engine a
+powerful offline renderer (simulation → baking → arbitrary graph → time as
+a primitive); this phase makes its sessions **replayable**. A new
+`dsp::aelog` module records a render session into a versioned, serializable
+`recording.aelog` and re-executes it deterministically — the project's
+golden-render substrate. A bug becomes *"replay this log"*; a regression
+check becomes *"compare the replay against the golden capture"*.
+
+### Key mechanisms
+
+- **Format** (`aelog::mod`) — [`SessionHeader`] (format version, sample
+  rate, block size, label; deliberately **no wall-clock timestamps**, so a
+  log is a pure function of its commands) and [`RecordedCommand`]
+  (Schedule / SetTempo / SetTimeSignature / SetLoop / SetLoopEnabled /
+  SetTempoRamp / SetState / SetQuantize / Advance). [`Aelog`] round-trips
+  through JSON strings and files with explicit version checks.
+- **Recorder** (`aelog::record`) — [`AelogRecorder`] wraps a [`Timeline`]
+  and mirrors its mutation surface, appending a command per call; it is
+  the only way to touch its timeline, so a session cannot silently drift
+  from its log. Two identical sessions serialize to byte-equal logs.
+- **Replay** (`aelog::replay`) — [`replay_events`] reproduces the
+  identical fired-event stream and end clock state from the log alone;
+  [`replay_render`] additionally feeds blocks to a provided Graph 2.0
+  executor (applying `SetGain` events sample-accurately, exactly like a
+  live driver) and returns the captured audio — **byte-identical** to the
+  recorded session.
+- **CLI** — `aelog-replay` binary (the guide's `engine replay
+  recording.aelog`): loads a log, re-executes it, prints command / fired
+  counts, end transport state, and (`--verbose`) the full command and
+  event trace.
+
+**Realtime discipline.** Recording and replay are control/offline-path by
+design (file IO, JSON, and graph rendering are the expensive work being
+cached); nothing touches a realtime audio thread.
+
+**Acceptance (spec-first).** `tests/fidelity/aelog_replay.rs` (6 tests) —
+a recorded gate session (tempo 120, gate at beat 1) replays to
+**byte-identical golden audio** and an identical fired stream, with the
+sample-accurate gate at 24 000 intact; JSON string and file round-trips
+replay identically; a pause/resume + loop session is recorded faithfully
+(master advances only while playing — 32 000 samples; the playhead wraps to
+8 000; the trigger fires exactly once); two identical sessions produce
+byte-equal logs; and replay is a pure function of the log. Unit suites in
+`record.rs` (2 tests). `engine` and `config` stay in lockstep at 3.29.0.
+
+**Unblocks (Horizon).** v3.30 **latency and alignment** (a golden replay
+is the perfect oracle for latency-compensation verification); render
+caching and parallel offline rendering (the log is the render key —
+identical logs could reuse cached captures); and recording the remaining
+render inputs the guide lists (audio inputs, graph generations, listener
+motion) as extended `RecordedCommand` payloads.
+

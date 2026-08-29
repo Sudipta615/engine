@@ -16,14 +16,16 @@
 //! Graph 2.0 node (`.0` is the `NodeId` under `crate::dsp::graph2`), a
 //! bare trigger, and an opaque host tag.
 
+use serde::{Deserialize, Serialize};
+
 use super::clock::AudioClock;
 
 /// Unique identifier of a scheduled event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct EventId(pub u64);
 
 /// When an event should fire — before [`Timeline::schedule`] resolves it.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum EventTime {
     /// An absolute sample position on the monotonic master timeline.
     Sample(u64),
@@ -33,7 +35,7 @@ pub enum EventTime {
 }
 
 /// What a scheduled event does when it fires.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum EventPayload {
     /// Set a Graph 2.0 node's gain. `node` is the `NodeId.0` value under
     /// `crate::dsp::graph2::NodeId`, kept as a plain number so the timeline
@@ -49,7 +51,7 @@ pub enum EventPayload {
 /// event fires on (already converted from `time`); the scheduler stores and
 /// returns events with `at` filled so a driver can apply a gain step at the
 /// exact in-block index.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ScheduledEvent {
     pub id: EventId,
     /// Absolute master sample on which this event fires.

@@ -2,6 +2,47 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.29.0] — 2026-08-29
+
+Reference rendering and determinism (roadmap v3.29) — Direction 17 made
+concrete: a new [`dsp::aelog`] module records a render session (every
+timeline mutation and block advance) into a versioned, serializable
+`recording.aelog`, and replays it deterministically to reproduce identical
+events and **byte-identical captured audio** — the project's
+**golden-render substrate**. A bug report becomes "replay this log", and a
+regression check becomes "compare the replay against the golden capture".
+
+### Added
+
+- **Aelog format** (`dsp::aelog`) — [`SessionHeader`] (versioned, sample
+  rate, block size, label — deliberately no wall-clock timestamps, so a
+  log is a pure function of its commands), [`RecordedCommand`] (Schedule /
+  SetTempo / SetTimeSignature / SetLoop / SetLoopEnabled / SetTempoRamp /
+  SetState / SetQuantize / Advance), and [`Aelog`] with JSON string and
+  file round-trips (`to_json` / `from_json` / `save_json` / `load_json`)
+  and explicit format-version checks.
+- **Recorder** ([`AelogRecorder`]) — wraps a [`Timeline`] and mirrors its
+  mutation surface, appending a command for every call; the recorder is
+  the only way to touch its timeline, so a session cannot silently drift
+  from its log. Two identical sessions serialize to byte-equal logs.
+- **Replay** ([`replay_events`], [`replay_render`], [`ReplayOutcome`]) —
+  `replay_events` reproduces the identical fired-event stream and end
+  clock state; `replay_render` additionally feeds blocks to a provided
+  Graph 2.0 [`OfflineExecutor`] (applying `SetGain` events sample-
+  accurately, exactly as a live driver would) and returns the captured
+  audio — byte-identical to the recorded session.
+- **CLI** — new `aelog-replay` binary: the guide's `engine replay
+  recording.aelog`. Loads a log, re-executes it, and prints the command /
+  fired-event counts, end transport state, and (with `--verbose`) every
+  command and fired event.
+- **Fidelity suite** — `tests/fidelity/aelog_replay.rs` (6 tests): a
+  recorded gate session replays to byte-identical golden audio and an
+  identical fired stream with the sample-accurate beat-1 gate intact; JSON
+  string and file round-trips replay identically; pause/resume + looping
+  are recorded faithfully (master only advances while playing, the
+  playhead wraps, the trigger fires exactly once); two identical sessions
+  produce byte-equal logs; and replay is a pure function of the log.
+
 ## [3.28.0] — 2026-08-29
 
 Timeline and Scheduler (roadmap v3.28): **make time a first-class render
@@ -200,7 +241,7 @@ scalar absorption coefficient to per-octave-band spectra.
   world is an exact direct path; a freestanding fin diffracts a path;
   solves are deterministic and capped; and `diffract_around_edge` reports
   the correct 1/r distance + delay.
-- `config` and `engine` crates stay in lockstep at 3.28.0.
+- `config` and `engine` crates stay in lockstep at 3.29.0.
 
 ## [3.24.1] — 2026-08-29
 

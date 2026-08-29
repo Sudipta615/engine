@@ -45,6 +45,10 @@ pub mod prelude {
         },
         commands::EngineCommand,
         decode::extract_track_metadata,
+        dsp::aelog::{
+            replay_events, replay_render, Aelog, AelogError, AelogRecorder, RecordedCommand,
+            ReplayError, ReplayOutcome, SessionHeader, AELOG_VERSION,
+        },
         dsp::graph2::{
             ExecutionOrder, Graph2, Graph2Error, NodeCapabilities, NodeDef, NodeId, NodeKind,
             NodeParams, OfflineExecutor, PortId, PortSpec, SignalType, SourceParams, TestSignal,

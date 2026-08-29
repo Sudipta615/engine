@@ -59,10 +59,12 @@ pub struct TimelineRegion {
     pub bpm: f32,
 }
 
+use serde::{Deserialize, Serialize};
+
 /// Beat-grid quantization: `Some(fraction)` snaps a beat to multiples of
 /// `fraction` (1.0 = beats, 0.5 = eighth notes, 0.25 = 16ths, 0.333 = 8th
 /// triplets …). `None` disables snapping.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Quantize {
     pub beat_fraction: f64,
 }
@@ -133,6 +135,10 @@ impl Timeline {
 
     pub fn set_loop(&mut self, start: u64, end: u64) {
         self.clock.set_loop(start, end);
+    }
+
+    pub fn set_loop_enabled(&mut self, enabled: bool) {
+        self.clock.set_loop_enabled(enabled);
     }
 
     pub fn set_state(&mut self, state: TransportState, scratch: u64) {

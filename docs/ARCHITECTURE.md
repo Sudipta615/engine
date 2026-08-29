@@ -75,6 +75,17 @@ src/
 │   └── fingerprint.rs        # Chromaprint/AcoustID (`fingerprint` feature)
 │
 ├── dsp/                      # ── Signal processing ──
+│   ├── aelog/                # Deterministic recording & replay (Phase 27,
+│   │                         #   v3.29): versioned .aelog render sessions —
+│   │                         #   mod.rs (SessionHeader / RecordedCommand /
+│   │                         #   Aelog + JSON string/file round-trips),
+│   │                         #   record.rs (AelogRecorder — logs every
+│   │                         #   timeline mutation), replay.rs
+│   │                         #   (replay_events — identical fired stream;
+│   │                         #   replay_render — byte-identical golden
+│   │                         #   capture against a Graph 2.0 executor).
+│   │                         #   CLI: bin/aelog_replay (engine replay
+│   │                         #   recording.aelog)
 │   ├── pipeline/             # DspPipeline — reference chain; bit-exact
 │   │                         #   oracle for the graph equivalence suite
 │   │                         #   (mod.rs + controls/process/format/tests)

@@ -269,6 +269,29 @@ tl.schedule(EventTime::Beat(1.0), EventPayload::SetGain { node: gain.0, gain: 2.
 Like the acoustic and Graph 2.0 layers, the timeline is control/offline-path
 and heap-happy by design; it adds nothing to any realtime audio thread.
 
+### Aelog — deterministic recording & replay (offline, v3.29.0)
+
+The whole render session can be recorded into a replayable log and
+re-executed to reproduce **byte-identical** output — the golden-render
+substrate for regression tests and bug reports:
+
+```
+AelogRecorder (wraps the Timeline; logs every mutation)
+   │  set_tempo / schedule / set_state / advance_block …
+   ▼
+Aelog { header, commands }  ── recording.aelog (versioned JSON)
+   │  save_json / load_json
+   ▼
+replay_events(log)         → identical fired-event stream + end clock
+replay_render(log, graph)  → byte-identical captured audio (golden render)
+```
+
+Commands are the *cause*, not the effect: replaying applies them in order
+against a fresh timeline, so the outcome is a pure function of the log. The
+`aelog-replay` binary is the guide's `engine replay recording.aelog`.
+Recording and replay are control/offline-path by design; nothing here
+touches a realtime audio thread.
+
 ### Spatial rendering (opt-in, v3.11.0 → v3.19.0)
 
 ```

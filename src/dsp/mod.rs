@@ -1,5 +1,6 @@
 //! Digital Signal Processing module — EQ, limiter, loudness, resampler, and the full pipeline.
 
+pub mod aelog;
 pub mod analyzer;
 pub mod autoeq;
 pub mod biquad;
