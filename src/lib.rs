@@ -51,9 +51,10 @@ pub mod prelude {
             ReplayError, ReplayOutcome, SessionHeader, AELOG_VERSION,
         },
         dsp::graph2::{
-            analyze, compensate, node_latency, ExecutionOrder, Graph2, Graph2Error, LatencyReport,
-            NodeCapabilities, NodeDef, NodeId, NodeKind, NodeParams, OfflineExecutor, PortId,
-            PortSpec, SignalType, SourceParams, TestSignal, ValidationReport,
+            analyze, compensate, node_latency, ExecutionOrder, Graph2, Graph2Error, HrtfSource,
+            LatencyReport, NodeCapabilities, NodeDef, NodeId, NodeKind, NodeParams,
+            OfflineExecutor, PortId, PortSpec, SignalType, SourceParams, TestSignal,
+            ValidationReport, RESAMPLER_DEFAULT_QUALITY,
         },
         dsp::pipeline::{DspPipeline, OutputSampleFormat},
         dsp::timeline::{

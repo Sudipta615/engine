@@ -517,6 +517,12 @@ impl BasicPanner {
                     let dg = obj
                         .distance_model
                         .distance_gain(img.dist, obj.reference_distance);
+                    // v3.47: colour this reflection with its surface's
+                    // spectral low-pass (material spectrum / diffraction
+                    // corner) when the baked path carries one; live-solve
+                    // and flat images pass through uncoloured.
+                    self.room_er
+                        .set_reflection_filter(obj_idx, img_i, img.lowpass_hz);
                     self.solve_pan(ldir.azimuth_rad(), &mut rpairs);
                     for &(spk, g) in rpairs.iter() {
                         if g == 0.0 {
@@ -912,6 +918,87 @@ mod tests {
             "elevated source is quieter at the ring (up={up_pair} flat={flat_pair})"
         );
         assert!(out_up.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn baked_spectral_reflections_smear_an_impulse_vs_flat() {
+        // v3.47 end-to-end: a baked scene whose walls are a damped material
+        // (Fabric) colours each room reflection with a spectral low-pass, so
+        // a single impulse smears into a tail; the same geometry baked with
+        // spectrally flat walls keeps reflections as clean spikes. Measured
+        // by how many output samples in the reflection window clear 8% of
+        // the window's own peak.
+        use super::super::acoustic::bake::{AcousticBaker, BakePolicy};
+        use super::super::acoustic::geometry::AcousticRoom;
+        use super::super::acoustic::material::MaterialKind;
+        use super::super::acoustic::solver::{wall_index, AcousticWorld};
+        use crate::spatial::Wall;
+
+        let listener = Vec3::ZERO;
+        let obj_pos = Vec3::new(1.0, 1.0, 1.5);
+        let bake = |damped: bool| -> BakedScene {
+            let mut room = AcousticRoom::default();
+            let mat = if damped {
+                MaterialKind::Fabric.spectrum()
+            } else {
+                MaterialKind::Concrete.spectrum()
+            };
+            for w in [
+                Wall::MinX,
+                Wall::MinY,
+                Wall::MinZ,
+                Wall::MaxX,
+                Wall::MaxY,
+                Wall::MaxZ,
+            ] {
+                room.walls[wall_index(w)] = mat;
+            }
+            let world = AcousticWorld::new(room, 48_000.0);
+            AcousticBaker::new(world, 0.25).bake_single(
+                obj_pos,
+                listener,
+                48_000.0,
+                BakePolicy::default(),
+            )
+        };
+        let smear = |damped: bool| -> usize {
+            let layout = SpeakerLayout::stereo();
+            let mut p = BasicPanner::new(0.0);
+            p.prepare(&layout, 48_000).unwrap();
+            p.set_baked(Some(bake(damped)));
+            let mut sc = SpatialScene::new(48_000);
+            sc.room.enabled = true;
+            let id = sc.create_audio_object(obj_pos).unwrap();
+            sc.object_mut(object::ObjectId(id.0)).unwrap().room_send = 1.0;
+            sc.object_mut(object::ObjectId(id.0)).unwrap().gain = 1.0;
+
+            let frames = 512usize;
+            let nblocks = 3usize;
+            let mut out = vec![0.0f32; 2 * frames];
+            let mut resp = vec![0.0f32; 2 * frames * nblocks];
+            for b in 0..nblocks {
+                let input = if b == 0 {
+                    let mut v = vec![0.0f32; frames];
+                    v[0] = 1.0;
+                    v
+                } else {
+                    vec![0.0f32; frames]
+                };
+                p.process_block(&sc, &[&input], frames, &mut out).unwrap();
+                resp[b * 2 * frames..(b + 1) * 2 * frames].copy_from_slice(&out[..2 * frames]);
+            }
+            // Reflection window: past the direct onset (frame ~288 here).
+            let win = 300usize * 2;
+            let peak = resp[win..].iter().cloned().fold(0.0f32, f32::max);
+            let thr = peak * 0.08;
+            resp[win..].iter().filter(|&&v| v.abs() > thr).count()
+        };
+        let flat = smear(false);
+        let fabric = smear(true);
+        assert!(
+            fabric > flat + 2,
+            "fabric walls spread reflections (flat {flat} vs fabric {fabric})"
+        );
     }
 
     #[test]

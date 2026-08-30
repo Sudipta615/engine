@@ -28,9 +28,10 @@
 //! ```
 
 use crate::spatial::acoustic::geometry::Wall;
-use crate::spatial::acoustic::material::MaterialSpectrum;
+use crate::spatial::acoustic::material::{surface_lowpass_hz, MaterialSpectrum};
 use crate::spatial::acoustic::path::{AcousticPath, PathKind};
 use crate::spatial::acoustic::solver::{AcousticWorld, MAX_PATHS};
+use crate::spatial::level::AirAbsorption;
 use crate::spatial::math::Vec3;
 use crate::spatial::room::{ListenerImage, MAX_IMAGES};
 
@@ -141,51 +142,112 @@ impl BakedScene {
     /// golden oracles share this function, so a rendered room and its
     /// expected curve always agree.
     pub fn spectral_taps(&self, obj: &BakedObject, ir_len: usize) -> Vec<(i64, Vec<f32>)> {
-        spectral_taps(obj, ir_len)
+        spectral_taps_with(obj, ir_len, self.air_absorption)
     }
 }
 
 /// Free-function form of [`BakedScene::spectral_taps`], usable with a bare
-/// [`BakedObject`] (the executor, tests) without holding a scene.
+/// [`BakedObject`] (the executor, tests) without holding a scene. Uses the
+/// **disabled** air-absorption model, so the result is bit-identical to the
+/// classic per-path kernels until a scene opt-in via
+/// [`BakedScene::set_air_absorption`].
 pub fn spectral_taps(obj: &BakedObject, ir_len: usize) -> Vec<(i64, Vec<f32>)> {
+    spectral_taps_with(obj, ir_len, AirAbsorption::default())
+}
+
+/// Per-path spectral taps threaded with the scene's air-absorption model
+/// (v3.48): each non-direct kernel is additionally shaped by the
+/// distance-dependent HF roll-off `1 / √(1 + (f/f_air)²)` where `f_air =
+/// [`AirAbsorption::cutoff_hz`]`(path.distance)` — so a farther reflection
+/// darkens (loses highs) exactly as the model intends, while staying
+/// equal at DC. With a disabled model this is the classic kernel verbatim.
+pub fn spectral_taps_with(
+    obj: &BakedObject,
+    ir_len: usize,
+    air: AirAbsorption,
+) -> Vec<(i64, Vec<f32>)> {
     let direct_delay = obj.direct().map(|d| d.delay_samples).unwrap_or(0.0);
     obj.paths
         .iter()
         .filter(|p| p.kind != PathKind::Direct)
         .map(|p| {
             let excess = (p.delay_samples - direct_delay).max(0.0).round() as i64;
-            (excess, path_filter_kernel(p, obj.sample_rate, ir_len))
+            (
+                excess,
+                path_filter_kernel_with(p, obj.sample_rate, ir_len, air),
+            )
         })
         .collect()
 }
 
 /// Build the minimum-phase spectral filter kernel for one non-direct path
-/// (see [`BakedScene::spectral_taps`]). A flat path yields a one-tap gain
+/// (see [`BakedScene::spectral_taps`]), using the **disabled** air-absorption
+/// model (bit-exact classic kernels). A flat path yields a one-tap gain
 /// delta.
 pub fn path_filter_kernel(p: &BakedPath, sample_rate: f32, ir_len: usize) -> Vec<f32> {
+    path_filter_kernel_with(p, sample_rate, ir_len, AirAbsorption::default())
+}
+
+/// [`path_filter_kernel`] threaded with the scene's air-absorption model
+/// (v3.48): `air` composes a per-path distance-dependent HF roll-off onto the
+/// kernel's magnitude before the minimum-phase render, so a farther
+/// reflection darkens. A disabled model reproduces `path_filter_kernel`
+/// exactly.
+pub fn path_filter_kernel_with(
+    p: &BakedPath,
+    sample_rate: f32,
+    ir_len: usize,
+    air: AirAbsorption,
+) -> Vec<f32> {
     let nyq = (sample_rate * 0.5).max(1.0);
+    // Air absorption as a per-path HF roll-off from the path's travelled
+    // distance. Disabled ⇒ factor 1 (excludes air entirely, bit-exact); a
+    // corner at/above Nyquist is also skipped so nothing spurious is added.
+    let f_air = if air.enabled {
+        air.cutoff_hz(p.distance, sample_rate)
+    } else {
+        nyq
+    };
+    let air_on = air.enabled && f_air < nyq * 0.999;
+    let air_shape = move |f: f32| -> f32 {
+        if air_on {
+            1.0 / (1.0 + (f / f_air).powi(2)).sqrt()
+        } else {
+            1.0
+        }
+    };
     // A reflection carrying the full per-band material spectrum shapes
     // directly (its collapsed `gain` was derived from the same spectrum —
-    // no double counting).
+    // no double counting), air-composed.
     if p.kind == PathKind::Reflected {
         if let Some(sp) = &p.spectrum {
-            return render_magnitude_shape(&|f| sp.reflectivity_at_hz(f), ir_len, sample_rate);
+            return render_magnitude_shape(
+                &|f| sp.reflectivity_at_hz(f) * air_shape(f),
+                ir_len,
+                sample_rate,
+            );
         }
     }
     // A path collapsed to a corner only (diffraction / transmission / a
     // `SPECTRAL_COLLAPSED` flag): one-pole low-pass at the corner, scaled
-    // by the path broadband gain.
+    // by the path broadband gain, air-composed.
     if p.lowpass_hz.is_finite() && p.lowpass_hz > 1.0 && p.lowpass_hz < nyq * 0.999 {
         let fc = p.lowpass_hz;
         let g = p.gain;
         return render_magnitude_shape(
-            &|f| g / (1.0 + (f / fc).powi(2)).sqrt(),
+            &|f| (g / (1.0 + (f / fc).powi(2)).sqrt()) * air_shape(f),
             ir_len,
             sample_rate,
         );
     }
-    // Truly flat: a pure gain tap.
-    vec![p.gain]
+    // Truly flat: a pure gain tap at DC — with air enabled this becomes a
+    // distance-darkened low-pass; otherwise the exact one-tap delta.
+    if air_on {
+        let g = p.gain;
+        render_magnitude_shape(&|f| g * air_shape(f), ir_len, sample_rate)
+    } else {
+        vec![p.gain]
+    }
 }
 
 /// Synthesize the minimum-phase FIR whose magnitude follows `shape`
@@ -278,6 +340,13 @@ pub struct BakedScene {
     sample_rate: f32,
     /// The bake policy retained for rebuilds.
     policy: BakePolicy,
+    /// Scene-scoped air-absorption model (v3.48). When enabled, `spectral_taps`
+    /// folds a per-path distance-dependent HF roll-off onto every non-direct
+    /// kernel, darkening reflections with travel distance. `#[serde(default)]`:
+    /// older baked-scene logs without the field load with the model disabled
+    /// (bit-exact).
+    #[serde(default)]
+    air_absorption: AirAbsorption,
 }
 
 impl Default for BakedScene {
@@ -295,7 +364,22 @@ impl BakedScene {
             world: None,
             sample_rate: 48_000.0,
             policy: BakePolicy::default(),
+            air_absorption: AirAbsorption::default(),
         }
+    }
+
+    /// Attach the scene-scoped air-absorption model (v3.48). Reflections are
+    /// then rendered (by the `Acoustic` node and any `spectral_taps` consumer)
+    /// with a per-path distance-dependent HF roll-off — farther paths darken.
+    /// The default (disabled) model keeps every kernel bit-identical.
+    pub fn set_air_absorption(&mut self, air: AirAbsorption) -> &mut Self {
+        self.air_absorption = air;
+        self
+    }
+
+    /// The scene's air-absorption model.
+    pub fn air_absorption(&self) -> AirAbsorption {
+        self.air_absorption
     }
 
     fn cell_key(&self, p: Vec3) -> (i32, i32, i32) {
@@ -383,6 +467,13 @@ impl BakedScene {
     /// the live `images_for_object` path for the same geometry. The direct
     /// path is excluded (the renderer renders the direct path through its
     /// normal pair solve). Writes into `out`, returning the count.
+    ///
+    /// **Spectral fork (v3.47):** each tap also carries the surface's
+    /// low-pass corner — from its full per-band material spectrum (via
+    /// `surface_lowpass_hz`) when one is present, else its collapsed
+    /// diffraction/transmission low-pass corner, else ∞ (flat). The realtime
+    /// renderers realise that corner as a one-pole per-image low-pass, the
+    /// same spectral model the offline `Acoustic` node applies exactly.
     pub fn listener_images(
         &self,
         obj: &BakedObject,
@@ -394,11 +485,29 @@ impl BakedScene {
             if count >= out.len() {
                 break;
             }
+            // A surface whose derived corner sits at (or above) Nyquist is
+            // spectrally flat — collapse it to ∞ so the realtime filter stays
+            // a strict passthrough (bit-identical to the pre-v3.47 path);
+            // only genuinely damped surfaces get a real corner.
+            let nyq = obj.sample_rate * 0.5;
+            let corner_for = |hz: f32| {
+                if hz.is_finite() && hz > 1.0 && hz < nyq * 0.999 {
+                    hz
+                } else {
+                    f32::INFINITY
+                }
+            };
+            let lowpass_hz = if let Some(sp) = &p.spectrum {
+                corner_for(surface_lowpass_hz(sp, obj.sample_rate))
+            } else {
+                corner_for(p.lowpass_hz)
+            };
             out[count] = ListenerImage {
                 dir: p.direction,
                 dist: p.distance,
                 coeff: p.gain,
                 delay: (p.delay_samples - direct_delay).max(0.0).round() as u32,
+                lowpass_hz,
             };
             count += 1;
         }
@@ -618,6 +727,41 @@ mod tests {
     }
 
     #[test]
+    fn listener_images_carry_the_surface_lowpass_corner() {
+        // v3.47: the default flat reflective room yields spectrally flat
+        // taps (∞); a Fabric MinX wall yields at least one reflection with a
+        // finite low-pass corner below Nyquist — the data the realtime
+        // renderers realise as a per-image one-pole.
+        let mut scene = BakedScene::new(Vec3::ZERO, DEFAULT_BAKE_CELL_M);
+        scene.world = Some(world());
+        let flat = scene
+            .bake(Vec3::new(1.0, 2.0, 1.5), FS, BakePolicy::default())
+            .clone();
+        let mut imgs = [ListenerImage::ZERO; MAX_IMAGES];
+        let n = scene.listener_images(&flat, &mut imgs);
+        assert!(n >= 1);
+        for img in imgs[..n].iter() {
+            assert!(
+                img.lowpass_hz.is_infinite(),
+                "flat room must yield a flat corner"
+            );
+        }
+
+        let mut froom = AcousticRoom::default();
+        froom.walls[wall_index(crate::spatial::Wall::MinX)] = MaterialKind::Fabric.spectrum();
+        let mut fscene = BakedScene::new(Vec3::ZERO, DEFAULT_BAKE_CELL_M);
+        fscene.world = Some(AcousticWorld::new(froom, FS));
+        let fab = fscene
+            .bake(Vec3::new(1.0, 2.0, 1.5), FS, BakePolicy::default())
+            .clone();
+        let n2 = fscene.listener_images(&fab, &mut imgs);
+        let has_corner = imgs[..n2]
+            .iter()
+            .any(|i| i.lowpass_hz.is_finite() && i.lowpass_hz < FS * 0.5);
+        assert!(has_corner, "fabric wall colours at least one reflection");
+    }
+
+    #[test]
     fn listener_images_use_excess_delay() {
         let mut scene = BakedScene::new(Vec3::ZERO, DEFAULT_BAKE_CELL_M);
         scene.world = Some(world());
@@ -694,6 +838,80 @@ mod tests {
             fp < cp,
             "fabric darkens at least one reflection ({fp} < {cp} expected)"
         );
+    }
+
+    #[test]
+    fn air_absorption_darkens_far_paths_more_than_near() {
+        // v3.48: with the scene's air-absorption model enabled, an otherwise
+        // identical reflection travels farther → a darker (stronger HF
+        // roll-off) spectral kernel, while DC gain is unchanged (air is
+        // transparent at DC).
+        use crate::spatial::level::AirAbsorption;
+        let path = |distance: f32| BakedPath {
+            kind: PathKind::Reflected,
+            direction: Vec3::Y,
+            distance,
+            delay_samples: distance / 343.0 * FS,
+            gain: 0.8,
+            lowpass_hz: f32::INFINITY,
+            interacting: None,
+            spectrum: None,
+        };
+        let air = AirAbsorption {
+            enabled: true,
+            ..Default::default()
+        };
+        let near = path_filter_kernel_with(&path(3.0), FS, ACOUSTIC_IR_LEN, air);
+        let far = path_filter_kernel_with(&path(12.0), FS, ACOUSTIC_IR_LEN, air);
+        // Both are real low-pass kernels now (air turns even a flat path
+        // into a distance-darkened filter).
+        assert!(near.len() > 1 && far.len() > 1);
+        let hf_ratio = |k: &[f32]| -> f32 {
+            let dc: f32 = k.iter().sum();
+            let nyq: f32 = k
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| v * if i % 2 == 0 { 1.0 } else { -1.0 })
+                .sum();
+            (nyq.abs() / dc.abs().max(1e-12)).max(0.0)
+        };
+        assert!(
+            hf_ratio(&far) < hf_ratio(&near) * 0.85,
+            "far path darker (near {} far {})",
+            hf_ratio(&near),
+            hf_ratio(&far)
+        );
+        // Disabled model: the same flat path is the exact one-tap gain delta
+        // (bit-exact classic behavior; free `spectral_taps` is unchanged).
+        let off = path_filter_kernel(&path(12.0), FS, ACOUSTIC_IR_LEN);
+        assert_eq!(off, vec![0.8], "disabled air keeps flat path exact");
+    }
+
+    #[test]
+    fn serialized_scene_round_trips_its_air_model() {
+        use crate::spatial::level::AirAbsorption;
+        let air = AirAbsorption {
+            enabled: true,
+            per_meter: 0.1,
+            base_cutoff_hz: 16_000.0,
+        };
+        let mut scene = BakedScene::new(Vec3::ZERO, DEFAULT_BAKE_CELL_M);
+        scene.set_air_absorption(air);
+        // A baked response so the serialize is non-trivial (paths incl.).
+        scene.world = Some(world());
+        scene.bake(Vec3::new(1.0, 2.0, 1.5), FS, BakePolicy::default());
+        let json = serde_json::to_string(&scene).expect("serialize");
+        let back: BakedScene = serde_json::from_str(&json).expect("deserialize");
+        let a = back.air_absorption();
+        assert!(a.enabled && (a.per_meter - 0.1).abs() < 1e-9);
+        assert!((a.base_cutoff_hz - 16_000.0).abs() < 1e-3);
+        assert_eq!(back.len(), 1, "cells round-trip");
+        // Legacy logs lacking the field load with the model disabled.
+        let legacy = serde_json::from_str::<BakedScene>(
+            &serde_json::to_string(&BakedScene::new(Vec3::ZERO, DEFAULT_BAKE_CELL_M)).unwrap(),
+        )
+        .unwrap();
+        assert!(!legacy.air_absorption().enabled, "old scene stays flat");
     }
 
     #[test]

@@ -234,3 +234,72 @@ fn replay_is_a_pure_function_of_the_log() {
     );
     assert!(a.timeline.pending() == b.timeline.pending());
 }
+
+#[test]
+fn cli_cache_flag_reports_miss_then_hit_and_skips_re_rendering() {
+    use std::process::Command;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "aelog-cli-cache-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // A full recorded session + a matching graph, both on disk.
+    let (log, _fired, _cap, g, _order, _sink) = record_gate_session();
+    let log_path = dir.join("recording.aelog");
+    log.save_json(&log_path).unwrap();
+    let graph_path = dir.join("graph.json");
+    std::fs::write(&graph_path, serde_json::to_vec(&g).unwrap()).unwrap();
+    let cache_dir = dir.join("cache");
+
+    let bin = env!("CARGO_BIN_EXE_aelog_replay");
+    let run = |expect: &str| -> String {
+        let out = Command::new(bin)
+            .arg(&log_path)
+            .arg("--cache")
+            .arg("--graph")
+            .arg(&graph_path)
+            .arg("--cache-dir")
+            .arg(&cache_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "CLI failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            stdout.contains("cache: ")
+                && stdout.contains(expect)
+                && stdout.contains(&format!("format v{}", log.header.format_version)),
+            "expected {expect:?} in:\n{stdout}"
+        );
+        stdout
+    };
+
+    // First run renders and stores (a content-addressed file appears); the
+    // second run finds it and splices, so it reports a HIT rather than
+    // re-rendering.
+    let miss = run("cache: MISS rendered & stored");
+    let hit = run("cache: HIT  reused golden render"); // aligned: HIT gets two spaces
+    assert_ne!(miss, hit, "the hit/miss report flips between runs");
+
+    // The stored capture lives under the deterministic content address, and
+    // the capture actually holds audio (not silence).
+    let address = engine::prelude::content_address(&log, &g, engine::prelude::NodeId(_sink.0));
+    assert!(
+        cache_dir.join(format!("{address}.json")).exists(),
+        "golden capture stored under its content address"
+    );
+    assert!(
+        miss.contains(&format!("({} samples", _cap.len())),
+        "stored capture is the golden render's size"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

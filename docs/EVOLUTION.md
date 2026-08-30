@@ -2026,3 +2026,241 @@ position, a `Delay`/`Convolution` depth, HRTF pan) from curves;
 per-node automation gains on a Mix; and folding sampled automation into
 the realtime `dsp::graph` hot path.
 
+## Phase 40 — Partitioned-FFT convolution for long IRs (v3.44.0) — **Implemented**
+
+**Status: done (v3.44.0).** Long-kernel `Convolution` nodes stop doing the
+exact O(N·M) direct convolution and render through the **realtime
+partitioned FFT engine**, so genuinely long impulse responses render fast
+offline instead of blowing up quadratically.
+
+**Rooting in the realtime engine.** [`OfflineExecutor`] now drives
+[`dsp::convolution::ConvolutionEngine`] (the production UP-OLA hot-path
+ehgine) for kernels at/above [`CONVOLUTION_FFT_THRESHOLD`] (512 taps):
+the IR is partitioned into 512-frame spectra and each executor block is
+pushed sample-wise through `engine.process`, with new per-node
+[`FftConvState`] wrapping the engine. The win is asymptotic — O(N·M)
+direct vs O(P·2B log 2B) partitioned — while reusing one engine across
+graph and pipeline so both branches agree. Kernels under the threshold keep the
+exact byte-equal direct path (there partitioned FFT is both slower and its
+single-partition latency already exceeds the front delay the node must
+present), and a kernel whose IR won't load falls back to direct, never
+dropping a render.
+
+**Timing is preserved bit-for-bit at the contract level.** A partitioned
+overlap-add convolver pays a partitioning latency the direct path doesn't,
+so the node reconciles them: the engine's measured UP-OLA latency is one
+partition minus one sample (feeding `x[k]` returns `(x*h)[k - (B - 1)]`, the
+call that fills a block also drains its first output), and the executor
+front-pads `kernel.len() - B + 1` leading zeros so the **reported and
+actual contract is unchanged**: `output[k] = (x * h)[k - kernel.len()]`,
+and graph-wide latency/compensation still aligns convolution branches by
+the full kernel length. Delay and convolution are both LTI, so padding
+*before* emission is sample-exact; the wrapped engine is built once per
+node and kept across blocks so the overlap rest stays rung.
+
+**Acceptance (spec-first).** `exec.rs` now proves (1) a 600-tap identity
+IR aligns to `kernel.len()` with no drift over 20 000+ samples and
+routed to the engine (not the direct map); (2) a non-identity 600-tap IR
+against a single impulse reproduces the exact IR contour at the reported
+offset to within FFT float error, with the tail carried seamlessly across
+partitions; and (3) an **8000-tap** IR (16 partitions, block 256 < engine
+partition 512) stays exact over 230 blocks. All pre-existing short-kernel
+exact tests (3-, 10-, 300-tap) are untouched and still byte-exact.
+`engine` and `config` stay in lockstep at 3.44.0.
+
+**Unblocks (Horizon).** route the `HRTF` node through the same engine
+(dropping its remaining direct convolution); fold a f64 precision toggle
+for sample-critical long convolutions; and push the wrapped-engine pattern
+into the realtime `dsp::graph` convolver node so graph and pipeline share
+exactly the same partitioned implementation.
+
+## Phase 41 — Resampler node for the latency pass (v3.45.0) — **Implemented**
+
+**Status: done (v3.45.0).** The last hook the v3.30 latency pass named —
+the **resampler node reporting its own taps** (Phase 32/35 horizon) — is
+now closed: a `Resampler` node plugs into `node_latency` and
+`compensate` exactly like `Delay` / `Convolution` / `HRTF`, completing the
+pass's four tap-reporting primitives.
+
+**Node.** [`Graph2::add_resampler`] / `add_resampler_with_quality` build a
+mono-in/mono-out sample-rate-conversion node carrying
+[`NodeParams::Resampler { ratio, quality }`]: `node_latency` returns the
+filter half-span `quality` (default [`RESAMPLER_DEFAULT_QUALITY`] = 32),
+`capabilities().taps` is true, and `compensate` splices a `Delay(quality)`
+on the opposing branch of a merge — the resampler branch is late by
+exactly its reported taps, like a convolver branch.
+
+**Rendering.** `OfflineExecutor::run_resampler` resamples the input with a
+bandlimited **Hann-windowed-sinc** interpolator. The fixed-frame offline
+executor resamples onto its own frame grid, so `ratio ≥ 1` (output frames
+per input frame) is a rate/pitch remap: per-node `ResamplerState` keeps a
+raw input-history ring (trimmed to the interpolation window — tight at
+ratio 1, growing with the render at higher ratios, which is fine offline)
+and a fractional `subpos`, `windowed_sinc` estimates `x[p]` from its causal
+neighbours with window renormalisation, and a `quality`-zero pipe carries
+the **reported taps as real delay** — so a resampler branch is aligned
+exactly like a `Delay(quality)` and the reported `quality` and rendered
+octave are consistent.
+
+**Acceptance (spec-first).** `exec.rs` proves ratio-1 is near-identity
+(`out[k] ≈ x[k - quality]` with the leading `quality` zeros, and
+`node_latency == quality`); ratio-2 samples the source at `(k - quality)/2`
+across 100 blocks (subpos advances 1/2 per output, no drift); and
+`latency.rs` proves the node reports `48` taps, `analyze` propagates 48 to
+a merge point, and a `src → split → {resampler(2.0,48), gain} → mix` graph
+compensates with exactly one `Delay(48)` on the dry leg, ids preserved.
+`engine` and `config` stay in lockstep at 3.45.0.
+
+**Unblocks (Horizon).** a true length-changing SRC (resampling a branch to
+a different sample rate and splicing it back) needs variable-length node
+planes — the multi-plane / rate-aware bus noted in earlier horizons — and
+lookahead nodes matching the lat/lookahead path.
+
+## Phase 42 — Measured HRTF datasets on binaural nodes (v3.46.0) — **Implemented**
+
+**Status: done (v3.46.0).** Graph-based binaural branches stop relying on
+hand-authored filters: the `HRTF` node can render the **real measured
+per-ear head-related impulse responses** from a `HrtfDataset` — the same
+corpus the production `BinauralRenderer` consumes — now routable in the
+Graph 2.0 topology.
+
+**Source seam.** [`NodeParams::HRTF`] gains a `source` field:
+[`HrtfSource::Inline`] keeps the classic `left`/`right` tabs (backward
+compatible, reported taps = `max(len)`); [`HrtfSource::Dataset {
+azimuth_deg, elevation_deg, taps }`] names a direction in the executor's
+attached dataset. [`Graph2::add_hrtf_dataset`] / `add_hrtf_dataset_with_taps`
+build those nodes (default [`MAX_HRTF_TAPS`] = 128), and
+[`OfflineExecutor::set_hrtf_dataset`] attaches the corpus — mirroring how a
+`BakedScene` is attached and a dataset is referenced by direction rather
+than embedded, keeping graphs JSON-small.
+
+**Rendering.** `OfflineExecutor::run_hrtf` resolves the per-ear IRs with
+[`HrtfDataset::bilinear_interpolate`] at the node's azimuth/elevation
+(written into `taps`-sized per-ear buffers, the same interpolation the
+realtime renderer uses), then runs them through the identical per-ear
+streaming pipeline — both ears delayed together, so the measured pair
+stays mutually aligned, carrying the real interaural-timing (ITD) and
+head-shadow spectral cues.
+
+**Latency is honest.** The node reports `taps` to the latency pass
+(`node_latency`, capabilities, `compensate` splices `Delay(taps)` on the
+opposing leg), and the executor pads/truncates the measured IRs to exactly
+that length — so a measured binaural branch carrying real HRIRs renders and
+compensates *exactly* like one of the classic tap-reporting primitives. A
+dataset node with no dataset attached passes through (like an unbaked
+`Acoustic`).
+
+**Acceptance (spec-first).** `hrtf_dataset_renders_measured_per_ear_irs`
+bakes a synthetic corpus, attaches it, and renders a source at az 90°: the
+right (ipsilateral) ear's IR peak lands at the reported `taps` offset while
+the left (contralateral) ear sits a further ~31 samples (the Woodworth
+ITD *from the dataset*), proving real measured timing; `node_latency ==
+taps`. `hrtf_dataset_reports_its_taps_and_compensates_like_delay` proves a
+`src → split → {hrtf_dataset(90°,0°,64), gain} → mix` graph reports 64,
+propagates 64 to the merge, and compensates with one `Delay(64)` on the
+dry leg, ids preserved. Existing inline HRTF/conv tests are byte-identical.
+`engine` and `config` stay in lockstep at 3.46.0.
+
+**Unblocks (Horizon).** attach named/multi datasets for per-listener
+head-related branches; cache interpolated per-node IRs instead of
+re-reading each block; and mirror the `HrtfSource` seam in the realtime
+`dsp::graph` binaural path so graph and pipeline draw from one corpus.
+
+## Phase 43 — Spectral realtime room reflections (v3.47.0) — **Implemented**
+
+**Status: done (v3.47.0).** The per-path spectral model the offline `Acoustic`
+node renders exactly is forked into the **production hot path**. Until now the
+realtime room renderers (`BasicPanner`, `VbapRenderer`, `BinauralRenderer`)
+rendered a baked room's reflections as delayed taps scaled by a **broadband**
+`coeff` — the per-band material spectra and diffraction corners the bake
+carries were dropped at the render seam. Now each reflected image carries a
+**low-pass corner**, realised as a realtime one-pole, so a curtain-darkened or
+diffracted reflection genuinely loses its highs instead of merely being scaled.
+
+**The seam.** [`ListenerImage`] gains `lowpass_hz` (∞ = spectrally flat):
+- `EarlyReflections::images_for_object` (the live scalar-`Room` solve) fills
+  ∞, so the analytic path stays bit-identical — no spectral data there, no
+  change.
+- `BakedScene::listener_images` derives the corner per reflection — from the
+  path's full per-band [`MaterialSpectrum`] via `surface_lowpass_hz` when one
+  is present, else its collapsed diffraction/transmission corner. Near-Nyquist
+  corners are collapsed back to ∞, so a spectrally flat material remains a
+  strict passthrough (bit-identical) rather than spuriously activating a
+  Nyquist filter.
+
+**The realisation.** [`EarlyReflections`] adds per-(object, image) one-pole
+low-pass state, entirely preallocated at `prepare` and lock-free:
+- `set_reflection_filter(obj, img, corner)` — block-rate setup that refines a
+  smoothed log-corner and refreshes the biquad coefficients (the same
+  coercion/smoothing pattern as `OcclusionState`).
+- The speaker-tap path (`object_frame`) runs each delayed ring read through
+  its image's filter when active; the binaural fractional-delay path goes
+  through `filter_reflection`. Both are strict passthroughs when no corner is
+  set. Reflection level is unchanged — `coeff`/`gain` still applies; the
+  low-pass is the spectral roll-off "from the corner".
+
+**Realtime discipline.** `ref_cut`/`ref_cut_log`/`ref_active`/
+`ref_state`/`ref_coeffs` are flat preallocations; the per-sample cost is one
+guarded biquad `process` when an image is coloured. Verified allocation-free
+by `tests/fidelity/realtime_allocation.rs` (room + binaural + vbap + spatial
+node probes all pass).
+
+**Acceptance (spec-first).** `filter_reflection_colours_binaural_impulse_reads`
+and `spectral_reflection_filter_colours_an_impulse_tap` (room.rs) prove the
+flat path stays a clean single sample while a 500 Hz corner smears an impulse
+into a decaying tail. `listener_images_carry_the_surface_lowpass_corner`
+(bake.rs) proves the default flat room yields ∞ taps and a Fabric wall yields a
+real finite corner. `baked_spectral_reflections_smear_an_impulse_vs_flat`
+(panner.rs) is end-to-end: a Fabric-walled baked room spreads an impulse's
+reflections over many more output samples than the same geometry baked with
+flat walls. 220 spatial lib tests + 792 lib tests pass; fmt + clippy clean;
+`engine`/`config` both at 3.47.0.
+
+**Unblocks (Horizon).** carrying the corner for the late field too; a
+multi-pole cascade for steeper material slopes; folding the same corner-driven
+colouring into the graph-2.0 `Acoustic` node's pass; and exposing per-wall
+materials on the live scalar-`Room` so *unbaked* scenes also colour
+(goes beyond the current single-absorption model).
+## Phase 44 — Distance air absorption on spectral kernels (v3.48.0) — **Implemented**
+
+**Status: done (v3.48.0).** The acoustic bake always captured each path's
+travel distance, but the spectral kernels the offline `Acoustic` node renders
+never used it — a far reflection was coloured by its material alone, not
+darkened/attenuated by the air it travelled through. Now the bake carries a
+scene-scoped [`AirAbsorption`] model and composes a **per-path distance roll-
+off** onto every non-direct kernel.
+
+**The model.** [`BakedScene`] gains `air_absorption` (serialized with
+`#[serde(default)]`; `[BakedScene::set_air_absorption]` attaches it).
+[`spectral_taps_with`] / `path_filter_kernel_with` compose `1/√(1+(f/f_air)²)`
+with `f_air = AirAbsorption::cutoff_hz(path.distance)`, so the HF roll-off
+scales with how far the path travelled. It is transparent at DC, so a distant
+reflection keeps its level where it still has bass while genuinely losing its
+highs. The offline `Acoustic` node reads the attached scene's model
+(`run_acoustic`), and a phase-local `AcousticBaker`/scene thus renders a room
+whose reflections darken with distance.
+
+**Disabled-exact by default.** With the default (disabled) model, `spectral_taps`
+and `path_filter_kernel` reproduce the classic kernels exactly — every golden
+render and graph node outcome is bit-identical to v3.47; older baked-scene
+logs (no air field) load with air off. `path_filter_kernel`/`spectral_taps`
+keep their exact public signatures; the `_with` variants are the additive
+threading seam.
+
+**Acceptance (spec-first).** `air_absorption_darkens_far_paths_more_than_near`
+(bake.rs) proves an identical reflection travels 3 m vs 12 m under air: both
+become real low-pass kernels, DC gain stays `p.gain`, and the far kernel's
+HF:DC ratio is strictly lower; a disabled model keeps the flat path the exact
+`[p.gain]` tap. `serialized_scene_round_trips_its_air_model` bakes + round-trips
+a scene through JSON preserving the model, and confirms a legacy scene (field
+absent) stays disabled. `acoustic_node_honours_the_scene_air_absorption_model`
+(exec.rs) renders the same flat-room bake through the `Acoustic` node twice
+(air off/on) and asserts the direct path is bit-identical while the enabled
+scene spreads the single-tap reflections into multi-frame tails. acoustic
+fidelity suites (graph/bake/world/scene) all green; 795 lib tests; fmt +
+clippy clean; `engine`/`config` both at 3.48.0.
+
+**Unblocks (Horizon).** folding per-path distance roll-off into the realtime
+reflection low-pass corner so the production path and the offline node agree on
+distance colour; a frequency-dependent attenuation model richer than the
+one-pole; and distance roll-off for the late field.

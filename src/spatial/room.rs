@@ -44,6 +44,7 @@
 
 use super::math::Vec3;
 use crate::buffer::MAX_AUDIO_BLOCK_FRAMES;
+use crate::dsp::biquad::{BiquadCoeffsF32, BiquadStateF32};
 use crate::spatial::object::MAX_SPATIAL_OBJECTS;
 
 /// Ceiling on distinct image sources per object (an order-2 box yields 24).
@@ -56,6 +57,9 @@ pub const MAX_ROOM_DELAY_SAMPLES: usize = 8192;
 
 /// Per-object reflection-tap ceiling (`MAX_IMAGES` images × 4 pan writes).
 const MAX_TAPS_PER_OBJECT: usize = MAX_IMAGES * 4;
+
+/// Flat count of per-(object, image) reflection low-pass filters.
+const MAX_REFLECTION_FILTERS: usize = MAX_SPATIAL_OBJECTS * MAX_IMAGES;
 
 /// The room (spec §49): an axis-aligned box in world space.
 ///
@@ -191,8 +195,9 @@ pub fn image_sources(room: &Room, source: Vec3, out: &mut [ReflectionImage; MAX_
 }
 
 /// A listener-relative image source ready for the renderer: direction
-/// (world space, from the listener), distance, reflection coefficient, and
-/// the excess-path delay in samples (clamped to the ring).
+/// (world space, from the listener), distance, reflection coefficient,
+/// the excess-path delay in samples (clamped to the ring), and the
+/// reflection's low-pass corner in Hz (v3.47).
 #[derive(Debug, Clone, Copy)]
 pub struct ListenerImage {
     /// Unit direction from the listener to the image (world space).
@@ -203,6 +208,13 @@ pub struct ListenerImage {
     pub coeff: f32,
     /// Relative delay in samples: `(dist − direct)/c · fs`, clamped.
     pub delay: u32,
+    /// Spectral low-pass corner imparted by the surface cascade (Hz).
+    /// `f32::INFINITY` = spectrally flat (no filtering). A material's
+    /// per-band spectrum or a diffraction/transmission corner is collapsed
+    /// to this corner so the realtime renderers colour the reflection the
+    /// way the offline [`crate::spatial::acoustic::bake`] pipeline does,
+    /// without carrying the full FIR on the audio thread.
+    pub lowpass_hz: f32,
 }
 
 impl ListenerImage {
@@ -211,6 +223,7 @@ impl ListenerImage {
         dist: 0.0,
         coeff: 0.0,
         delay: 0,
+        lowpass_hz: f32::INFINITY,
     };
 }
 
@@ -231,6 +244,26 @@ pub struct EarlyReflections {
     /// Per-object active tap lists `(image, delay, speaker)` packed.
     taps: [[(u16, u16, u16); MAX_TAPS_PER_OBJECT]; MAX_SPATIAL_OBJECTS],
     tap_len: [u16; MAX_SPATIAL_OBJECTS],
+
+    // v3.47: per-(object, image) reflection spectral low-pass. A material's
+    // per-band spectrum (or a diffraction corner) collapses to a corner here
+    // so a reflection's delayed ring read is coloured by a one-pole low-
+    // pass — the realtime IIR realization of the same spectral model the
+    // offline `Acoustic` node renders exactly with a minimum-phase FIR.
+    // When no corner is set (`lowpass_hz = ∞`) the filter is a strict
+    // passthrough — the live-solve path, and therefore every pre-v3.47
+    // outcome, is bit-identical.
+    /// Target low-pass corner (Hz) per (object, image); ∞ = flat.
+    ref_cut: Vec<f32>,
+    /// Smoothed log-corner (`0.0` = uninitialised first block).
+    ref_cut_log: Vec<f32>,
+    /// Whether the (object, image) filter is active this block.
+    ref_active: Vec<bool>,
+    /// Per-(object, image) one-pole biquad filter states.
+    ref_state: Vec<BiquadStateF32>,
+    /// Current block's per-(object, image) low-pass coefficients.
+    ref_coeffs: Vec<BiquadCoeffsF32>,
+
     /// Room-send accumulator (one sample per frame of the block).
     send: Vec<f32>,
     smooth: f32,
@@ -254,6 +287,11 @@ impl EarlyReflections {
             speaker_count: 0,
             taps: [[(0, 0, 0); MAX_TAPS_PER_OBJECT]; MAX_SPATIAL_OBJECTS],
             tap_len: [0; MAX_SPATIAL_OBJECTS],
+            ref_cut: vec![f32::INFINITY; MAX_REFLECTION_FILTERS],
+            ref_cut_log: vec![0.0; MAX_REFLECTION_FILTERS],
+            ref_active: vec![false; MAX_REFLECTION_FILTERS],
+            ref_state: vec![BiquadStateF32::default(); MAX_REFLECTION_FILTERS],
+            ref_coeffs: vec![BiquadCoeffsF32::default(); MAX_REFLECTION_FILTERS],
             send: vec![0.0; MAX_AUDIO_BLOCK_FRAMES],
             smooth: 1.0,
             sample_rate: 48_000.0,
@@ -270,6 +308,11 @@ impl EarlyReflections {
         self.ring_len = MAX_ROOM_DELAY_SAMPLES;
         self.ring = vec![0.0; MAX_SPATIAL_OBJECTS * self.ring_len];
         self.rsm = vec![0.0; MAX_SPATIAL_OBJECTS * MAX_IMAGES * self.speaker_count];
+        self.ref_cut.fill(f32::INFINITY);
+        self.ref_cut_log.fill(0.0);
+        self.ref_active.fill(false);
+        self.ref_state.fill(BiquadStateF32::default());
+        self.ref_coeffs.fill(BiquadCoeffsF32::default());
         self.send.fill(0.0);
         self.block_write = 0;
         self.prepared = true;
@@ -308,6 +351,10 @@ impl EarlyReflections {
                 dist,
                 coeff: r.coeff,
                 delay: rel.min(max_delay),
+                // The live scalar `Room` carries no per-wall spectral data,
+                // so live-solve reflections are spectrally flat (v3.47). The
+                // baked path supplies a corner via its per-band spectra.
+                lowpass_hz: f32::INFINITY,
             };
             count += 1;
         }
@@ -317,6 +364,47 @@ impl EarlyReflections {
     /// Zero the tap list for one object (start of its block work).
     pub fn begin_object(&mut self, obj_slot: usize) {
         self.tap_len[obj_slot] = 0;
+    }
+
+    /// Set one (object, image) reflection's spectral low-pass corner (Hz) at
+    /// block rate and refresh its one-pole coefficients. `∞` / a non-finite
+    /// corner disables the filter and resets its state to a strict
+    /// passthrough, so the live scalar-`Room` solve (which never supplies a
+    /// corner) stays bit-identical. The corner is one-pole smoothed across
+    /// blocks against zipper; the first block snaps to target.
+    pub fn set_reflection_filter(&mut self, obj_slot: usize, img: usize, lowpass_hz: f32) {
+        if obj_slot >= MAX_SPATIAL_OBJECTS || img >= MAX_IMAGES {
+            return;
+        }
+        let idx = obj_slot * MAX_IMAGES + img;
+        self.ref_cut[idx] = lowpass_hz;
+        let active = lowpass_hz.is_finite() && lowpass_hz > 1.0;
+        self.ref_active[idx] = active;
+        if !active {
+            self.ref_state[idx] = BiquadStateF32::default();
+            return;
+        }
+        let nyq = (self.sample_rate * 0.5).max(20.0);
+        let target = lowpass_hz.clamp(20.0, nyq).ln();
+        if self.ref_cut_log[idx] <= 0.0 {
+            self.ref_cut_log[idx] = target;
+        } else if self.smooth < 1.0 {
+            self.ref_cut_log[idx] += self.smooth * (target - self.ref_cut_log[idx]);
+        }
+        let cutoff = self.ref_cut_log[idx].exp();
+        self.ref_coeffs[idx] = BiquadCoeffsF32::lowpass(self.sample_rate, cutoff, 0.707);
+    }
+
+    /// Filter one delayed reflection sample through the (object, image)
+    /// low-pass (binaural mode, which reads the ring directly rather than
+    /// through `object_frame`). Strict passthrough when no corner is set.
+    pub fn filter_reflection(&mut self, obj_slot: usize, img: usize, sample: f32) -> f32 {
+        let idx = obj_slot * MAX_IMAGES + img;
+        if self.ref_active[idx] {
+            self.ref_state[idx].process(sample, &self.ref_coeffs[idx])
+        } else {
+            sample
+        }
     }
 
     /// Smooth one (object, image, speaker) tap gain toward `target` and
@@ -375,10 +463,17 @@ impl EarlyReflections {
         for t in taps.iter().take(len) {
             let (img, delay, spk) = (t.0 as usize, t.1 as usize, t.2 as usize);
             let r = (w + rl - delay) % rl;
+            let mut x = self.ring[row + r];
+            // v3.47: colour the reflection with its per-image spectral
+            // low-pass when a corner is set; otherwise strict passthrough.
+            let fidx = obj_slot * MAX_IMAGES + img;
+            if self.ref_active[fidx] {
+                x = self.ref_state[fidx].process(x, &self.ref_coeffs[fidx]);
+            }
             let gain = self.rsm[obj_slot * (MAX_IMAGES * n_spk) + img * n_spk + spk]
                 * out_trim.get(spk).copied().unwrap_or(0.0);
             if gain != 0.0 {
-                out[frame * n_spk + spk] += self.ring[row + r] * gain;
+                out[frame * n_spk + spk] += x * gain;
             }
         }
         if room_send_gain != 0.0 {
@@ -726,6 +821,104 @@ mod tests {
         assert!(out[279 * 6 + 4].abs() < 1e-6);
         // The direct impulse (send) is not panned by the engine itself.
         assert!(out[4].abs() < 1e-6);
+    }
+
+    #[test]
+    fn filter_reflection_colours_binaural_impulse_reads() {
+        // The binaural read path calls `filter_reflection` directly on the
+        // (fractionally) delayed ring sample instead of `object_frame`. A
+        // finite corner smears an impulse into a decaying tail; a flat image
+        // stays a clean single sample.
+        let mut er = EarlyReflections::new();
+        er.prepare(2, 48_000, 1.0); // stereo ears, exact
+        er.set_reflection_filter(0, 0, 500.0); // coloured image
+        er.set_reflection_filter(0, 1, f32::INFINITY); // flat image
+        let mut coloured = Vec::new();
+        let mut flat = Vec::new();
+        for f in 0..8usize {
+            // Prune the log helper's borrow — feed each image its own impulse.
+            let x = if f == 0 { 1.0 } else { 0.0 };
+            coloured.push(er.filter_reflection(0, 0, x));
+            flat.push(er.filter_reflection(0, 1, x));
+        }
+        assert_eq!(flat[0], 1.0, "flat passthrough keeps the impulse");
+        assert!(
+            flat[1..].iter().all(|&v| v == 0.0),
+            "flat image stays a clean tap"
+        );
+        assert!(
+            coloured[0] > 0.0 && coloured[0] < 1.0,
+            "coloured peak sagged ({})",
+            coloured[0]
+        );
+        assert!(
+            coloured[1..].iter().any(|&v| v != 0.0),
+            "coloured image rings after the tap"
+        );
+    }
+
+    #[test]
+    fn spectral_reflection_filter_colours_an_impulse_tap() {
+        // The v3.47 fork: a reflected tap with a finite low-pass corner
+        // spreads a single impulse into a decaying tail (the one-pole
+        // realization of the path's material/diffraction spectrum), while a
+        // flat corner stays a clean single-sample tap.
+        let mut er = EarlyReflections::new();
+        er.prepare(6, 48_000, 1.0); // smoothing off → exact
+        let room = Room {
+            enabled: true,
+            width: 12.0,
+            depth: 10.0,
+            height: 3.0,
+            absorption: 0.2,
+            reflection_order: 1,
+            ..Default::default()
+        };
+        let listener = Vec3::new(6.0, 5.0, 1.5);
+        let obj_pos = Vec3::new(1.0, 5.0, 1.5);
+        let mut imgs = [ListenerImage::ZERO; MAX_IMAGES];
+        let n = er.images_for_object(&room, listener, obj_pos, &mut imgs);
+        // The left-wall image is the delay-280 one; the rest are flat.
+        let idx_280 = (0..n).find(|&i| imgs[i].delay == 280).unwrap();
+        er.begin_object(0);
+        for (i, img) in imgs.iter().take(n).enumerate() {
+            let (spk, g) = if i == idx_280 { (4, 0.8) } else { (0, 0.05) };
+            er.add_tap(0, i, spk, img.delay, g);
+        }
+        // Colour only the 280-delay reflection (500 Hz corner); flat rest.
+        er.set_reflection_filter(0, idx_280, 500.0);
+        for i in 0..n {
+            if i != idx_280 {
+                er.set_reflection_filter(0, i, f32::INFINITY);
+            }
+        }
+        let frames = 512usize;
+        let mut out = vec![0.0f32; 6 * frames];
+        let trim = vec![1.0f32; 6];
+        er.begin_block(frames);
+        let mut input = vec![0.0f32; frames];
+        input[0] = 1.0;
+        for (f, &s) in input.iter().enumerate() {
+            er.object_frame(0, s, 1.0, f, 6, &mut out, &trim);
+        }
+        er.end_block(frames);
+        // The flat tap would be a single 0.8 spike at 280. The filtered one
+        // is reduced at 280 and rings into later frames.
+        let peak = out[280 * 6 + 4];
+        assert!(
+            peak > 0.0 && peak < 0.8,
+            "coloured peak sagged (peak {peak})"
+        );
+        let mut tail = 0.0f32;
+        for f in 281..420 {
+            tail += out[f * 6 + 4].abs();
+        }
+        assert!(
+            tail > 0.02,
+            "spectral reflection rings after the tap ({tail})"
+        );
+        // The other reflection (flat, spk 0) is still a clean tap: no spread
+        // on its speaker.        assert!(out[279 * 6].abs() < 1e-6, "flat reflection is unspread");
     }
 
     #[test]

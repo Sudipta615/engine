@@ -2,6 +2,163 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.48.0] — 2026-08-30
+
+### Added
+
+- **Per-path air absorption / distance roll-off on the spectral kernels.**
+  [`BakedScene`] now carries a scene-scoped [`AirAbsorption`] model; when a
+  host enables it, every non-direct spectral kernel the `Acoustic` node
+  renders is additionally shaped by a **per-path, distance-dependent HF
+  roll-off** `1 / √(1 + (f/f_air)²)` where `f_air =
+  [`AirAbsorption::cutoff_hz`]`(path.distance)` — so a farther reflection
+  genuinely darkens with travel distance, exactly as the acoustic bake
+  intends, while staying equal at DC.
+
+  - [`BakedScene::set_air_absorption`] attaches the model (default = the
+    disabled [`AirAbsorption::default`], keeping every kernel — and every
+    golden render — **bit-identical** to v3.47); serialized on the scene with
+    `#[serde(default)]`, so older baked-scene logs load with air off.
+  - New `spectral_taps_with` / `path_filter_kernel_with` thread the model
+    through the kernel builder; `spectral_taps` and `path_filter_kernel`
+    keep their exact signatures (disabled model, unchanged). The `Acoustic`
+    node (offline `run_acoustic`) now reads the attached scene's air model.
+  - With air enabled even a spectrally flat path becomes a distance-darkened
+    low-pass kernel rather than a single-tap delta.
+
+### Changed
+
+- [`AirAbsorption`] derives `Serialize`/`Deserialize` so the baker can embed
+  it verbatim.
+
+
+### Added
+
+- **Realtime room reflections are now spectrally coloured.** The per-path
+  spectral model the offline `Acoustic` node renders exactly (a material's
+  per-band [`MaterialSpectrum`] or a collapsed diffraction/transmission
+  low-pass corner) is forked into the **production hot path**: the baked
+  path responses [the `BasicPanner`, `VbapRenderer` and `BinauralRenderer`
+  place from a [`BakedScene`]] now fall back on a **one-pole low-pass per
+  reflected image** realised from that same corner, so a curtain-darkened
+  or diffracted reflection genuinely loses its highs instead of just being
+  scaled.
+
+  - [`ListenerImage`] gains a `lowpass_hz` field (∞ = spectrally flat). The
+    live scalar-`Room` solve fills ∞ (bit-identical to before);
+    `BakedScene::listener_images` derives the corner per reflection — from
+    the path's full per-band spectrum via `surface_lowpass_hz` when one is
+    present, else its collapsed diffraction corner, with near-Nyquist
+    corners collapsed back to ∞ so flat materials stay strict passthrough.
+  - [`EarlyReflections`] gains per-(object, image) one-pole low-pass state
+    (`set_reflection_filter` block-rate setup, `filter_reflection` for the
+    binaural direct-ring reads) and applies it inside `object_frame`;
+    entirely preallocated at `prepare`, allocation-free and lock-free on the
+    audio thread (verified by the realtime suite). The panner/VBAP tap path
+    and the binaural fractional-delay path both colour their reflections.
+  - Reflection level is unchanged (`coeff`/`gain` still applies) — the
+    low-pass is the spectral roll-off “from the corner”, so a damped
+    wall stays as loud where it reflects bass/deps as before while its
+    treble genuinely rolls off.
+
+### Changed
+
+- `ListenerImage` grew a field (`lowpass_hz`). It is `Copy` and carries
+  only a default-∞ added member; all call sites updated.
+
+
+### Added
+
+- **Graph-based binaural branches now use real measured head-related
+  responses.** [`NodeParams::HRTF`] gains a `source` field:
+  [`HrtfSource::Inline`] keeps the classic hand-authored `left`/`right`
+  tabs (backward compatible; reported taps stay `max(left.len,
+  right.len)`), while new **`HrtfSource::Dataset { azimuth_deg,
+  elevation_deg, taps }`** reads the executor's attached
+  [`HrtfDataset`](crate::spatial::hrtf::HrtfDataset) via
+  `OfflineExecutor::set_hrtf_dataset` and renders the **bilinearly-
+  interpolated measured per-ear HRIRs** at that source direction — the
+  same corpus the real `BinauralRenderer` consumes, now routable in the
+  topology. New builders `Graph2::add_hrtf_dataset(name, az, el)` (renders
+  at [`MAX_HRTF_TAPS`] = 128, mirroring the dataset) and
+  `add_hrtf_dataset_with_taps(...)` (pass the dataset's own
+  [`HrtfDataset::taps`](crate::spatial::hrtf::HrtfDataset::taps) to avoid
+  zero-padding).
+- The measured node **reports its taps to the latency pass like a
+  `Delay`**: `node_latency` returns `taps`, its capabilities flag `taps`,
+  and `compensate` aligns a merge by `Delay(taps)` on the opposing branch
+  — so a dataset-driven binaural branch carrying real ITD/head-shadow
+  impulse responses still lines up exactly with the dry leg.
+- **Rendering.** `OfflineExecutor` gets `set_hrtf_dataset(Option)`;
+  `run_hrtf` reads per-ear measured IRs with
+  `HrtfDataset::bilinear_interpolate` (padded/truncated to the reported
+  `taps` so reported and actual delay agree), then renders through the
+  same per-ear streaming pipeline as the inline ears (both ears delayed
+  together, pair aligned). A dataset node with no dataset attached falls
+  back to pass-through, mirroring an unbaked `Acoustic`.
+
+## [3.45.0] — 2026-08-30
+
+### Added
+
+- A **`Resampler` node** closes the last latency hook the v3.30 pass
+  documented (alongside Delay, Convolution and HRTF). New
+  [`Graph2::add_resampler`](`crate::dsp::graph2::Graph2::add_resampler`)
+  / `add_resampler_with_quality` build a mono-in/mono-out sample-rate-
+  conversion node that **reports its own taps to the latency pass**:
+  `node_latency` returns the filter half-span `quality` (default
+  [`RESAMPLER_DEFAULT_QUALITY`] = 32), its capabilities flag `taps`, and
+  [`compensate`](`crate::dsp::graph2::latency::compensate`) aligns parallel
+  branches around it exactly like a `Delay`. The node emits with exactly
+  `quality` samples of pipeline delay — so its *reported* and *actual*
+  taps agree, the same convention as the other tap-reporting nodes.
+- **Rendering.** The executor's `run_resampler` resamples the input by a
+  bandlimited Hann-windowed-sinc interpolator (`ratio ≥ 1` = output frames
+  per input frame). The fixed-frame offline executor resamples onto its own
+  frame grid (a rate/pitch remap), with a per-node input history ring that
+  keeps interpolation continuous across blocks and a leading `quality`
+  zeros to carry the reported taps; ratio 1 reproduces the input to
+  interpolator accuracy, and higher ratios sample it at `1/ratio` the
+  source rate.
+
+## [3.44.0] — 2026-08-30
+
+### Changed
+
+- Long-kernel **`Convolution` nodes render through the realtime partitioned
+  FFT engine** (`dsp::convolution`) instead of the O(N·M) direct path.
+  Kernels ≥ [`CONVOLUTION_FFT_THRESHOLD`] (512 taps) route through the
+  re-aimed [`OfflineExecutor`] partitioned overlap-add engine, so genuinely
+  long impulse responses render fast offline; shorter kernels keep the
+  exact byte-equal direct path (where partitioned FFT would both cost more
+  and already exceed the front delay the node must present). The engine's
+  UP-OLA latency (one partition, 512 frames) is absorbed into an extra
+  front-padded delay so the node's **reported and actual contract is
+  unchanged**: `output[k] = (x * h)[k - kernel.len()]`, and graph-wide
+  latency/compensation still aligns convolution branches by the full kernel
+  length. Falls back to the exact direct path transparently if the engine
+  can't load the IR.
+
+## [3.43.0] — 2026-08-30
+
+### Added
+
+- The **`aelog_replay` CLI** now hooks in the golden-render cache with a
+  `--cache` flag and **hit/miss reporting**, so repeated `engine replay`
+  runs of the same session skip re-rendering. Pass `--graph <graph.json>`
+  (a serialized [`Graph2`] topology; `order` is recompiled on load),
+  optionally `--sink <n>` to choose the capture sink (defaults to the
+  graph's first Sink node), and `--cache-dir <dir>` (defaults to
+  [`AelogCache::default_root`]). The first run reports `cache: MISS
+  rendered & stored (<samples> B) under <sha-256 content address>`;
+  repeated runs report `cache: HIT reused golden render` and splice the
+  stored capture instead of rendering, including the capture size, byte
+  count, and content address for reproducibility. `--verbose` also prints
+  the rendered peak and end master position. Without `--cache` the CLI's
+  original event-replay oracle output is unchanged. End-to-end covered by
+  a new test that drives the compiled binary itself
+  (`tests/fidelity/aelog_replay.rs`).
+
 ## [3.42.0] — 2026-08-30
 
 ### Added

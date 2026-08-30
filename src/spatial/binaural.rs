@@ -633,6 +633,11 @@ impl BinauralRenderer {
                     let ldir = xf.apply_to_direction(imgs[i].dir);
                     let az = ldir.azimuth_rad();
                     ref_az[i] = az;
+                    // v3.47: colour the reflection with its surface's
+                    // spectral low-pass (material spectrum / diffraction
+                    // corner) when the baked path carries one.
+                    self.room_er
+                        .set_reflection_filter(obj_idx, i, imgs[i].lowpass_hz);
                     let dg = obj
                         .distance_model
                         .distance_gain(imgs[i].dist, obj.reference_distance);
@@ -782,7 +787,10 @@ impl BinauralRenderer {
                         let base_delay = imgs[i].delay as f32;
                         for ear in 0..Ear::COUNT {
                             let delay = base_delay + ref_itd[i * Ear::COUNT + ear];
+                            // v3.47: colour the delayed reflection by its
+                            // per-image surface low-pass before the head model.
                             let vd = self.room_er.read_delayed(obj_idx, rcursor, delay);
+                            let vd = self.room_er.filter_reflection(obj_idx, i, vd);
                             let idx = obj_idx * (MAX_IMAGES * Ear::COUNT) + i * Ear::COUNT + ear;
                             let y = self.ref_notch[idx].process(self.ref_shelf[idx].process(vd));
                             let g = self.ref_gain[idx] * self.out_trim[ear];

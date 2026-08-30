@@ -65,14 +65,15 @@ pub use edge::{EdgeDef, EdgeEndpoint, EdgeId};
 pub use exec::OfflineExecutor;
 pub use latency::{analyze, compensate, node_latency, LatencyReport};
 pub use node::{
-    NodeCapabilities, NodeDef, NodeId, NodeKind, NodeParams, PortDirection, PortId, PortSpec,
-    SignalType, SourceParams, TestSignal,
+    HrtfSource, NodeCapabilities, NodeDef, NodeId, NodeKind, NodeParams, PortDirection, PortId,
+    PortSpec, SignalType, SourceParams, TestSignal,
 };
 pub use sort::{topological_order, ExecutionOrder};
 pub use validate::{validate, Graph2Error, ValidationReport};
 
 use std::collections::BTreeMap;
 
+use crate::spatial::hrtf::MAX_HRTF_TAPS;
 use serde::{Deserialize, Serialize};
 
 /// The general-purpose audio graph topology (v3.27).
@@ -92,6 +93,10 @@ pub struct Graph2 {
     #[serde(skip)]
     order: Option<ExecutionOrder>,
 }
+
+/// Default windowed-sinc half-span (the reported taps) for a
+/// [`Graph2::add_resampler`] node.
+pub const RESAMPLER_DEFAULT_QUALITY: u32 = 32;
 
 impl Graph2 {
     pub fn new() -> Self {
@@ -124,6 +129,11 @@ impl Graph2 {
             node::NodeKind::HRTF => (
                 vec![PortSpec::input(SignalType::Audio, 1)],
                 vec![PortSpec::output(SignalType::Audio, 1); 2],
+            ),
+            // Resampler: mono in, mono out at the target rate.
+            node::NodeKind::Resampler => (
+                vec![PortSpec::input(SignalType::Audio, 1)],
+                vec![PortSpec::output(SignalType::Audio, 1)],
             ),
         };
         let id = NodeId(self.next_node);
@@ -316,9 +326,78 @@ impl Graph2 {
     /// per-ear HRIRs `left` / `right` (output ports 0 = left, 1 = right)
     /// and delays both ears by the longer IR, keeping the pair mutually
     /// aligned. Reports `max(left.len(), right.len())` taps to the latency
-    /// pass.
+    /// pass. Equivalent to `add_hrtf_dataset` with a single inlined source.
     pub fn add_hrtf(&mut self, name: &str, left: Vec<f32>, right: Vec<f32>) -> NodeId {
-        self.add_node(name, NodeKind::HRTF, node::NodeParams::HRTF { left, right })
+        self.add_node(
+            name,
+            NodeKind::HRTF,
+            node::NodeParams::HRTF {
+                left,
+                right,
+                source: node::HrtfSource::Inline,
+            },
+        )
+    }
+
+    /// A 1-in / 2-out binaural filter driven by the real binaural renderer's
+    /// **measured** head-related impulse responses: the node reads the
+    /// executor's attached [`HrtfDataset`](crate::spatial::hrtf::HrtfDataset)
+    /// (`OfflineExecutor::set_hrtf_dataset`) — bilinearly interpolated at the
+    /// source `azimuth_deg` / `elevation_deg` — instead of the classic
+    /// hand-authored `add_hrtf` tabs. Renders with (and reports)
+    /// [`MAX_HRTF_TAPS`](crate::spatial::hrtf::MAX_HRTF_TAPS) taps, so a
+    /// graph-based binaural branch uses real head-related responses and
+    /// aligns exactly like a `Delay` of that length.
+    pub fn add_hrtf_dataset(&mut self, name: &str, azimuth_deg: f32, elevation_deg: f32) -> NodeId {
+        self.add_hrtf_dataset_with_taps(name, azimuth_deg, elevation_deg, MAX_HRTF_TAPS as u32)
+    }
+
+    /// [`add_hrtf_dataset`] with an explicit IR length (the node's reported
+    /// taps). Pass the dataset's own [`HrtfDataset::taps`] to render the
+    /// measured HRIRs without zero-padding.
+    pub fn add_hrtf_dataset_with_taps(
+        &mut self,
+        name: &str,
+        azimuth_deg: f32,
+        elevation_deg: f32,
+        taps: u32,
+    ) -> NodeId {
+        self.add_node(
+            name,
+            NodeKind::HRTF,
+            node::NodeParams::HRTF {
+                left: Vec::new(),
+                right: Vec::new(),
+                source: node::HrtfSource::Dataset {
+                    azimuth_deg,
+                    elevation_deg,
+                    taps: taps.clamp(1, MAX_HRTF_TAPS as u32),
+                },
+            },
+        )
+    }
+
+    /// A 1:1 sample-rate-conversion node: resamples the mono input by
+    /// `ratio` (output frames per input frame, ≥ 1) with a bandlimited
+    /// windowed-sinc interpolator, emitting with [`RESAMPLER_DEFAULT_QUALITY`]
+    /// samples of pipeline delay. Reports that quality as its taps to the
+    /// latency pass, so `compensate` aligns parallel branches around it
+    /// exactly like a `Delay`.
+    pub fn add_resampler(&mut self, name: &str, ratio: f32) -> NodeId {
+        self.add_resampler_with_quality(name, ratio, RESAMPLER_DEFAULT_QUALITY)
+    }
+
+    /// [`add_resampler`] with an explicit filter half-span (the node's
+    /// reported taps). Higher `quality` → steeper anti-image roll-off.
+    pub fn add_resampler_with_quality(&mut self, name: &str, ratio: f32, quality: u32) -> NodeId {
+        self.add_node(
+            name,
+            NodeKind::Resampler,
+            node::NodeParams::Resampler {
+                ratio: ratio.max(1.0),
+                quality: quality.max(1),
+            },
+        )
     }
 
     /// A 1-input → `N`-output broadcast. Outputs `0..N` are created in
@@ -530,6 +609,7 @@ fn node_kind_label(kind: NodeKind) -> &'static str {
         NodeKind::Buffer => "buffer",
         NodeKind::Convolution => "conv",
         NodeKind::HRTF => "hrtf",
+        NodeKind::Resampler => "rsmp",
     }
 }
 

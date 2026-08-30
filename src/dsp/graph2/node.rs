@@ -116,6 +116,14 @@ pub enum NodeKind {
     /// HRIRs and emits both ears with the longer IR's pipeline delay, so
     /// the stereo pair stays mutually aligned. Reports `max(len)` taps.
     HRTF,
+    /// 1:1 sample-rate-conversion node that reports its taps: resamples the
+    /// mono input by `ratio` (≥ 1) with a bandlimited (windowed-sinc)
+    /// interpolator and emits with `quality` samples of pipeline delay — so
+    /// its reported `quality` taps and rendered timing agree exactly, the
+    /// same convention as `Delay` / `Convolution`. The fixed-frame offline
+    /// executor resamples onto its own frame grid (a rate/pitch remap), the
+    /// latency-pass hook the v3.30 roadmap names.
+    Resampler,
 }
 
 impl NodeKind {
@@ -158,10 +166,10 @@ impl NodeKind {
                 realtime_safe: true,
                 taps: false,
             },
-            // Convolvers and binaural filters introduce pipeline latency
-            // (kernel / IR length) that `node_latency` reports and
-            // `compensate` aligns — exactly like Delay.
-            NodeKind::Convolution | NodeKind::HRTF => NodeCapabilities {
+            // Convolvers, binaural filters and resamplers introduce pipeline
+            // latency (kernel / IR length / filter taps) that `node_latency`
+            // reports and `compensate` aligns — exactly like Delay.
+            NodeKind::Convolution | NodeKind::HRTF | NodeKind::Resampler => NodeCapabilities {
                 stateful: true,
                 realtime_safe: true,
                 taps: true,
@@ -179,6 +187,29 @@ pub struct NodeCapabilities {
     pub realtime_safe: bool,
     /// The node introduces signal latency that must be compensated.
     pub taps: bool,
+}
+
+/// Where an `HRTF` node draws its per-ear impulse responses from: the node's
+/// own hand-authored `left`/`right` tabs, or the real binaural renderer's
+/// **measured** head-related impulse responses from a [`HrtfDataset`]
+/// (crate::spatial::hrtf::HrtfDataset) attached to the executor
+/// (`OfflineExecutor::set_hrtf_dataset`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum HrtfSource {
+    /// Use the embedded `left` / `right` HRIRs (the classic hand-authored
+    /// form; reported taps = `max(left.len, right.len)`).
+    Inline,
+    /// Use the measured per-ear HRIRs bilinearly interpolated from the
+    /// executor's `HrtfDataset` at the source `azimuth_deg` / `elevation_deg`.
+    /// The IRs are rendered at `taps` (≤`crate::spatial::hrtf::MAX_HRTF_TAPS`),
+    /// which the node reports to the latency pass and delays by — measured
+    /// binaural branches align exactly like a `Delay(taps)`. A node without a
+    /// dataset attached falls back to passthrough (its inline tabs are empty).
+    Dataset {
+        azimuth_deg: f32,
+        elevation_deg: f32,
+        taps: u32,
+    },
 }
 
 /// The parameter payload of a node, discriminated by [`NodeKind`].
@@ -227,8 +258,24 @@ pub enum NodeParams {
     Convolution { kernel: Vec<f32> },
     /// `HRTF` — per-ear head-related impulse responses (mono in, stereo
     /// out). Both ears are delayed by the *longer* IR so the pair stays
-    /// aligned; the node reports that length as its taps.
-    HRTF { left: Vec<f32>, right: Vec<f32> },
+    /// aligned; the node reports that length as its taps. `source` selects
+    /// whether the IRs are the embedded `left`/`right` tabs or the real
+    /// measured responses from an executor [`HrtfDataset`]
+    /// (crate::spatial::hrtf::HrtfDataset) at an azimuth/elevation:
+    /// `HrtfSource::Inline` reproduces the classic hand-authored form;
+    /// `HrtfSource::Dataset` renders measured HRIRs (graph-based binaural
+    /// branches using real head-related responses).
+    HRTF {
+        left: Vec<f32>,
+        right: Vec<f32>,
+        source: HrtfSource,
+    },
+    /// `Resampler` — sample-rate conversion by `ratio` (output frames per
+    /// input frame, ≥ 1) with a bandlimited windowed-sinc interpolator of
+    /// half-span `quality`. The node reports `quality` as its taps and
+    /// emits with exactly that many samples of pipeline delay, so the
+    /// latency pass aligns branches around it like a `Delay`.
+    Resampler { ratio: f32, quality: u32 },
 }
 
 impl NodeParams {
@@ -273,8 +320,20 @@ impl NodeParams {
                 }
             }
             NodeParams::Convolution { kernel } => format!("{} taps", kernel.len()),
-            NodeParams::HRTF { left, right } => {
-                format!("L{} R{}", left.len(), right.len())
+            NodeParams::HRTF {
+                left,
+                right,
+                source,
+            } => match source {
+                HrtfSource::Inline => format!("L{} R{}", left.len(), right.len()),
+                HrtfSource::Dataset {
+                    azimuth_deg,
+                    elevation_deg,
+                    taps,
+                } => format!("dataset az {azimuth_deg:.0}° el {elevation_deg:.0}° {taps} taps"),
+            },
+            NodeParams::Resampler { ratio, quality } => {
+                format!("x{ratio:.2} {quality} taps")
             }
         }
     }

@@ -205,6 +205,17 @@ locks. With no bake attached the renderers are bit-identical to v3.25; each
 baked reflection also keeps its full per-band material spectrum for offline
 frequency-domain renderers.
 
+**Spectral reflections (v3.47.0).** Each `ListenerImage` now also carries a
+`lowpass_hz` corner derived from the path's per-band material spectrum (or
+its collapsed diffraction corner). The realtime renderers realise it as a
+**one-pole low-pass per reflected image** (`EarlyReflections`
+per-(object,image) state, applied in `object_frame` and — for the binaural
+fractional-delay path — through `filter_reflection`), so baked reflections
+are spectrally coloured exactly as the offline `Acoustic` node renders
+(which does the same model with a minimum-phase FIR). Live-solve images
+carry ∞ and stay strict passthrough — bit-identical to v3.46; a spectrally
+flat (near-Nyquist) material collapses to ∞ before the runtime.
+
 ### Graph 2.0 — general-purpose topology (offline, v3.27.0)
 
 Alongside the fixed-chain realtime graph, a new topology model makes the
@@ -385,6 +396,15 @@ Source ──▶ Acoustic{position, scene?}
    (kernels recompile on acoustic_epoch; ring never drops session history)
 ```
 
+#### Distance air absorption on kernels (offline, v3.48.0)
+
+[`BakedScene`] carries an [`AirAbsorption`] model; when enabled, each
+non-direct kernel is composed with a per-path, distance-dependent HF roll-off
+(`1 / √(1 + (f/f_air)²)`, `f_air = AirAbsorption::cutoff_hz(path.distance)`)
+so a farther reflection darkens with travel distance while staying equal at
+DC. Disabled by default → kernels bit-identical to v3.47; older scene logs
+`#[serde(default)]` load with air off.
+
 ### Animated acoustic worlds in aelog (offline, v3.37.0)
 
 A baked-scene **swap** is a recorded command, so an animated world replays
@@ -524,9 +544,17 @@ heavy operations:
 NodeKind::Convolution { kernel }      node_latency = kernel.len()
    out[k] = (x * h)[k - kernel.len()]   (streaming overlap-add pipeline;
    ─────────────────────────────────────  the delay never drifts)
-NodeKind::HRTF { left, right }        node_latency = max(len)
+NodeKind::HRTF { left, right, source } node_latency = max(len)     (Inline)
    mono in ──▶ left ear  (delay = max)  both ears share the pipeline
            └──▶ right ear (delay = max)  delay → the pair stays aligned
+                                             OR (v3.46.0, Dataset source)
+   reads measured per-ear HRIRs from the executor HrtfDataset via
+   bilinear_interpolate(az,el,ear); node_latency = taps, padded to
+   exactly taps → real head-related responses that compensate like Delay
+NodeKind::Resampler { ratio, quality } node_latency = quality
+   mono in ─▶ windowed-sinc resample    out[k] = resamp(x)[k - quality]
+          by ratio on the fixed grid    (reported taps = real delay)
+        (v3.45.0: the last tap hook the v3.30 pass named)
 
   Split ──┬─▶ Convolution(300) ──┐           Split ──┬─▶ Conv(300) ──────┐
           │                      ├─▶ Mix  ──▶      │                     ├─▶ Mix
@@ -540,6 +568,30 @@ long renders stay sample-exact; compensation preserves node ids, so a
 timeline `SetGain` still lands on the compensated graph. Both nodes are
 offline render primitives — the realtime `dsp::convolution` engine stays
 the hot-path partitioned counterpart.
+
+### Partitioned-FFT convolution for long IRs (offline, v3.44.0)
+
+Long kernels now render **fast** through that realtime engine instead of
+the exact O(N·M) direct path, while keeping the timing contract above
+byte-for-byte:
+
+```
+Convolution kernel ≥ 512 taps ──▶ realtime dsp::convolution engine
+    old: y = direct_convolve(x, h)      (exact, O(N·M) — slow on long IRs)
+    new: FftConvState wraps the engine;  (O(P·2B log 2B) partitioned)
+         engine feeds x[k] → returns (x*h)[k - (B - 1)], plus a front
+         padding of N - B + 1 zeros, so out[k] = (x*h)[k - N] — the
+         node_latency = kernel.len() contract and compensation hold
+
+short kernels (< 512) keep the exact direct path (byte-equal); a kernel
+whose IR won't load falls back to direct, never dropping a render.
+```
+
+Because delay and convolution are both LTI, inserting the partition-
+latency padding *before* emission is sample-exact; the per-node engine is
+built once and kept across blocks so partition overlap-add stays rung.
+The engine is the same one the realtime `dsp::graph` uses, so the graph
+2.0 offline executor and the production hot path agree on long IRs.
 
 ### Spatial rendering (opt-in, v3.11.0 → v3.19.0)
 

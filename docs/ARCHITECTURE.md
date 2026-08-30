@@ -120,7 +120,11 @@ src/
 │   │                         #   and format version never split a key and
 │   │                         #   re-labelled sessions reuse the golden
 │   │                         #   render). CLI: bin/aelog_replay (engine
-│   │                         #   replay recording.aelog)
+│   │                         #   replay recording.aelog) gained a --cache
+│   │                         #   flag (v3.43.0): with --graph graph.json it
+│   │                         #   renders through the content-addressed cache
+│   │                         #   and reports cache: HIT/MISS, so repeated
+│   │                         #   runs of the same session skip re-rendering
 │   ├── pipeline/             # DspPipeline — reference chain; bit-exact
 │   │                         #   oracle for the graph equivalence suite
 │   │                         #   (mod.rs + controls/process/format/tests)
@@ -241,7 +245,38 @@ src/
 │   │                         #   per-ear IR (both ears share that pipeline
 │   │                         #   delay); streaming overlap-add pipeline in
 │   │                         #   exec.rs so the delay never drifts — both
-│   │                         #   compensate exactly like Delay. The
+│   │                         #   compensate exactly like Delay. Phase 40
+│   │                         #   (v3.44.0): Convolution kernels ≥ 512 taps
+│   │                         #   render through the realtime
+│   │                         #   dsp::convolution partitioned-FFT engine
+│   │                         #   (FftConvState — fast long IRs), with an
+│   │                         #   extra N−B+1 front delay absorbing the
+│   │                         #   engine's partition latency so the reported
+│   │                         #   kernel.len() offset and compensation hold;
+│   │                         #   short kernels keep the exact direct path.
+│   │                         #   Phase 41 (v3.45.0): NodeKind::Resampler —
+│   │                         #   mono rate-conversion node reporting
+│   │                         #   quality taps (add_resampler /
+│   │                         #   add_resampler_with_quality,
+│   │                         #   RESAMPLER_DEFAULT_QUALITY=32), the last
+│   │                         #   hook the v3.30 latency pass documented:
+│   │                         #   node_latency = quality, capabilities.taps,
+│   │                         #   compensate aligns it like Delay;
+│   │                         #   exec renders a bandlimited windowed-sinc
+│   │                         #   interpolator (ratio ≥ 1 onto the fixed
+│   │                         #   frame grid) with a quality-zero pipe so
+│   │                         #   reported == actual delay. Phase 42
+│   │                         #   (v3.46.0): HRTF nodes get a source seam —
+│   │                         #   HrtfSource::Inline (classic tabs) or
+│   │                         #   Dataset{az,el,taps} reading measured
+│   │                         #   per-ear HRIRs from an executor-attached
+│   │                         #   HrtfDataset (set_hrtf_dataset;
+│   │                         #   add_hrtf_dataset[_with_taps];
+│   │                         #   bilinear_interpolate in run_hrtf,
+│   │                         #   padded to reported taps) so graph
+│   │                         #   binaural branches carry real
+│   │                         #   head-related responses and compensate
+│   │                         #   like Delay(taps). The
 │   │                         #   topology, not an authored chain, defines
 │   │                         #   the signal flow — realtime dsp::graph is
 │   │                         #   untouched
@@ -332,8 +367,10 @@ src/
 │   │                         #   order + RT60), image-source enumeration,
 │   │                         #   EarlyReflections (per-object delay rings +
 │   │                         #   tap smoothing + the binaural ring
-│   │                         #   primitives), RoomLateField (Schroeder
-│   │                         #   tail encoding into the ambisonic bus)
+│   │                         #   primitives + v3.47 per-(object,image)
+│   │                         #   spectral reflection low-pass), RoomLateField
+│   │                         #   (Schroeder tail encoding into the
+│   │                         #   ambisonic bus)
 │   ├── hrtf.rs               # Binaural head model: Woodworth ITD (reflective
 │   │                         #   fold — correct for 0–360° azimuths),
 │   │                         #   Duda-Martens head-shadow shelf (α = 1.05 +

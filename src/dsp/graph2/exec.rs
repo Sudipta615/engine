@@ -16,13 +16,15 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use super::edge::{EdgeDef, EdgeId};
-use super::node::{NodeDef, NodeId, NodeKind, NodeParams, PortId, TestSignal};
+use super::node::{HrtfSource, NodeDef, NodeId, NodeKind, NodeParams, PortId, TestSignal};
 use super::sort::ExecutionOrder;
 use super::validate::Graph2Error;
 use super::Graph2;
+use crate::dsp::convolution::ConvolutionEngine;
 use crate::dsp::timeline::automation::CurveBeats;
 use crate::dsp::timeline::tempo::TempoMap;
 use crate::spatial::acoustic::bake::{spectral_taps, BakedScene, ACOUSTIC_IR_LEN};
+use crate::spatial::hrtf::{Ear, HrtfDataset};
 
 /// Depth (samples) of the raw input-history ring each `Acoustic` node keeps
 /// for per-path spectral filtering. Bounded below by room scale (the
@@ -102,12 +104,23 @@ pub struct OfflineExecutor {
     external_clips: HashMap<String, Vec<Vec<f32>>>,
     /// Per-node playback cursor for `Buffer` nodes (sample index).
     buffer_cursors: HashMap<NodeId, usize>,
-    /// Pipeline-delay state per `Convolution` node: the convolved stream
-    /// held back by one kernel length before emission.
+    /// Pipeline-delay state per short-kernel `Convolution` node: the
+    /// convolved stream held back by one kernel length before emission.
+    /// Long-kernel nodes (≥ [`CONVOLUTION_FFT_THRESHOLD`]) live in
+    /// `fft_convolutions` instead.
     convolutions: HashMap<NodeId, ConvState>,
+    /// Partitioned-FFT state per long-kernel `Convolution` node, backed by
+    /// the realtime `dsp::convolution` engine (renders long IRs fast).
+    fft_convolutions: HashMap<NodeId, FftConvState>,
     /// Per-ear pipeline-delay state per `HRTF` node (both ears delayed by
     /// the longer IR so the pair stays mutually aligned).
     hrtfs: HashMap<NodeId, HrtfState>,
+    /// Streaming interpolator + reported-delay state per `Resampler` node.
+    resamplers: HashMap<NodeId, ResamplerState>,
+    /// The measured head-related impulse responses a `HrtfSource::Dataset`
+    /// `/HRTF` node reads its per-ear IRs from (mirrors how a `BakedScene` is
+    /// attached; the node references it by azimuth/elevation/taps).
+    hrtf_dataset: Option<HrtfDataset>,
 }
 
 /// The per-`Acoustic`-node acoustic rendering state: the object cell
@@ -198,6 +211,177 @@ impl ConvState {
     }
 }
 
+/// Kernel lengths ≥ this many taps route a `Convolution` node through the
+/// partitioned-FFT engine instead of the exact direct path. Below it, direct
+/// convolution is both cheaper and *exact* (byte-equal to the reference), and
+/// the engine's UP-OLA latency (one 512-sample partition) is already longer
+/// than the front delay the node must present — so only genuinely long IRs
+/// where O(N·M) blows up get the fast path.
+pub const CONVOLUTION_FFT_THRESHOLD: usize = 512;
+
+/// Partitioned-FFT convolution state for a long-kernel `Convolution` node,
+/// driven by the realtime [`ConvolutionEngine`]. The engine renders long IRs
+/// in O(P·2B·log2B) per partition instead of the direct O(N·M), but its
+/// UP-OLA latency is one partition `block_size` `B`, **not** the full kernel
+/// length. To preserve the node's contract — `output[k] = (x * h)[k - N]`
+/// with `N = kernel.len()`, reported by `node_latency` — we seed an
+/// `extra_delay` window with `N - B` zeros ahead of the engine stream: the
+/// engine emits `o[k] = (x*h)[k - B]`, and popping one sample behind the
+/// fresh output yields `o[k - (N - B)] = (x*h)[k - N]`. Delay and convolution
+/// are both LTI, so ordering the extra delay *before* emission (equivalently
+/// after the engine) is sample-exact.
+struct FftConvState {
+    /// The realtime partitioned overlap-add engine.
+    engine: ConvolutionEngine,
+    /// `kernel.len() - block_size` leading zeros plus the rolling one-sample-
+    /// behind window; each `engine.process` appends and a `pop_front` yields
+    /// the sample `N - B` earlier — the node output for that block.
+    extra_delay: VecDeque<f32>,
+}
+
+impl FftConvState {
+    /// Build engine state for a mono `kernel`. `None` if the engine can't
+    /// load the IR (caller falls back to the exact direct path).
+    fn build(sample_rate: f32, kernel: &[f32]) -> Option<Self> {
+        let mut engine = ConvolutionEngine::new(sample_rate, kernel.len());
+        let ir: Vec<(f32, f32)> = kernel.iter().map(|&s| (s, s)).collect();
+        engine.load_ir_from_samples(&ir).ok()?;
+        engine.set_enabled(true);
+        engine.set_wet_mix(1.0);
+        // The engine's true streaming latency is one partition-minus-one:
+        // feeding x[k] returns (x*h)[k - (B - 1)], because the call that
+        // completes a block also consumes its first output sample. So the
+        // front padding below must be `N - B + 1` for total delay `N`.
+        let extra = kernel.len().saturating_sub(engine.block_size()) + 1;
+        let mut extra_delay = VecDeque::with_capacity(extra + 512);
+        extra_delay.extend(std::iter::repeat_n(0.0, extra));
+        Some(Self {
+            engine,
+            extra_delay,
+        })
+    }
+
+    /// Feed one block of input and produce the block's node output.
+    fn render_block(&mut self, in_plane: &[f32]) -> Vec<f32> {
+        let block = in_plane.len();
+        let mut out = Vec::with_capacity(block);
+        for &x in in_plane {
+            let (ol, _) = self.engine.process(x, x);
+            self.extra_delay.push_back(ol);
+            out.push(self.extra_delay.pop_front().unwrap_or(0.0));
+        }
+        out
+    }
+}
+
+/// Streaming state for a `Resampler` node: a windowed-sinc interpolator over
+/// an input history ring plus a `quality`-sample output delay, so the node's
+/// **reported** taps (`quality`, see `dsp::graph2::latency::node_latency`)
+/// equal its actual pipeline delay — the same convention as `Delay` /
+/// `Convolution`. The fixed-frame offline executor resamples onto its own
+/// frame grid, so `ratio` ≥ 1 (output frames per input frame) is a rate/pitch
+/// remap across the same frame count per block: `subpos`, the source position
+/// of the next output frame, advances by `1/ratio` per output sample.
+struct ResamplerState {
+    ratio: f32,
+    quality: usize,
+    /// Appended input samples (source timebase); `base` is the absolute index
+    /// of `history[0]`.
+    history: VecDeque<f32>,
+    base: usize,
+    /// Source position (output-frame coordinates) of the next output frame.
+    subpos: f32,
+    /// The `quality`-sample delay line seeded with zeros (the reported taps).
+    pipe: VecDeque<f32>,
+}
+
+impl ResamplerState {
+    fn new(ratio: f32, quality: usize) -> Self {
+        let mut pipe = VecDeque::with_capacity(quality + 16);
+        pipe.extend(std::iter::repeat_n(0.0, quality));
+        Self {
+            ratio: ratio.max(1.0),
+            quality: quality.max(1),
+            history: VecDeque::new(),
+            base: 0,
+            subpos: 0.0,
+            pipe,
+        }
+    }
+
+    /// Append the block's input, resample onto the frame grid, and emit one
+    /// block delayed by `quality` (the reported taps). Continuity across
+    /// blocks comes from the raw history ring + fractional `subpos`; the ring
+    /// is trimmed of samples no longer reachable by the interpolation window.
+    fn render_block(&mut self, in_plane: &[f32]) -> Vec<f32> {
+        self.history.extend(in_plane.iter().copied());
+        let block = in_plane.len();
+        // The lowest absolute index this block's interpolation window reads is
+        // floor(subpos_at_start) - 2·quality. Anything older is dead: trim it
+        // after the block. For ratio 1 this keeps the ring at ~2·quality; for
+        // ratio > 1 the front advances slower than the append, so the held
+        // region grows — bounded by the render length, acceptable offline.
+        let lower = (self.subpos.floor() as isize - self.quality as isize * 2 - 8).max(0) as usize;
+        let mut out = Vec::with_capacity(block);
+        for _ in 0..block {
+            let y = windowed_sinc(&self.history, self.base, self.subpos, self.quality);
+            self.pipe.push_back(y);
+            out.push(self.pipe.pop_front().unwrap_or(0.0));
+            self.subpos += 1.0 / self.ratio;
+        }
+        while self.base < lower {
+            if self.history.pop_front().is_none() {
+                break;
+            }
+            self.base += 1;
+        }
+        out
+    }
+}
+
+/// One sample of bandlimited interpolation at source position `p` over the
+/// appended `history` (whose oldest sample is `base`). A `2·quality`-tap,
+/// Hann-windowed sinc reader estimates `x[p]` from its causal neighbours —
+/// `|n - p| < quality` contributes — then renormalises by the window so a
+/// partially-covered edge doesn't dim the value. `ratio = 1` reproduces the
+/// input to interpolator accuracy; `ratio > 1` samples it faster (higher
+/// output pitch on the fixed frame grid).
+fn windowed_sinc(history: &VecDeque<f32>, base: usize, p: f32, quality: usize) -> f32 {
+    let q = quality as f32;
+    let i0 = p.floor() as isize;
+    let taps = (quality * 2).max(1) as isize;
+    let mut acc = 0.0f32;
+    let mut wsum = 0.0f32;
+    for j in 0..taps {
+        let n = i0 - j; // absolute source sample index
+        if n < 0 || (n as usize) < base {
+            continue; // before the signal start / already trimmed: no weight
+        }
+        let idx = (n as usize) - base;
+        let x = history.get(idx).copied().unwrap_or(0.0);
+        let off = n as f32 - p; // = -(j + frac)
+        let sinc = if off.abs() < 1e-6 {
+            1.0
+        } else {
+            let a = std::f32::consts::PI * off;
+            a.sin() / a
+        };
+        let win = if off.abs() < q {
+            0.5 * (1.0 + (std::f32::consts::PI * off / q).cos())
+        } else {
+            0.0
+        };
+        let w = sinc * win;
+        acc += x * w;
+        wsum += w;
+    }
+    if wsum.abs() > 1e-12 {
+        acc / wsum
+    } else {
+        0.0
+    }
+}
+
 /// The two per-ear pipeline queues of an `HRTF` node, both holding the
 /// convolution stream back by the longer IR length.
 #[derive(Debug, Default)]
@@ -281,7 +465,10 @@ impl OfflineExecutor {
             external_clips: HashMap::new(),
             buffer_cursors: HashMap::new(),
             convolutions: HashMap::new(),
+            fft_convolutions: HashMap::new(),
             hrtfs: HashMap::new(),
+            resamplers: HashMap::new(),
+            hrtf_dataset: None,
         })
     }
 
@@ -310,6 +497,7 @@ impl OfflineExecutor {
                 NodeKind::Buffer => self.run_buffer(node_id),
                 NodeKind::Convolution => self.run_convolution(node_id),
                 NodeKind::HRTF => self.run_hrtf(node_id),
+                NodeKind::Resampler => self.run_resampler(node_id),
             }
         }
         self.master_sample = self.master_sample.saturating_add(self.block as u64);
@@ -430,6 +618,20 @@ impl OfflineExecutor {
     pub fn remove_scene(&mut self, name: impl Into<String>) {
         self.scenes.remove(&name.into());
         self.acoustic_epoch = self.acoustic_epoch.wrapping_add(1);
+    }
+
+    /// Attach the **measured head-related impulse responses** every
+    /// `HrtfSource::Dataset` /HRTF node renders with (or `None` to detach and
+    /// make those nodes pass through). The dataset is control-path data;
+    /// nodes reference it by azimuth/elevation/taps, so a graph's binaural
+    /// branches use the real measured per-ear responses.
+    pub fn set_hrtf_dataset(&mut self, dataset: Option<HrtfDataset>) {
+        self.hrtf_dataset = dataset;
+    }
+
+    /// The attached measured HRTF dataset, if any.
+    pub fn hrtf_dataset(&self) -> Option<&HrtfDataset> {
+        self.hrtf_dataset.as_ref()
     }
 
     /// Schedule a gain step at a **local index within the current block**,
@@ -735,7 +937,13 @@ impl OfflineExecutor {
         if st.epoch != self.acoustic_epoch {
             st.epoch = self.acoustic_epoch;
             st.key = Some(obj.key);
-            st.paths = spectral_taps(obj, ACOUSTIC_IR_LEN);
+            // v3.48: thread the scene's air-absorption model so reflections
+            // darken with travel distance when the scene opts in (otherwise
+            // the free-form disabled default, bit-identical to before).
+            st.paths = match scene_ref {
+                Some(sc) => sc.spectral_taps(obj, ACOUSTIC_IR_LEN),
+                None => spectral_taps(obj, ACOUSTIC_IR_LEN),
+            };
         }
         let ring_len = st.raw.len();
         for i in 0..self.block {
@@ -770,6 +978,16 @@ impl OfflineExecutor {
             self.broadcast(id, PortId::OUT, &in_plane);
             return;
         }
+        // Long IRs go through the realtime partitioned-FFT engine (fast for
+        // large kernels); short kernels keep the exact direct path. If the
+        // engine can't be built we fall through to direct, never dropping a
+        // render.
+        if kernel.len() >= CONVOLUTION_FFT_THRESHOLD {
+            if let Some(out) = self.convolve_partitioned(id, &kernel, &in_plane) {
+                self.broadcast(id, PortId::OUT, &out);
+                return;
+            }
+        }
         // Convolve this block (length block + kernel − 1) and emit delayed
         // by one kernel length — matching `node_latency` exactly. The
         // pipeline overlap-adds consecutive blocks so the delay never
@@ -783,14 +1001,59 @@ impl OfflineExecutor {
         self.broadcast(id, PortId::OUT, &out);
     }
 
+    /// Run one `Convolution` block through the partitioned-FFT engine.
+    /// `None` when the engine state isn't (or couldn't be) available, so the
+    /// caller can fall back to the exact direct path.
+    fn convolve_partitioned(
+        &mut self,
+        id: NodeId,
+        kernel: &[f32],
+        in_plane: &[f32],
+    ) -> Option<Vec<f32>> {
+        if !self.fft_convolutions.contains_key(&id) {
+            let st = FftConvState::build(self.sample_rate, kernel)?;
+            self.fft_convolutions.insert(id, st);
+        }
+        let st = self.fft_convolutions.get_mut(&id)?;
+        Some(st.render_block(in_plane))
+    }
+
     fn run_hrtf(&mut self, id: NodeId) {
-        let (left, right) = match self.nodes.get(&id).map(|n| n.params.clone()) {
-            Some(NodeParams::HRTF { left, right }) => (left, right),
+        let (left, right, source) = match self.nodes.get(&id).map(|n| n.params.clone()) {
+            Some(NodeParams::HRTF {
+                left,
+                right,
+                source,
+            }) => (left, right, source),
             _ => return,
         };
         let in_plane = match self.read_input(id, PortId::IN) {
             Some(p) => p.to_vec(),
             None => vec![0.0; self.block],
+        };
+        // Resolve the per-ear IRs the node actually renders with. A `Dataset`
+        // source reads the **real measured** head-related impulse responses
+        // from the executor's HrtfDataset — bilinearly interpolated at the
+        // node's azimuth/elevation, padded/truncated to the reported `taps`
+        // so `node_latency` and the rendered timing agree exactly.
+        let (left, right) = match source {
+            HrtfSource::Inline => (left, right),
+            HrtfSource::Dataset {
+                azimuth_deg,
+                elevation_deg,
+                taps,
+            } => match &self.hrtf_dataset {
+                Some(ds) => {
+                    let mut ml = vec![0.0f32; ds.taps()];
+                    let mut mr = vec![0.0f32; ds.taps()];
+                    ds.bilinear_interpolate(azimuth_deg, elevation_deg, Ear::Left, &mut ml);
+                    ds.bilinear_interpolate(azimuth_deg, elevation_deg, Ear::Right, &mut mr);
+                    (to_ir_taps(ml, taps as usize), to_ir_taps(mr, taps as usize))
+                }
+                // No dataset attached: fall back to the inline tabs (usually
+                // empty → passthrough), mirroring an unbaked Acoustic node.
+                None => (left, right),
+            },
         };
         let delay = left.len().max(right.len());
         if delay == 0 {
@@ -826,6 +1089,25 @@ impl OfflineExecutor {
         self.broadcast(id, PortId(1), &out_r);
     }
 
+    fn run_resampler(&mut self, id: NodeId) {
+        let (ratio, quality) = match self.nodes.get(&id).map(|n| n.params.clone()) {
+            Some(NodeParams::Resampler { ratio, quality }) => {
+                (ratio.max(1.0), (quality.max(1)) as usize)
+            }
+            _ => return,
+        };
+        let in_plane = match self.read_input(id, PortId::IN) {
+            Some(p) => p.to_vec(),
+            None => vec![0.0; self.block],
+        };
+        let st = self
+            .resamplers
+            .entry(id)
+            .or_insert_with(|| ResamplerState::new(ratio, quality));
+        let out = st.render_block(&in_plane);
+        self.broadcast(id, PortId::OUT, &out);
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     /// The plane of the single edge feeding `node`'s input port, if any.
@@ -851,6 +1133,19 @@ impl OfflineExecutor {
             }
         }
     }
+}
+
+/// Pad/truncate a measured per-ear HRIR to `taps` so the node's rendered IR
+/// length matches its reported latency exactly (zero-pad a shorter dataset,
+/// truncate a longer one).
+fn to_ir_taps(mut ir: Vec<f32>, taps: usize) -> Vec<f32> {
+    let taps = taps.max(1);
+    if ir.len() > taps {
+        ir.truncate(taps);
+    } else if ir.len() < taps {
+        ir.resize(taps, 0.0);
+    }
+    ir
 }
 
 /// Full linear convolution of one block with an FIR kernel
@@ -1184,6 +1479,82 @@ mod tests {
         ex.process_blocks(4).unwrap(); // 2048 frames — covers the reflection tail
         let cap = ex.capture(sink).unwrap();
         assert_eq!(cap, expected, "graph acoustic node == baked response");
+    }
+
+    #[test]
+    fn acoustic_node_honours_the_scene_air_absorption_model() {
+        // v3.48: the same baked room, rendered through the Acoustic node
+        // twice — once with the scene's air-absorption model enabled and once
+        // without. Enabling it must darken the (flat-wall) reflections into
+        // distance-dependent low-pass tails, spreading the reflection energy
+        // over more output frames than the classic single-tap path.
+        use crate::spatial::acoustic::bake::{AcousticBaker, BakePolicy};
+        use crate::spatial::acoustic::geometry::AcousticRoom;
+        use crate::spatial::acoustic::material::MaterialSpectrum;
+        use crate::spatial::acoustic::solver::AcousticWorld;
+        use crate::spatial::level::AirAbsorption;
+        use crate::spatial::math::Vec3;
+        use crate::spatial::room::Room;
+
+        let room = Room {
+            enabled: true,
+            width: 12.0,
+            depth: 10.0,
+            height: 3.0,
+            absorption: 0.2,
+            reflection_order: 1,
+            rt60_ms: 800.0,
+            late_mix: 0.0,
+            speed_of_sound: 343.0,
+        };
+        let world = AcousticWorld::new(
+            AcousticRoom::from_render_room(
+                &room,
+                MaterialSpectrum::flat_reflective(room.absorption),
+            ),
+            SR,
+        );
+        let pos = Vec3::new(1.0, 5.0, 1.5);
+        let lst = Vec3::new(6.0, 5.0, 1.5);
+        let base = AcousticBaker::new(world, 0.5).bake_single(pos, lst, SR, BakePolicy::default());
+        let mut scene = base.clone();
+        scene.set_air_absorption(AirAbsorption {
+            enabled: true,
+            ..Default::default()
+        });
+
+        let render = |scene: crate::spatial::acoustic::bake::BakedScene| -> Vec<f32> {
+            let mut g = Graph2::new();
+            let src = g.add_source("imp");
+            let room_node = g.add_acoustic("room", pos);
+            let sink = g.add_sink("out");
+            g.add_edge(src, PortId::OUT, room_node, PortId::IN).unwrap();
+            g.add_edge(room_node, PortId::OUT, sink, PortId::IN)
+                .unwrap();
+            let order = g.compile().unwrap().clone();
+            let mut ex = OfflineExecutor::new(&g, &order, 512, SR).unwrap();
+            ex.set_baked_scene(Some(scene));
+            ex.process_blocks(4).unwrap();
+            ex.capture(sink).unwrap().to_vec()
+        };
+        let off = render(base);
+        let on = render(scene);
+        // Direct (frame 0) is identical; only reflections diverge.
+        assert!((off[0] - on[0]).abs() < 1e-6, "direct unaffected by air");
+        let spread = |c: &[f32]| {
+            c.iter()
+                .enumerate()
+                .skip(1)
+                .filter(|&(_, &v)| v.abs() > 1e-4)
+                .count()
+        };
+        assert!(
+            spread(&on) > spread(&off),
+            "air darkens reflections into tails (off {} vs on {})",
+            spread(&off),
+            spread(&on)
+        );
+        assert!(on.iter().all(|v| v.is_finite()));
     }
 
     #[test]
@@ -1780,6 +2151,203 @@ mod tests {
     }
 
     #[test]
+    fn long_kernel_routes_through_partitioned_fft_engine() {
+        // A 600-tap identity kernel: convolution = delay by 600, rendered via
+        // the partitioned-FFT engine with half the executor's block size as
+        // the engine partition (executor 256, engine 512). The extra `N - B`
+        // front delay keeps the node's `kernel.len()` offset and nothing
+        // drifts over many blocks.
+        let mut h = vec![0.0f32; 600];
+        h[0] = 1.0;
+        let mut g = Graph2::new();
+        let src = g.add_source_with(
+            "tone",
+            crate::dsp::graph2::node::SourceParams {
+                signal: TestSignal::Sine,
+                frequency_hz: 160.0,
+            },
+        );
+        let conv = g.add_convolution("c", h);
+        let sink = g.add_sink("out");
+        g.add_edge(src, PortId::OUT, conv, PortId::IN).unwrap();
+        g.add_edge(conv, PortId::OUT, sink, PortId::IN).unwrap();
+        let order = g.compile().unwrap().clone();
+        let mut ex = OfflineExecutor::new(&g, &order, 256, SR).unwrap();
+        ex.process_blocks(200).unwrap(); // 51 200 samples
+        let cap = ex.capture(sink).unwrap();
+        let x = |k: usize| (2.0 * std::f32::consts::PI * 160.0 * k as f32 / SR).sin();
+        assert!((cap[1500] - x(900)).abs() < 1e-2, "early");
+        assert!((cap[20_010] - x(19_410)).abs() < 1e-2, "mid-run");
+        assert!((cap[50_990] - x(50_390)).abs() < 1e-2, "late, no drift");
+        // The long kernel must have selected the engine path, not the exact
+        // direct one.
+        assert!(
+            ex.fft_convolutions.contains_key(&conv),
+            "long kernel uses the partitioned-FFT engine"
+        );
+        assert!(
+            !ex.convolutions.contains_key(&conv),
+            "long kernel is not on the direct path"
+        );
+    }
+
+    #[test]
+    fn long_kernel_matches_direct_linear_convolution() {
+        // A non-identity 600-tap kernel against a single impulse: the engine
+        // must reproduce the exact IR contour at offset `kernel.len()` (its
+        // reported taps) with only FFT float-level error, and the tail must
+        // carry seamlessly across the many engine partitions.
+        let n = 600u32;
+        let h: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / n as f32;
+                (t * std::f32::consts::PI * 8.0).sin() * (-3.0 * t).exp()
+            })
+            .collect();
+        let mut g = Graph2::new();
+        let src = g.add_source("imp");
+        let conv = g.add_convolution("c", h.clone());
+        let sink = g.add_sink("out");
+        g.add_edge(src, PortId::OUT, conv, PortId::IN).unwrap();
+        g.add_edge(conv, PortId::OUT, sink, PortId::IN).unwrap();
+        let order = g.compile().unwrap().clone();
+        let mut ex = OfflineExecutor::new(&g, &order, 256, SR).unwrap();
+        // 6 blocks = 1536 samples ≥ N + h.len − 1 = 1199 plus the warmup.
+        ex.process_blocks(6).unwrap();
+        let cap = ex.capture(sink).unwrap();
+        for k in 0..cap.len() {
+            let want = if k >= n as usize && (k - n as usize) < h.len() {
+                h[k - n as usize]
+            } else {
+                0.0
+            };
+            assert!(
+                (cap[k] - want).abs() < 1e-3,
+                "frame {k}: {} vs {}",
+                cap[k],
+                want
+            );
+        }
+    }
+
+    #[test]
+    fn very_long_kernel_renders_correctly_across_many_partitions() {
+        // An 8000-tap identity IR = 16 engine partitions, with the executor's
+        // 256-frame block smaller than the engine's 512 partition — the
+        // misalignment that would break a naive per-block driver. The node
+        // must keep the exact `kernel.len()` offset with no drift.
+        let mut h = vec![0.0f32; 8000];
+        h[0] = 1.0;
+        let mut g = Graph2::new();
+        let src = g.add_source_with(
+            "tone",
+            crate::dsp::graph2::node::SourceParams {
+                signal: TestSignal::Sine,
+                frequency_hz: 160.0,
+            },
+        );
+        let conv = g.add_convolution("c", h);
+        let sink = g.add_sink("out");
+        g.add_edge(src, PortId::OUT, conv, PortId::IN).unwrap();
+        g.add_edge(conv, PortId::OUT, sink, PortId::IN).unwrap();
+        let order = g.compile().unwrap().clone();
+        let mut ex = OfflineExecutor::new(&g, &order, 256, SR).unwrap();
+        ex.process_blocks(230).unwrap(); // 58 880 samples > 8000 + margin
+        let cap = ex.capture(sink).unwrap();
+        let x = |k: usize| (2.0 * std::f32::consts::PI * 160.0 * k as f32 / SR).sin();
+        assert!((cap[8_300] - x(300)).abs() < 1e-2, "rises after N");
+        assert!((cap[40_010] - x(32_010)).abs() < 1e-2, "mid, no drift");
+        assert!((cap[58_750] - x(50_750)).abs() < 1e-2, "late, no drift");
+    }
+
+    #[test]
+    fn resampler_ratio_one_reproduces_input_delayed_by_its_reported_taps() {
+        // A ratio-1 resampler is near-identity: out[k] ≈ x[k - quality], where
+        // `quality` is exactly the taps the latency pass reports (so reported
+        // == actual delay, like Delay/Convolution). This exercises the
+        // windowed-sinc interpolation both *and* the reported-delay pipe.
+        let (quality, ratio) = (32u32, 1.0f32);
+        let mut g = Graph2::new();
+        let src = g.add_source_with(
+            "tone",
+            crate::dsp::graph2::node::SourceParams {
+                signal: TestSignal::Sine,
+                frequency_hz: 160.0,
+            },
+        );
+        let rs = g.add_resampler_with_quality("rs", ratio, quality);
+        let sink = g.add_sink("out");
+        g.add_edge(src, PortId::OUT, rs, PortId::IN).unwrap();
+        g.add_edge(rs, PortId::OUT, sink, PortId::IN).unwrap();
+        let order = g.compile().unwrap().clone();
+        let mut ex = OfflineExecutor::new(&g, &order, 256, SR).unwrap();
+        ex.process_blocks(100).unwrap();
+        let cap = ex.capture(sink).unwrap();
+        let q = quality as usize;
+        assert!(
+            cap[..q].iter().all(|s| s.abs() < 1e-3),
+            "first {q} outputs are the reported taps' leading zeros"
+        );
+        assert_eq!(
+            crate::dsp::graph2::latency::node_latency(g.node(rs).unwrap()),
+            quality as u64,
+            "reports quality taps"
+        );
+        assert!(ex.resamplers.contains_key(&rs), "resampler state built");
+        let x = |k: usize| (2.0 * std::f32::consts::PI * 160.0 * k as f32 / SR).sin();
+        for &k in &[1_000usize, 11_000, 23_500] {
+            // out[k] = resampled(x)[k - quality] = x[k - quality] (ratio 1).
+            assert!(
+                (cap[k] - x(k - q)).abs() < 1e-2,
+                "frame {k}: {} vs {}",
+                cap[k],
+                x(k - q)
+            );
+        }
+    }
+
+    #[test]
+    fn resampler_ratio_two_samples_source_at_half_rate() {
+        // ratio 2: each output frame reads the source at m/2 (subpos advances
+        // 1/2 per output), so out[k] ≈ x(k - quality / 2) — concrete proof the
+        // fixed-grid resampler is sampling at the requested ratio.
+        let (quality, ratio) = (48u32, 2.0f32);
+        let mut g = Graph2::new();
+        let src = g.add_source_with(
+            "tone",
+            crate::dsp::graph2::node::SourceParams {
+                signal: TestSignal::Sine,
+                frequency_hz: 160.0,
+            },
+        );
+        let rs = g.add_resampler_with_quality("rs", ratio, quality);
+        let sink = g.add_sink("out");
+        g.add_edge(src, PortId::OUT, rs, PortId::IN).unwrap();
+        g.add_edge(rs, PortId::OUT, sink, PortId::IN).unwrap();
+        let order = g.compile().unwrap().clone();
+        let mut ex = OfflineExecutor::new(&g, &order, 256, SR).unwrap();
+        ex.process_blocks(100).unwrap();
+        let cap = ex.capture(sink).unwrap();
+        let x = |s: f32| (2.0 * std::f32::consts::PI * 160.0 * s / SR).sin();
+        for &k in &[2_000usize, 12_000, 23_000] {
+            // out[k] = x[(k - quality)/ratio] (the pipe delays the resampled
+            // stream by `quality` source samples).
+            let want = x((k as f32 - quality as f32) / ratio);
+            assert!(
+                (cap[k] - want).abs() < 1e-2,
+                "frame {k}: {} vs {}",
+                cap[k],
+                want
+            );
+        }
+        // And the reported taps are independent of ratio (quality only).
+        assert_eq!(
+            crate::dsp::graph2::latency::node_latency(g.node(rs).unwrap()),
+            quality as u64
+        );
+    }
+
+    #[test]
     fn hrtf_renders_stereo_pair_aligned_to_longer_ir() {
         // Left IR 5 taps, right IR 2 taps: both ears are delayed by 5 (the
         // node's reported taps), so the pair stays mutually aligned.
@@ -1805,5 +2373,62 @@ mod tests {
         exp_r.resize(16, 0.0);
         assert_eq!(ex.capture(sl).unwrap(), exp_l, "left ear at offset 5");
         assert_eq!(ex.capture(sr).unwrap(), exp_r, "right ear aligned too");
+    }
+
+    #[test]
+    fn hrtf_dataset_renders_measured_per_ear_irs() {
+        // A dataset-sourced binaural node reads the *real* measured head-
+        // related responses from the executor's HrtfDataset, not hand-authored
+        // tabs. The synthetic dataset at az 90° puts the source on the right:
+        // the right (ipsilateral) ear's IR peaks near tap 0 while the left
+        // (contralateral) ear is delayed by the ~31-sample Woodworth ITD —
+        // proof the rendered pair carries the measured interaural timing.
+        let ds = HrtfDataset::synthetic(48_000, 64, 15.0, 15.0);
+        let taps = ds.taps() as u32;
+        let mut g = Graph2::new();
+        let src = g.add_source("imp");
+        let node = g.add_hrtf_dataset_with_taps("bin", 90.0, 0.0, taps);
+        let sl = g.add_sink("l");
+        let sr = g.add_sink("r");
+        g.add_edge(src, PortId::OUT, node, PortId::IN).unwrap();
+        g.add_edge(node, PortId(0), sl, PortId::IN).unwrap();
+        g.add_edge(node, PortId(1), sr, PortId::IN).unwrap();
+        let order = g.compile().unwrap().clone();
+        let mut ex = OfflineExecutor::new(&g, &order, 256, 48_000.0).unwrap();
+        ex.set_hrtf_dataset(Some(ds));
+        assert_eq!(
+            crate::dsp::graph2::latency::node_latency(g.node(node).unwrap()),
+            taps as u64,
+            "dataset node reports its taps"
+        );
+        ex.process_blocks(40).unwrap();
+        let cap_l = ex.capture(sl).unwrap(); // left ear, port 0
+        let cap_r = ex.capture(sr).unwrap(); // right ear, port 1
+        let argmax = |c: &[f32]| -> usize {
+            c.iter()
+                .enumerate()
+                .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+                .map(|(i, _)| i)
+                .unwrap()
+        };
+        let pl = argmax(cap_l);
+        let pr = argmax(cap_r);
+        // Both ears ride at the reported tap offset (the pipeline delay).
+        assert!(
+            (pr as i64 - taps as i64).abs() <= 2,
+            "ipsilateral right ear near tap {taps}, got {pr}"
+        );
+        let itd = crate::spatial::hrtf::woodworth_itd_sec(
+            std::f32::consts::FRAC_PI_2,
+            crate::spatial::hrtf::DEFAULT_HEAD_RADIUS,
+            crate::spatial::hrtf::DEFAULT_SPEED_OF_SOUND,
+        ) * 48_000.0;
+        assert!(
+            (pl as f32 - (taps as f32 + itd)).abs() <= 4.0,
+            "contralateral left ear delayed by the measured ITD: {pl} vs {}+{}",
+            taps,
+            itd
+        );
+        assert!(ex.hrtf_dataset().is_some(), "dataset attached");
     }
 }

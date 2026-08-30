@@ -64,7 +64,12 @@ pub const MAX_GAIN: f32 = 2.0;
 /// distance; it is deliberately gentle and clamped so distant sources
 /// brighten rather than vanish entirely. The exact coefficient is a
 /// perceptual tuning constant (documented, not a hidden magic number).
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// Serde: the acoustic baker embeds a scene-scoped model verbatim in its
+/// baked responses (v3.48), so the same model that darkens a realtime
+/// object's direct path can shape an offline room's per-path spectral
+/// kernels.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AirAbsorption {
     /// Enable/disable air absorption. Disabled = exact ×1.0 passthrough
     /// (disabled-exact discipline).

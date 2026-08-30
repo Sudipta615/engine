@@ -701,6 +701,10 @@ impl VbapRenderer {
                     let dg = obj
                         .distance_model
                         .distance_gain(img.dist, obj.reference_distance);
+                    // v3.47: colour the reflection with its surface's
+                    // spectral low-pass when the baked path carries one.
+                    self.room_er
+                        .set_reflection_filter(obj_idx, img_i, img.lowpass_hz);
                     self.solve(ldir, &mut rpairs);
                     for &(spk, g) in rpairs.iter() {
                         if g == 0.0 {

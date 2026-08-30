@@ -26,7 +26,9 @@
 use std::collections::BTreeMap;
 
 use super::edge::{EdgeDef, EdgeEndpoint, EdgeId};
-use super::node::{NodeDef, NodeId, NodeKind, NodeParams, PortId, PortSpec, SignalType};
+use super::node::{
+    HrtfSource, NodeDef, NodeId, NodeKind, NodeParams, PortId, PortSpec, SignalType,
+};
 use super::sort::topological_order;
 use super::validate::{validate, Graph2Error};
 use super::Graph2;
@@ -44,7 +46,18 @@ pub fn node_latency(node: &NodeDef) -> u64 {
     match &node.params {
         NodeParams::Delay { samples } => *samples as u64,
         NodeParams::Convolution { kernel } => kernel.len() as u64,
-        NodeParams::HRTF { left, right } => left.len().max(right.len()) as u64,
+        NodeParams::HRTF {
+            left,
+            right,
+            source,
+        } => match source {
+            HrtfSource::Inline => left.len().max(right.len()) as u64,
+            // A measured-dataset node delays by its configured `taps` — the
+            // same length the executor pads the measured HRIRs to, so the
+            // reported and actual pipeline delay agree.
+            HrtfSource::Dataset { taps, .. } => *taps as u64,
+        },
+        NodeParams::Resampler { quality, .. } => *quality as u64,
         _ => 0,
     }
 }
@@ -456,6 +469,117 @@ mod tests {
             comps[0].params,
             NodeParams::Delay { samples: 300 },
             "binaural branch's 300 taps compensated on the dry leg"
+        );
+    }
+
+    #[test]
+    fn resampler_reports_quality_taps_and_compensates_like_delay() {
+        // The v3.30 roadmap hook: a resampler node reports its own taps and
+        // gets aligned exactly like Delay/Convolution.
+        let mut g = Graph2::new();
+        let src = g.add_source("imp");
+        let split = g.add_split("s", 2);
+        let rs = g.add_resampler_with_quality("rs", 2.0, 48);
+        let dry = g.add_gain("dry", 0.5);
+        let mix = g.add_mix("mix", 2);
+        let sink = g.add_sink("out");
+        g.add_edge(src, PortId::OUT, split, PortId::IN).unwrap();
+        g.add_edge(split, PortId(0), rs, PortId::IN).unwrap();
+        g.add_edge(split, PortId(1), dry, PortId::IN).unwrap();
+        g.add_edge(rs, PortId(0), mix, PortId(0)).unwrap();
+        g.add_edge(dry, PortId::OUT, mix, PortId(1)).unwrap();
+        g.add_edge(mix, PortId::OUT, sink, PortId::IN).unwrap();
+
+        assert_eq!(
+            node_latency(g.node(rs).unwrap()),
+            48,
+            "resampler reports its quality as taps"
+        );
+        assert!(g.node(rs).unwrap().capabilities().taps);
+
+        let rep = analyze(&g, 48_000.0).unwrap();
+        assert_eq!(
+            rep.upstream_at(mix),
+            48,
+            "mix aligns to the resampler branch"
+        );
+        assert_eq!(rep.total_samples, 48);
+
+        // Compensation splices exactly one Delay(48) on the dry leg, ids kept.
+        let c = compensate(&g).unwrap();
+        for id in g.nodes.keys() {
+            assert!(c.node(*id).is_some(), "id {id:?} preserved");
+        }
+        let comps: Vec<&NodeDef> = c
+            .nodes
+            .values()
+            .filter(|n| n.name.starts_with("comp-"))
+            .collect();
+        assert_eq!(comps.len(), 1);
+        assert_eq!(
+            comps[0].params,
+            NodeParams::Delay { samples: 48 },
+            "resampler branch's 48 taps compensated exactly like a delay"
+        );
+    }
+
+    #[test]
+    fn hrtf_dataset_reports_its_taps_and_compensates_like_delay() {
+        // A measured-dataset binaural node reports its configured `taps` and
+        // is aligned by the latency pass exactly like a convolution/HRTF
+        // branch — graph-based binaural branches using real head-related
+        // responses still align with the dry leg.
+        let mut g = Graph2::new();
+        let src = g.add_source("imp");
+        let split = g.add_split("s", 2);
+        let hrtf = g.add_hrtf_dataset_with_taps("bin", 90.0, 0.0, 64);
+        let dry = g.add_gain("dry", 0.5);
+        let mix = g.add_mix("mix", 2);
+        let sink = g.add_sink("out");
+        g.add_edge(src, PortId::OUT, split, PortId::IN).unwrap();
+        g.add_edge(split, PortId(0), hrtf, PortId::IN).unwrap();
+        g.add_edge(split, PortId(1), dry, PortId::IN).unwrap();
+        g.add_edge(hrtf, PortId(0), mix, PortId(0)).unwrap();
+        g.add_edge(dry, PortId::OUT, mix, PortId(1)).unwrap();
+        g.add_edge(mix, PortId::OUT, sink, PortId::IN).unwrap();
+
+        let node = g.node(hrtf).unwrap();
+        assert_eq!(node_latency(node), 64, "dataset node reports its taps");
+        assert!(
+            matches!(
+                node.params,
+                NodeParams::HRTF {
+                    source: HrtfSource::Dataset { taps: 64, .. },
+                    ref left,
+                    ref right,
+                } if left.is_empty() && right.is_empty()
+            ),
+            "dataset node carries no inline tabs"
+        );
+
+        let rep = analyze(&g, 48_000.0).unwrap();
+        assert_eq!(
+            rep.upstream_at(mix),
+            64,
+            "mix aligns to the binaural branch"
+        );
+        assert_eq!(rep.total_samples, 64);
+
+        // Compensation splices exactly one Delay(64) on the dry leg.
+        let c = compensate(&g).unwrap();
+        for id in g.nodes.keys() {
+            assert!(c.node(*id).is_some(), "id {id:?} preserved");
+        }
+        let comps: Vec<&NodeDef> = c
+            .nodes
+            .values()
+            .filter(|n| n.name.starts_with("comp-"))
+            .collect();
+        assert_eq!(comps.len(), 1);
+        assert_eq!(
+            comps[0].params,
+            NodeParams::Delay { samples: 64 },
+            "dataset binaural branch's 64 taps compensated on the dry leg"
         );
     }
 }
