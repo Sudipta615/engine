@@ -190,23 +190,114 @@ impl Graph2 {
     /// attached to the executor (`OfflineExecutor::set_baked_scene`); an
     /// unbaked position (or no scene) passes the input through unchanged.
     pub fn add_acoustic(&mut self, name: &str, position: crate::spatial::math::Vec3) -> NodeId {
+        self.add_acoustic_impl(name, position, None)
+    }
+
+    /// A **scene-addressed** room-response node: like [`add_acoustic`], but
+    /// the node renders from the executor's named scene registry entry for
+    /// `scene_id` (`OfflineExecutor::set_scene`) rather than the global
+    /// scene. A single graph can thereby render **distinct room responses
+    /// for several listeners** — one node per listener's bake — and mix
+    /// them in the topology.
+    pub fn add_acoustic_scene(
+        &mut self,
+        name: &str,
+        position: crate::spatial::math::Vec3,
+        scene_id: impl Into<String>,
+    ) -> NodeId {
+        self.add_acoustic_impl(name, position, Some(scene_id.into()))
+    }
+
+    fn add_acoustic_impl(
+        &mut self,
+        name: &str,
+        position: crate::spatial::math::Vec3,
+        scene: Option<String>,
+    ) -> NodeId {
         self.add_node(
             name,
             NodeKind::Acoustic,
-            node::NodeParams::Acoustic { position },
+            node::NodeParams::Acoustic { position, scene },
         )
     }
 
     /// A recorded-clip source (the graph's audio-input primitive): plays
-    /// `samples` one-shot (silence after the end) or looping. When an
-    /// external track is attached to the executor
-    /// (`OfflineExecutor::set_external_input`) that track plays instead.
+    /// the mono `samples` one-shot (silence after the end) or looping on
+    /// its single output port. When an external track is attached to the
+    /// executor (`OfflineExecutor::set_external_input`) that track plays
+    /// instead. See [`add_buffer_channels`] for multi-channel clips.
     pub fn add_buffer(&mut self, name: &str, samples: Vec<f32>, looping: bool) -> NodeId {
-        self.add_node(
+        self.add_buffer_impl(name, None, vec![samples], looping)
+    }
+
+    /// A **clip-addressed** recorded-clip source: like [`add_buffer`], but
+    /// the node carries clip address `clip`, so the executor's per-clip
+    /// track registered for that name
+    /// (`OfflineExecutor::set_external_clip`) feeds *this* node — the
+    /// aelog multi-input path (one recorded track per clip, routed only to
+    /// the nodes bearing that address). With no matching clip track the
+    /// node plays its embedded samples.
+    pub fn add_buffer_clip(
+        &mut self,
+        name: &str,
+        clip: impl Into<String>,
+        samples: Vec<f32>,
+        looping: bool,
+    ) -> NodeId {
+        self.add_buffer_impl(name, Some(clip.into()), vec![samples], looping)
+    }
+
+    /// A **multi-channel** recorded-clip source: `samples` are channel-major
+    /// planes (`samples[0]` = left / channel 0, …), and the node exposes
+    /// one mono output port per channel — so a stereo or spatial track
+    /// routes as explicit mono wires (the HRTF convention) and replays
+    /// exactly. External tracks follow the same channel-major layout.
+    pub fn add_buffer_channels(
+        &mut self,
+        name: &str,
+        samples: Vec<Vec<f32>>,
+        looping: bool,
+    ) -> NodeId {
+        self.add_buffer_impl(name, None, samples, looping)
+    }
+
+    /// A **clip-addressed multi-channel** recorded-clip source: like
+    /// [`add_buffer_channels`], but the node carries clip address `clip`
+    /// so the executor's per-clip track (`set_external_clip`) feeds it.
+    pub fn add_buffer_clip_channels(
+        &mut self,
+        name: &str,
+        clip: impl Into<String>,
+        samples: Vec<Vec<f32>>,
+        looping: bool,
+    ) -> NodeId {
+        self.add_buffer_impl(name, Some(clip.into()), samples, looping)
+    }
+
+    /// Shared Buffer construction: one mono output port per clip channel
+    /// (at least one, so an empty clip still has a routable port).
+    fn add_buffer_impl(
+        &mut self,
+        name: &str,
+        clip: Option<String>,
+        samples: Vec<Vec<f32>>,
+        looping: bool,
+    ) -> NodeId {
+        let n = samples.len().max(1);
+        let id = self.add_node(
             name,
             NodeKind::Buffer,
-            node::NodeParams::Buffer { samples, looping },
-        )
+            node::NodeParams::Buffer {
+                samples,
+                looping,
+                clip,
+            },
+        );
+        let node = self.nodes.get_mut(&id).expect("just inserted");
+        node.outputs = (0..n)
+            .map(|_| PortSpec::output(SignalType::Audio, 1))
+            .collect();
+        id
     }
 
     /// A 1:1 FIR convolver: convolves the input with `kernel` and emits

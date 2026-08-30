@@ -36,7 +36,9 @@ pub const OCTAVE_BANDS: usize = 9;
 /// Reflection ≤ 1; the remainder after absorption + transmission is also
 /// scattered, so the three spectra need not sum to exactly 1 — the solver
 /// normalises the reflection/transmission/diffuse partition explicitly.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Serde: scenes embedding paths (e.g. aelog scene-swap logs) serialize
+/// the per-band tables verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MaterialSpectrum {
     /// Fraction of incident energy absorbed per octave band, `[0, 1]`.
     pub absorption: [f32; OCTAVE_BANDS],

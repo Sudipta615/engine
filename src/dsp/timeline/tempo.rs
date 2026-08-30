@@ -10,7 +10,10 @@
 //! is squared integration and is future work.)
 
 /// A tempo change point: from `beat` onward the tempo is `bpm`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// A tempo change point: from `beat` onward the tempo is `bpm`.
+/// Serde: a tempo map is part of a recorded aelog session, so it round-
+/// trips verbatim (musical automation re-renders against the same map).
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TempoPoint {
     pub beat: f64,
     pub bpm: f64,
@@ -19,7 +22,7 @@ pub struct TempoPoint {
 /// An ordered tempo map. Points are kept sorted by beat; the first point is
 /// conventionally at beat 0 (the map falls back to 120 BPM before any
 /// point).
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TempoMap {
     points: Vec<TempoPoint>,
 }

@@ -1692,3 +1692,337 @@ real IRs from the `dsp::convolution` engine, per-path spectral
 filtering inside the `Acoustic` node (Phase 29 horizon), and a
 resampler node reporting its own taps.
 
+## Phase 33 — Clip-addressed audio inputs (v3.35.0) — **Implemented**
+
+**Intent.** Phase 30's audio-input primitive fed the *whole graph* from
+one external track. This phase gives `Buffer` nodes an address: a clip
+name on the node, per-clip tracks on the executor, and per-clip chunks
+in the aelog log — so a recorded session's audio routes **only to the
+nodes bearing that address**, and one graph mixes several recorded
+inputs. The unaddressed single-track path is unchanged (backward
+compatible).
+
+### Key mechanisms
+
+- **`NodeParams::Buffer { samples, looping, clip: Option<String> }`** —
+  an addressed node plays the executor's per-clip track registered for
+  its name; an unaddressed node plays the global external track; either
+  falls back to the embedded clip. `Graph2::add_buffer_clip` builds an
+  addressed source (a `to_dot`/`describe` label shows the clip).
+- **`OfflineExecutor::set_external_clip(clip, track)`** — a per-clip
+  track map alongside the global `external_input`; `run_buffer` resolves
+  clip track → global track → embedded, so an addressed node never
+  silently cross-feeds from another clip's track.
+- **aelog format v2** — `RecordedCommand::InputAudio { clip, chunk }`
+  (v1's bare tuple becomes `clip: None`); `AELOG_VERSION` bumped to 2.
+  `AelogRecorder::record_clip_audio(clip, chunk)` joins
+  `record_audio_input`. Replay reconstructs `ReplayOutcome::clip_tracks`
+  (one `(clip, track)` per address, first-recorded order) and
+  `replay_render` registers each with the executor before rendering — so
+  a multi-input session replays byte-identically.
+
+**Realtime discipline.** Still an offline render primitive: the clip
+map is control-path state on the executor, never on an audio thread.
+
+**Acceptance (spec-first).** `tests/fidelity/aelog_inputs.rs` gains a
+multi-input test — two clip-addressed buffers (`mic` / `synth`) summed
+by a `Mix`: `replay_events` reconstructs both tracks exactly (nothing
+unaddressed), and `replay_render` yields the exact per-sample sum with
+no cross-feeding. Unit tests in `exec.rs` pin the routing contract
+(clip track feeds the addressed node only; the global track still
+drives unaddressed nodes; a clip node with no registered track plays
+its embedded clip). `engine` and `config` stay in lockstep at 3.35.0.
+
+**Unblocks (Horizon).** per-clip gain/pan on the buffer nodes (a
+recorded track routed then mixed with its own level), live clip
+swapping during a render, and clip-addressed `Acoustic` scene IDs so a
+multi-listener bake addresses its world like a clip.
+
+## Phase 34 — Multi-channel audio inputs (v3.36.0) — **Implemented**
+
+**Intent.** Phase 30's audio-input primitive was mono; Phase 33 routed
+mono tracks per clip. This phase makes the input path **channel-major**: a
+`Buffer` node and the aelog `InputAudio` chunks carry one plane per
+channel, so stereo and spatial sessions record, reconstruct, and replay
+every channel exactly. Mono clips and tracks keep working unchanged — a
+mono clip is just a one-plane clip.
+
+### Key mechanisms
+
+- **`NodeParams::Buffer { samples: Vec<Vec<f32>>, … }`** — the embedded
+  clip is channel-major planes; the node exposes **one mono output port
+  per channel** (the HRTF convention: multi-channel = explicit mono
+  wires), set at construction by `add_buffer_channels` /
+  `add_buffer_clip_channels`. The mono `add_buffer` / `add_buffer_clip`
+  builders wrap their slice into a single plane.
+- **Multi-channel external tracks** — `set_external_input` /
+  `set_external_clip` take channel-major tracks. `run_buffer` advances a
+  **single shared cursor across all channels in lockstep** (sample-major
+  plane build), so the L/R relationship is preserved; a mono track on an
+  N-port node reads silence on the missing channels (no upmix), and
+  extra source channels beyond the node's ports are dropped.
+- **aelog format v3** — `InputAudio` chunks are `Vec<Vec<f32>>`;
+  `AELOG_VERSION` bumped to 3. `record_audio_input_channels` /
+  `record_clip_audio_channels` join the mono conveniences
+  (`record_audio_input` / `record_clip_audio` wrap into one plane).
+  Replay concatenates **per channel**, so `ReplayOutcome::audio_input` /
+  `clip_tracks` are channel-major tracks (a mono session yields one
+  plane), and `replay_render` feeds them to the executor for
+  byte-exact per-channel renders.
+
+**Realtime discipline.** Still an offline render primitive — the plane
+buffers are control-path/offline allocations on the executor, never on
+an audio thread.
+
+**Acceptance (spec-first).** `tests/fidelity/aelog_inputs.rs` gains a
+stereo test — per-block `[left, right]` planes reconstruct as two exact
+channel tracks (`replay_events`), and `replay_render` through a stereo
+`Buffer` (one sink per port) reproduces each plane byte-exactly. Unit
+tests in `exec.rs` pin the lockstep cursor (a looping stereo clip plays
+both planes in sync) and the no-upmix contract (a mono external track
+on a stereo node leaves channel 1 silent). `engine` and `config` stay
+in lockstep at 3.36.0.
+
+**Unblocks (Horizon).** true multi-channel *buses* through the
+topology (the typed-bus `PortSpec::channels` metadata becoming a
+real N-plane edge instead of N mono wires), per-channel gain/pan on
+buffer nodes, and clip-addressed multi-channel `Acoustic` beds.
+
+## Phase 35 — Animated acoustic worlds in aelog (v3.37.0) — **Implemented**
+
+**Intent.** The baked scene was an *external* render input: a host
+attached it once via `set_baked_scene`, and aelog (v3.29's golden
+substrate) had no record of it. This phase makes **scene swaps recorded
+commands** — an animated acoustic world (a door opens, a wall turns to
+fabric, a bake is replaced) replays its geometry timeline
+deterministically, exactly like audio inputs and listener motion.
+
+### Key mechanisms
+
+- **`RecordedCommand::SetBakedScene { at, scene }`** — stamped with the
+  master sample at record time (`AelogRecorder::record_baked_scene`); an
+  additive variant, so the format stays v3 and old files still load.
+- **Deterministic scene serde** — `BakedScene` / `BakedObject` /
+  `BakedPath` / `PathKind` / `Wall` / `MaterialSpectrum` gained serde.
+  Three deliberate choices keep the log a pure function of its commands:
+  the cell cache is a **`BTreeMap`** serialized as an ordered entry list
+  (JSON object keys cannot be tuples; ordered iteration = stable hashes);
+  the `f32::INFINITY` "no low-pass" sentinel round-trips via a `−1.0`
+  marker (JSON cannot carry non-finite floats); and the solver `world`
+  is **skipped** (rendering never needs it — the log stays flat and
+  light).
+- **`OfflineExecutor::swap_baked_scene(scene)`** — the animated-world
+  path: replaces the active scene **without clearing** the `Acoustic`
+  nodes' tapped delay lines, so the room keeps ringing from the shared
+  input history while the new direct gain / reflection taps apply from
+  the next block. `set_baked_scene` remains the fresh-attach reset.
+- **Replay** — `ReplayOutcome::scene_swaps` exposes the `(master,
+  scene)` timeline; `replay_render` re-attaches each swap at its command
+  position (a faithful log stamps `at` = the next block's start, so the
+  swap lands sample-exactly).
+
+**Realtime discipline.** Control/offline path only: scene serde, log
+embedding, and the swap are executor/host state — never an audio thread.
+
+**Acceptance (spec-first).** `tests/fidelity/aelog_scene.rs` (3 tests) —
+an animated session (scene A at 0, a mid-session return to A, then the
+fabric-wall scene B at block 10) renders the **piecewise oracle**: A's
+taps before the swap sample, B's from it, with the ringing tail intact;
+replaying the log twice is byte-identical (golden); the render differs
+from both the A-only and B-only renders with the boundary sample-exact;
+identical sessions hash identically (scene in the key — swapping scenes
+changes the hash), and `AelogCache::render_cached` reuses the stored
+golden byte-for-byte. Unit tests: the exec-level swap (taps switch, tail
+continues, oracle within float tolerance) and a record-side determinism
+check (identical logs, JSON byte-stable round-trip, scene verbatim).
+`engine` and `config` stay in lockstep at 3.37.0.
+
+**Unblocks (Horizon).** per-frame scene *interpolation* (morphing
+between two bakes for continuous geometry animation), a resampler node
+reporting taps (Phase 32 horizon), and clip-addressed multi-channel
+`Acoustic` beds.
+
+## Phase 36 — Listener-driven acoustic nodes (v3.38.0) — **Implemented**
+
+**Intent.** Since v3.32 the aelog listener trajectory was *report-only*:
+`ReplayOutcome::listener_motion` was reconstructed, but `replay_render`
+never drove the graph with it. This phase closes the loop — the replayed
+trajectory **drives the `Acoustic` node positions**, so a spatial golden
+render exercises the full baked-room path: the room response is
+re-derived from the position cache *as the listener moves*, not rendered
+at one static position.
+
+### Key mechanisms
+
+- **`OfflineExecutor::listener_position` / `set_listener_position(pos)`**
+  — a live listener position that overrides each `Acoustic` node's cache
+  lookup. `run_acoustic` uses `listener_position.unwrap_or(node_pos)`,
+  so with no drive the node renders its own `NodeParams::Acoustic`
+  position (backward compatible), and each block re-looks-up the cell.
+  The tapped delay lines keep ringing across moves (no reset), and an
+  unbaked position falls back to a pass-through — the same fallback a
+  static node uses. `None` restores the baked positions.
+- **`replay_render`** — applies each `SetListenerPosition { at, position }`
+  to the executor in the same pass that re-attaches scene swaps: before
+  the block it covers, so on faithful logs the move lands sample-exactly.
+  Listener motion is now a *render input*, not a report.
+
+**Realtime discipline.** Control/offline path — the listener position is
+host/executor state read once per block, never mid-audio-thread.
+
+**Acceptance (spec-first).** `tests/fidelity/aelog_scene.rs` gains a
+listener-trajectory golden test — baked cells at L0 and L1, unbaked
+beyond: a session that walks the listener L0 → L1 → unbaked renders the
+**piecewise oracle** (L0's cell, L1's cell, then pure pass-through) with
+tolerance, is **byte-identical** on re-replay, reuses the aelog-hash
+cache's stored golden byte-for-byte, and exposes both `scene_swaps` and
+the stamped `listener_motion`. Unit test in `exec.rs`: driving the node
+from P0 → P1 → P0 re-looks-up each cell against the continuous sine
+history, and `None` restores the baked position. `engine` and `config`
+stay in lockstep at 3.38.0.
+
+**Unblocks (Horizon).** listener *orientation* (yaw/pitch) alongside
+position for binaural replays, per-frame scene interpolation (Phase 35
+horizon), and multi-listener bakes driven by separate trajectories.
+
+## Phase 37 — Per-listener baked scenes (v3.39.0) — **Implemented**
+
+**Intent.** Since v3.31 every `Acoustic` node rendered from the *one*
+global scene attached to the executor — a graph could not render two
+rooms. This phase lets a node **name a scene** from a registry, so a
+single graph renders **distinct room responses for several listeners**
+and mixes them in the topology.
+
+### Key mechanisms
+
+- **`NodeParams::Acoustic { position, scene: Option<String> }`** — a
+  scene id on the node. `add_acoustic_scene(name, position, id)` builds a
+  scene-addressed node; the plain `add_acoustic` keeps `scene: None` and
+  the global-scene behaviour (fully backward compatible).
+- **`OfflineExecutor::set_scene(name, scene)` / `remove_scene(name)`** —
+  a per-listener bake registry keyed by id. `run_acoustic` selects per
+  node: a named scene when the params say so, otherwise the active scene.
+  An unregistered id or unbaked position passes the input through; the
+  tapped delay lines keep ringing through a replacement. It composes with
+  the listener-position drive (v3.38) and scene swaps (v3.37) unchanged —
+  the drive selects the *position*, the scene id selects the *room*.
+
+**Realtime discipline.** Control/offline path — the scene registry is
+host state read once per block, never mid-audio-thread.
+
+**Acceptance (spec-first).** `tests/fidelity/acoustic_graph.rs` gains a
+per-listener test — two bakes of the same room for two **different
+listener positions** at the same source cell, named `front` / `back`: a
+`Split → {front, back} → Mix` output is the **elementwise sum** of the
+two distinct room responses (each different from the other). Unit test in
+`exec.rs`: two scene-addressed nodes at the same source each render
+
+their own listener's oracle exactly and an unregistered scene id passes
+through untouched. `engine` and `config` stay in lockstep at 3.39.0.
+
+**Unblocks (Horizon).** recording named-scene registration in aelog so a
+multi-listener spatial session replays its scene set (the Phase 35 global
+swap is already recorded), per-node scene gains for a mix, and per-frame
+scene interpolation (Phase 35/36 horizon).
+
+## Phase 38 — Per-path spectral acoustic filtering (v3.40.0) — **Implemented**
+
+**Status: done (v3.40.0).** The `Acoustic` node stops collapsing every
+reflection/diffraction path to a single broadband `gain` tap and instead
+filters each path with a **minimum-phase FIR** synthesised from its
+spectral data, so materials and diffraction corners really colour the
+sound.
+
+**Per-path filter synthesis.** [`BakedScene::spectral_taps`] (and the free
+[`spectral_taps`], exported with [`ACOUSTIC_IR_LEN`]) produces one
+`(excess_delay, kernel)` per non-direct path:
+
+- a **reflection** carrying its full per-band [`MaterialSpectrum`] shapes
+  via `reflectivity_at_hz`, sampled per FFT bin and rendered through
+  `dsp::correction::phase`'s minimum-phase magnitude→IR synthesizer — a
+  curtain that eats the treble truly darkens a reflection, not just
+  scales it;
+- a **diffraction/transmission** path collapsed to a corner (a finite
+  `lowpass_hz`, no spectrum — the `SPECTRAL_COLLAPSED` flag case) applies
+  a one-pole low-pass at that corner scaled by the broadband gain;
+- a **flat** path (no spectrum, no finite corner) reduces to a single-tap
+  gain delta — reproducing the classic broadband behavior **byte-for-byte**
+  and for free.
+
+Kernels are minimum-phase (zero algorithmic latency), so a path's time
+remains purely its physical `excess` delay; the filter merely colours it.
+
+**Renderer.** `run_acoustic` keeps a fixed-depth raw **input-history ring**
+([`ACOUSTIC_HISTORY`]) and, per path, convolves its kernel against the
+delayed history (`out[k] += Σ_j h[j]·x[k − excess − j]`) — delay and
+filter are both LTI, so they commute and the ring stays **kernel-
+independent**. On a scene swap or listener drive, only the kernels
+(re)compile (tracked by an executor **`acoustic_epoch`**, so two worlds
+baking the same source cell still recompile); the ring keeps the room
+ringing from the continuous session input, exactly the golden semantics
+v3.35 pinned.
+
+**Acceptance (spec-first).** Unit tests in `exec.rs` / `bake.rs` prove a
+flat scene renders identically to the old broadband form (single-tap
+kernels), a fabric reflection yields a genuine multi-tap **low-pass** FIR
+(it rolls off at Nyquist), a scene swap recompiles kernels while the
+history ring keeps ringing, and the fabric render differs from concrete
+exactly where the MinX wall darkens. `tests/fidelity/aelog_scene.rs`
+re-derives its golden oracles through [`spectral_taps`] (the animated
+fabric scene now spectrally rendered; flat segments byte-identical),
+`tests/fidelity/acoustic_graph.rs` measures fabric dampening via the
+baked broadband gain (the low-pass spreads impulse energy, so raw energy
+is no longer the metric). `engine` and `config` stay in lockstep at
+3.40.0.
+
+**Unblocks (Horizon).** true multi-plane buses (Phase 34) so a spectral
+aeoustic branch travels as a real N-channel wire; caching the synthesised
+kernels per (cell, scene) across renders (Phase 33 cache); and folding
+the spectral taps into the realtime binaural/panner renderers so the
+production *engine* path matches the graph's room colour.
+
+## Phase 39 — Tempo-mapped musical automation (v3.41.0) — **Implemented**
+
+**Status: done (v3.41.0).** Control curves **authored in beats** drive
+graph parameters over time, evaluated against the tempo map — so the same
+automation lands on the correct samples as the tempo changes — building
+on Phase 26's beat scheduling (v3.28).
+
+**CurveBeats.** [`dsp::timeline::automation::CurveBeats`] is the musical
+counterpart to spatial's positional-*seconds* [`CurveScalar`]: keyframes in
+beats, held outside the range, `evaluate_beats(beat)` piecewise-linear in
+musical time, and `evaluate(sample, &TempoMap, sample_rate)` which maps a
+sample back to a beat (`TempoMap::beat_at_sample`) before interpolating.
+A tempo change thus just remaps where each beat lands; the value follows
+the musical grid. (`TempoMap` gained serde so the map round-trips in a log.)
+
+**Graph automation.** [`OfflineExecutor`] drives a Gain node from a curve:
+`set_tempo_map(Some(map))` + `set_gain_automation(node, curve)` sweep the
+gain with a **sample-accurate linear ramp** across each block, using the
+executor's new monotonic `master_sample` as the playhead. An explicit
+scheduled `set_gain_step` still wins for a block (exact event beats
+automation).
+
+**Recordable & golden.** aelog records the automation (`SetTempoMap` +
+`SetGainAutomation`, format stays v3 — additive), [`AelogRecorder`]
+`record_tempo_map` / `record_gain_automation`, and [`ReplayOutcome`]
+exposes `tempo_map` + `gain_automation`; `replay_render` attaches them to
+its executor so a recorded musical session renders the exact gain sweep,
+covered by the aelog-hash golden-render cache.
+
+**Acceptance (spec-first).** `automation.rs` unit tests pin beat-space
+interpolation, keyframe ordering, sample mapping at 120 BPM, and that a
+tempo change moves where a landmark lands (beat 1.5 → sample 30000 under
+a 120→240 map). `exec.rs` tests prove the executor's ramp is monotone,
+the value reaches the curve at the *musical* sample, a tempo change shifts
+the landmark, and removing the automation (or the map) restores the static
+gain. `tests/fidelity/aelog_automation.rs` proves `replay_events`
+reconstructs the tempo map + curves, that a directly-driven executor and
+`replay_render` are **byte-identical**, and that the golden cache serves
+the same capture. `engine` and `config` stay in lockstep at 3.41.0.
+
+**Unblocks (Horizon).** drive non-gain parameters (an `Acoustic`
+position, a `Delay`/`Convolution` depth, HRTF pan) from curves;
+per-node automation gains on a Mix; and folding sampled automation into
+the realtime `dsp::graph` hot path.
+

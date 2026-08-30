@@ -269,6 +269,29 @@ tl.schedule(EventTime::Beat(1.0), EventPayload::SetGain { node: gain.0, gain: 2.
 Like the acoustic and Graph 2.0 layers, the timeline is control/offline-path
 and heap-happy by design; it adds nothing to any realtime audio thread.
 
+### Musical automation — tempo-mapped control curves (offline, v3.41.0)
+
+A control curve **authored in beats** (`CurveBeats`) drives a Gain node
+**over time**, evaluated against a `TempoMap`; the executor sweeps the gain
+with a sample-accurate linear ramp each block:
+
+```
+CurveBeats { (beat, value)… }  ── evaluate(sample, &TempoMap)
+   │                           TempoMap::beat_at_sample
+   ▼
+executor.master_sample ─▶ run_gain: linear ramp across the block
+   │   (no explicit set_gain_step that block)
+   ▼
+Audio = input × (gain_start + (gain_end − gain_start)·t)
+```
+
+A tempo change (e.g. 120 → 240 BPM at beat 4) remaps where each beat of
+the curve lands, so the musical landmarks follow the map. aelog records
+`SetTempoMap` + `SetGainAutomation`; `replay_render` attaches them to the
+executor so a recorded session renders the exact sweep (golden-cache
+covered). `CurveBeats` is the musical counterpart to spatial's
+positional-seconds `CurveScalar`.
+
 ### Aelog — deterministic recording & replay (offline, v3.29.0)
 
 The whole render session can be recorded into a replayable log and
@@ -336,29 +359,131 @@ Source ──▶ Acoustic{position} ──┐            (direct pass-through +
 An unbaked position or a missing scene passes the input through unchanged;
 the direct path adds **zero pipeline latency** (the tail is wet content, so
 `analyze`/`compensate` treat the room as latency-free). Baking and the node's
-control hooks are offline-path; the node's render-time work is a preallocated
-ring read + multiply.
+control hooks are offline-path.
+
+#### Per-path spectral filtering (offline, v3.40.0)
+
+The collapsed broadband tap on each reflection/diffraction path is replaced
+by a real per-path **minimum-phase FIR** synthesised from the path's material
+spectrum (or one-pole diffraction corner). The node convolves each kernel
+against a fixed-depth raw **input-history ring** at the path's excess delay
+(`out[k] += Σ_j h[j]·x[k − excess − j]`) — delay and filter are LTI, so they
+commute and the ring is kernel-independent. On a scene swap or listener drive
+only the kernels recompile (executor `acoustic_epoch`), while the ring keeps
+the room ringing from the continuous session input. A flat path reduces to a
+single gain tap — byte-identical to the pre-v3.40 renderer — and the render
+stays **zero algorithmic latency** (minimum-phase filters add none).
+
+```
+Source ──▶ Acoustic{position, scene?}
+   │         direct gain pass-through               (no spectrum)
+   │         ── sync ──▶ for each non-direct path:
+   │                     out[k] += Σ_j h[j]·x[k − excess − j]
+   │                                h = min-phase FIR(spectrum | lowpass corner)
+   └────────────┬────────────▶ Mix      (flat paths = classic gain taps)
+                │
+   (kernels recompile on acoustic_epoch; ring never drops session history)
+```
+
+### Animated acoustic worlds in aelog (offline, v3.37.0)
+
+A baked-scene **swap** is a recorded command, so an animated world replays
+its geometry timeline deterministically. The scene embeds in the aelog JSON
+verbatim (order-stable serde; solver world skipped), and replay re-attaches
+each swap at its master sample **without resetting** the `Acoustic` nodes'
+tapped delay lines — the room keeps ringing through the change.
+
+```
+AelogRecorder
+   │  record_baked_scene(&scene) → SetBakedScene { at = master, scene }
+   ▼
+Aelog ──▶ replay_events(log)
+   │        → ReplayOutcome.scene_swaps = [(master, scene)…]
+   └───▶ replay_render(log, graph)
+           → OfflineExecutor::swap_baked_scene(scene) at each `at`
+             (direct gain + reflection taps switch from that sample;
+              delay lines keep ringing — no tail cut)
+```
+
+Identical sessions hash identically (the scene is part of the key), so the
+aelog-hash golden-render cache treats scene swaps like any other command.
+
+### Listener-driven acoustic nodes (offline, v3.38.0)
+
+The replayed listener trajectory **drives** the `Acoustic` nodes: each
+`SetListenerPosition` retargets the cached room-response lookup, so a
+spatial golden render walks the baked cells as the listener moves (the
+full baked-room path), falling back to pass-through in unbaked regions.
+
+```
+AelogRecorder
+   │  record_listener_position(pos) → SetListenerPosition { at = master, pos }
+   ▼
+Aelog ──▶ replay_render(log, graph)
+           → OfflineExecutor::set_listener_position(pos) at each `at`
+             (run_acoustic re-looks-up baked.get(pos) each block; node's
+              baked position is the fallback when nothing drives it)
+```
+
+Listener motion is a render input (alongside scene swaps and audio), so
+replaying a session reproduces the moving-listener render byte-exactly.
+
+### Per-listener baked scenes (offline, v3.39.0)
+
+An `Acoustic` node can name a scene from the executor's registry, so one
+graph renders **distinct room responses for several listeners** and mixes
+them in the topology (a per-listener bake = a scene with its own listener
+position).
+
+```
+AcousticBaker
+   │ bake at listener L0 → set_scene("front", …)   ──┐
+   │ bake at listener L1 → set_scene("back", …)   ──┤ registry
+   ▼                                                ▼
+Split ──▶ Acoustic{pos, scene:"front"} ──┐         Mix ──▶ Sink
+        └─▶ Acoustic{pos, scene:"back"}  ──┘  (sum of the two rooms)
+```
+
+Nodes with `scene: None` (plain `add_acoustic`) keep using the active
+global scene — backward compatible. The locator drive selects the
+*position*; the scene id selects the *room*.
 
 ### Aelog render inputs — audio & listener motion (offline, v3.32.0)
 
 The log captures every input a render consumes, so a spatial session
 replays exactly: audio fed into the graph and the listener's motion join
-the timeline commands as first-class recorded commands.
+the timeline commands as first-class recorded commands. Since v3.35.0
+audio inputs are **clip-addressed**: each chunk carries an optional clip
+name, and a multi-input graph mixes several recorded tracks, each routed
+only to the `Buffer` nodes bearing its address. Since v3.36.0 chunks are
+**channel-major planes** (`chunk[0]` = channel 0, …) — a Buffer node
+exposes one mono output port per channel, so stereo/spatial sessions
+replay per-channel exactly.
 
 ```
-Buffer source node (Graph 2.0, Phase 30)
-   │  embedded clip (one-shot / looping), or the executor's external track
+Buffer nodes (Graph 2.0, Phase 30; multi-channel Phase 34)
+   │  unaddressed node ← executor's global external track
+   │  clip-addressed node ← its per-clip track (set_external_clip)
+   │  N output ports = N channel planes (one mono port per channel)
+   │  fallback: embedded clip; no upmix (missing channels read silence)
    ▼
 AelogRecorder
-   │  record_audio_input(chunk)      → RecordedCommand::InputAudio
-   │  record_listener_position(pos)  → SetListenerPosition{at = master, pos}
+   │  record_audio_input(chunk)          → InputAudio { clip: None, chunk }
+   │  record_audio_input_channels([l, r])→ same, chunk = [l, r] planes
+   │  record_clip_audio("mic", c)         → InputAudio { clip: Some("mic"), c }
+   │  record_clip_audio_channels("s", [l, r]) → clip + channel planes
+   │  record_listener_position(pos)      → SetListenerPosition{at = master, pos}
    │  (every timeline mutation still logged as before)
    ▼
 Aelog ──▶ replay_events(log)
-   │        → ReplayOutcome { audio_input = exact track,
+   │        → ReplayOutcome { audio_input = unaddressed track (planes),
+   │                          clip_tracks = [(clip, track planes)…],
    │                          listener_motion = (sample, pos) pairs }
    └───▶ replay_render(log, graph)
-           → set_external_input(audio_input) → byte-identical capture
+           → set_external_input(audio_input)
+           → set_external_clip(clip, track) per clip_tracks
+           → byte-identical capture per channel (per-clip routing,
+             lockstep cursor, no cross-feeding)
 ```
 
 Both inputs are stamped in master-sample terms — chunks concatenate in

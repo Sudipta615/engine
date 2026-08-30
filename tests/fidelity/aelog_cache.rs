@@ -14,8 +14,8 @@
 //!   identical sessions.
 
 use engine::prelude::{
-    graph_fingerprint, log_hash, replay_events, replay_render, Aelog, AelogCache, AelogRecorder,
-    EventPayload, EventTime, ExecutionOrder, Graph2, NodeId, PortId, TransportState,
+    content_address, graph_fingerprint, log_hash, replay_events, replay_render, Aelog, AelogCache,
+    AelogRecorder, EventPayload, EventTime, ExecutionOrder, Graph2, NodeId, PortId, TransportState,
 };
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -99,11 +99,12 @@ fn identical_logs_hash_identically_and_reuse_the_render() {
     assert_eq!(warm.captured, direct.captured, "warm == direct");
     assert_eq!(warm.fired.len(), direct.fired.len(), "same fired stream");
 
-    // The entry is on disk under the log-hash key.
-    let lh = log_hash(&b);
-    let gh = graph_fingerprint(&g);
-    let path = root.join(format!("{lh:016x}-{gh:016x}-{:08x}.json", sink.0));
-    assert!(path.exists(), "entry file written");
+    // The entry is on disk under its SHA-256 content-address name.
+    let path = root.join(format!("{}.json", content_address(&b, &g, sink)));
+    assert!(
+        path.exists(),
+        "entry file written under its content address"
+    );
 
     let _ = std::fs::remove_dir_all(&root);
 }

@@ -405,16 +405,30 @@ Everything is opt-in; the default set covers everyday playback.
 
 ## 🧪 Testing & quality gates
 
-The repository ships **40 integration/fidelity test files** plus in-crate unit suites —
-over 840 tests. Dedicated suites under [`tests/fidelity/`](tests/fidelity/) cover EQ
+The repository ships **42 integration/fidelity test files** plus in-crate unit suites —
+over 860 tests. Dedicated suites under [`tests/fidelity/`](tests/fidelity/) cover EQ
 frequency response, lookahead-limiter correctness and measurement, dither measurement,
 resampler quality/measurement, EBU R128, golden reference vectors, decoder robustness +
 fuzz mutation, multichannel graph, gapless/crossfade/seamless-seek, timestretch fidelity,
 the acoustic world simulation layer, its **acoustic baking** cache, the **Graph 2.0**
 general-purpose topology runtime, the **timeline and scheduler** (sample-accurate
 events driving the graph), the **aelog deterministic recording/replay** golden-render
-pipeline (including **audio inputs and listener motion**), a **golden-render cache**
-keyed by aelog hash so identical sessions reuse stored captures, **graph-wide latency
+pipeline (including **audio inputs and listener motion**, with **clip-addressed
+multi-input** so each recorded track routes to the nodes bearing its clip name,
+**multi-channel tracks** so stereo/spatial sessions replay per-channel exactly,
+and **baked-scene swaps** so animated acoustic worlds replay their geometry
+timeline deterministically, with the replayed **listener trajectory driving
+the Acoustic node positions** so a spatial golden render walks the baked
+cells as the listener moves, and **per-listener baked scenes** so one graph
+mixes distinct room responses for several listeners), a **golden-render cache**
+keyed by aelog hash so identical sessions reuse stored captures (durable on
+disk **and** through a thread-local in-process memo so repeated renders of
+the same log never re-render; entries are **content-addressed** by SHA-256
+of the render identity — so a synced cache directory is valid on any
+machine — under a **size-bounded LRU** budget), **musical automation** (tempo-mapped control
+curves on the AudioClock driving graph gain over time, recorded in aelog and
+replayed deterministically), **graph-wide
+latency
 and automatic delay compensation** (including **HRTF and convolver taps** so binaural
 and convolution-heavy branches align like Delay nodes), the acoustic world
 **as graph-routable nodes** (baked rooms in the topology), **graph-vs-pipeline

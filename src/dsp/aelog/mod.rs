@@ -42,18 +42,26 @@ pub mod cache;
 pub mod record;
 pub mod replay;
 
-pub use cache::{graph_fingerprint, log_hash, render_cached, AelogCache};
+pub use cache::{content_address, graph_fingerprint, log_hash, render_cached, AelogCache};
 pub use record::AelogRecorder;
 pub use replay::{replay_events, replay_render, ReplayError, ReplayOutcome};
 
-use crate::dsp::timeline::{EventPayload, EventTime, Quantize, TransportState};
+use crate::dsp::timeline::{
+    CurveBeats, EventPayload, EventTime, Quantize, TempoMap, TransportState,
+};
+use crate::spatial::acoustic::bake::BakedScene;
 use crate::spatial::math::Vec3;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The aelog format version. Bump on any breaking layout change; the
 /// `version` field lets a future loader reject old files explicitly.
-pub const AELOG_VERSION: u32 = 1;
+/// v2: `InputAudio` gained a `clip` address (v3.35). v3 (v3.36): chunks
+/// became channel-major planes (`Vec<Vec<f32>>`), so stereo/spatial
+/// sessions record and replay every channel. v3 remains current for the
+/// *additive* `SetBakedScene` variant (v3.37) — old v3 files still load;
+/// the variant simply never appears in them.
+pub const AELOG_VERSION: u32 = 3;
 
 /// Session metadata. Deliberately free of wall-clock timestamps — a log
 /// must be a pure function of its commands to be reproducible.
@@ -88,6 +96,12 @@ impl SessionHeader {
 /// during replay; every command is a timeline mutation plus the per-block
 /// advance (block processing itself is implied by `Advance` — the graph is
 /// supplied at replay time).
+///
+/// `SetBakedScene` embeds a whole [`BakedScene`] verbatim, making this
+/// enum large by design — a log is a file format, not a hot-path value,
+/// so the size difference between variants is intentional (the same
+/// allowance the production graph uses for its payload enums).
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RecordedCommand {
     /// Schedule an event (resolved to a master sample at schedule time).
@@ -113,13 +127,42 @@ pub enum RecordedCommand {
     Advance(u64),
     /// A chunk of the session's **audio input** (what was fed into the
     /// graph's `Buffer` source that block). Chunks concatenate in order to
-    /// reconstruct the full mono track.
-    InputAudio(Vec<f32>),
+    /// reconstruct the full track; each chunk is **channel-major planes**
+    /// (`chunk[0]` = channel 0, …), so stereo/spatial inputs replay
+    /// exactly. `clip` addresses a specific `Buffer` node (a multi-input
+    /// session records one chunk stream per clip and each is routed only
+    /// to the nodes bearing that address); `None` is the unaddressed
+    /// single-track path.
+    InputAudio {
+        clip: Option<String>,
+        chunk: Vec<Vec<f32>>,
+    },
     /// A **listener motion** sample: at master sample `at`, the listener
     /// position becomes `position` (applies from `at` onward).
     SetListenerPosition {
         at: u64,
         position: Vec3,
+    },
+    /// An **acoustic world swap**: at master sample `at` the baked scene
+    /// becomes `scene` (applies from `at` onward) — an animated acoustic
+    /// world recorded as a snapshot per geometry change. Replay re-attaches
+    /// the scene to the executor's `Acoustic` nodes without resetting their
+    /// tapped delay lines, so the room keeps ringing through the swap.
+    SetBakedScene {
+        at: u64,
+        scene: BakedScene,
+    },
+    /// The **tempo map** musical automation evaluates against: beat →
+    /// sample conversion across tempo *changes*. Recorded once (idempotent;
+    /// the same map is additive & overwritable on replay).
+    SetTempoMap(TempoMap),
+    /// Drive a Gain node from a **tempo-mapped control curve** (`node` is
+    /// the `NodeId.0` value, like `EventPayload::SetGain`): the curve is
+    /// authored in beats and evaluated against the recorded tempo map, so
+    /// the gain sweeps smoothly over the session.
+    SetGainAutomation {
+        node: u32,
+        curve: CurveBeats,
     },
 }
 

@@ -20,7 +20,7 @@ use crate::spatial::math::Vec3;
 /// Order matches the reflection enumeration in
 /// [`image_sources`](super::super::room::image_sources): `x=0, x=w, y=0,
 /// y=d, z=0, z=h`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Wall {
     /// The `x = 0` wall.
     MinX,

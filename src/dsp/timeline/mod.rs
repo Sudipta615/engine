@@ -40,10 +40,12 @@
 //! an offline renderer (e.g. the Graph 2.0 `OfflineExecutor`). It adds no
 //! allocation or lock to any realtime audio thread.
 
+pub mod automation;
 pub mod clock;
 pub mod event;
 pub mod tempo;
 
+pub use automation::CurveBeats;
 pub use clock::{AudioClock, TempoRamp, TransportState};
 pub use event::{EventError, EventId, EventPayload, EventTime, ScheduledEvent};
 pub use tempo::{TempoMap, TempoPoint};

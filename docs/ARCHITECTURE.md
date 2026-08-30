@@ -79,24 +79,47 @@ src/
 │   │                         #   v3.29; Phase 30, v3.32: render inputs):
 │   │                         #   versioned .aelog render sessions — mod.rs
 │   │                         #   (SessionHeader / RecordedCommand —
-│   │                         #   timeline mutations + InputAudio chunks +
+│   │                         #   timeline mutations + InputAudio chunks
+│   │                         #   (clip-addressed v3.35; multi-channel
+│   │                         #   channel-major planes v3.36) +
 │   │                         #   master-stamped SetListenerPosition / Aelog
 │   │                         #   + JSON string/file round-trips), record.rs
 │   │                         #   (AelogRecorder — logs every timeline
 │   │                         #   mutation + record_audio_input /
-│   │                         #   record_listener_position), replay.rs
-│   │                         #   (replay_events — identical fired stream;
-│   │                         #   replay_render — byte-identical golden
-│   │                         #   capture against a Graph 2.0 executor,
-│   │                         #   re-feeding the recorded audio track;
+│   │                         #   record_clip_audio (Phase 33, v3.35) /
+│   │                         #   record_audio_input_channels /
+│   │                         #   record_clip_audio_channels (Phase 34,
+│   │                         #   v3.36) / record_listener_position /
+│   │                         #   record_baked_scene (Phase 35, v3.37),
+│   │                         #   replay.rs (replay_events — identical fired
+│   │                         #   stream; replay_render — byte-identical
+│   │                         #   golden capture against a Graph 2.0
+│   │                         #   executor, re-feeding the recorded audio
+│   │                         #   tracks, re-attaching baked-scene swaps,
+│   │                         #   and driving acoustic nodes from the
+│   │                         #   listener trajectory (Phase 36, v3.38);
 │   │                         #   ReplayOutcome exposes audio_input +
-│   │                         #   listener_motion). cache.rs (Phase 31,
+│   │                         #   clip_tracks (per-clip tracks, Phase 33,
+│   │                         #   channel-major v3.36) + listener_motion +
+│   │                         #   scene_swaps (Phase 35)). cache.rs
+│   │                         #   (Phase 31,
 │   │                         #   v3.33: AelogCache — golden captures keyed
-│   │                         #   by dependency-free FNV-1a over canonical
-│   │                         #   JSON (log_hash × graph_fingerprint × sink);
+│   │                         #   by a deterministic hash (log_hash ×
+│   │                         #   graph_fingerprint × sink); v3.42.0 names
+│   │                         #   each entry by its **content address** —
+│   │                         #   SHA-256 of the canonical render-identity
+│   │                         #   JSON — so a synced cache directory is
+│   │                         #   valid on any machine, and bounds the dir
+│   │                         #   by **LRU eviction** (with_budget, touched
+│   │                         #   stamp bumped on each hit);
 │   │                         #   lookup/insert/render_cached, atomic
 │   │                         #   temp-file writes, corrupt entries degrade
-│   │                         #   to misses). CLI: bin/aelog_replay (engine
+│   │                         #   to misses; log_hash (v3.41.1) covers only
+│   │                         #   render-relevant content — sample rate,
+│   │                         #   block cadence, commands — so the label
+│   │                         #   and format version never split a key and
+│   │                         #   re-labelled sessions reuse the golden
+│   │                         #   render). CLI: bin/aelog_replay (engine
 │   │                         #   replay recording.aelog)
 │   ├── pipeline/             # DspPipeline — reference chain; bit-exact
 │   │                         #   oracle for the graph equivalence suite
@@ -184,10 +207,33 @@ src/
 │   │                         #   position (add_acoustic builder;
 │   │                         #   OfflineExecutor::set_baked_scene; direct
 │   │                         #   pass-through + per-path excess-delay taps;
-│   │                         #   zero pipeline latency; Vec3 now serde). Phase
+│   │                         #   zero pipeline latency; Vec3 now serde;
+│   │                         #   Phase 36 v3.38: set_listener_position
+│   │                         #   overrides the lookup so the replayed
+│   │                         #   listener trajectory drives the node;
+│   │                         #   Phase 37 v3.39: scene: Option<String> on
+│   │                         #   the node selects a named scene from
+│   │                         #   set_scene/remove_scene — per-listener
+│   │                         #   bakes rendered and mixed in one graph;
+│   │                         #   Phase 38 v3.40: per-path spectral filtering
+│   │                         #   — each non-direct path is a min-phase FIR
+│   │                         #   (material spectrum / diffraction corner)
+│   │                         #   convolved against a fixed raw history ring;
+│   │                         #   kernels recompile on acoustic_epoch bump
+│   │                         #   while the room keeps ringing). Phase
 │   │                         #   30 (v3.32): NodeKind::Buffer — audio-input
 │   │                         #   source (embedded clip one-shot/looping, or
 │   │                         #   OfflineExecutor::set_external_input track).
+│   │                         #   Phase 33 (v3.35): NodeParams::Buffer gains
+│   │                         #   clip: Option<String> — add_buffer_clip /
+│   │                         #   OfflineExecutor::set_external_clip route
+│   │                         #   per-clip tracks only to the nodes bearing
+│   │                         #   that address (multi-input graphs). Phase
+│   │                         #   34 (v3.36): Buffer samples are channel-
+│   │                         #   major planes — add_buffer_channels /
+│   │                         #   add_buffer_clip_channels expose one mono
+│   │                         #   output port per channel (lockstep cursor,
+│   │                         #   no upmix); external tracks multi-channel.
 │   │                         #   Phase 32 (v3.34): NodeKind::Convolution —
 │   │                         #   FIR convolver reporting kernel.len() taps,
 │   │                         #   and NodeKind::HRTF — mono-in/stereo-out
@@ -207,7 +253,11 @@ src/
 │   │                         #   beat↔sample integration across tempo
 │   │                         #   changes), event.rs (ScheduledEvent / EventTime
 │   │                         #   Sample|Beat / EventPayload SetGain|Trigger|
-│   │                         #   Host), mod.rs (Timeline scheduler —
+│   │                         #   Host), automation.rs (CurveBeats — a
+│   │                         #   tempo-mapped piecewise-linear control curve
+│   │                         #   in beats, evaluate(sample, &TempoMap) for
+│   │                         #   musical automation; Phase 39 v3.41),
+│   │                         #   mod.rs (Timeline scheduler —
 │   │                         #   advance_block fires sample-accurate once-
 │   │                         #   events per block, note-grid quantization,
 │   │                         #   timeline regions). Drives a compiled Graph
@@ -227,8 +277,17 @@ src/
 │   │                         #   diffraction + portal transmission paths),
 │   │                         #   bake.rs (BakedScene position-dependent
 │   │                         #   response cache + AcousticBaker; renderers
-│   │                         #   consume via set_baked / listener_images —
-│   │                         #   cache, not a new model)
+│   │                         #   consume via set_baked / listener_images —                │   │                         #   cache, not a new model; Phase 35, v3.37:
+│   │                         #   deterministic serde — BTreeMap cache as
+│   │                         #   ordered entries, −1.0 low-pass-infinity
+│   │                         #   sentinel, solver world skipped — for
+│   │                         #   aelog scene-swap logs; Phase 38, v3.40:
+│   │                         #   spectral_taps(obj, ir_len) renders one
+│   │                         #   (excess, min-phase FIR kernel) per
+│   │                         #   non-direct path — material spectrum or
+│   │                         #   diffraction corner → FIR via the correction
+│   │                         #   magnitude→IR synthesizer; flat → single-tap)
+
 │   ├── math.rs               # Vec3 / Quat + the single documented coordinate
 │   │                         #   system (+X right, +Y front, +Z up; metres /
 │   │                         #   radians / linear gain) — no linear-algebra dep

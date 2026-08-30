@@ -43,8 +43,10 @@ pub const DEFAULT_BAKE_CELL_M: f32 = 0.5;
 /// A single cached propagation path for one (static) source position —
 /// everything a renderer needs to place one delayed, filtered, attenuated
 /// copy of the source. Light and `Copy`; the hot path reads these without
-/// touching the solver.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// touching the solver. Serde: baked scenes are embedded verbatim in aelog
+/// scene-swap logs (v3.37), so an animated world's snapshots replay
+/// exactly.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BakedPath {
     pub kind: PathKind,
     /// Unit direction from the listener toward the virtual source / bend
@@ -58,6 +60,9 @@ pub struct BakedPath {
     /// the renderer's distance model applies that, as for `images_for_object`).
     pub gain: f32,
     /// Low-pass corner (Hz) imparted by the path; `f32::INFINITY` = none.
+    /// Serde: JSON cannot carry non-finite floats (serde_json emits
+    /// `null`), so the `f32::INFINITY` sentinel maps to `-1.0` and back.
+    #[serde(with = "hz_serde")]
     pub lowpass_hz: f32,
     /// The wall/edge the path interacts with (if any).
     pub interacting: Option<Wall>,
@@ -84,7 +89,7 @@ impl BakedPath {
 }
 
 /// The resolved, render-ready response for one static source position.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BakedObject {
     /// The cache cell key this object was stored under (a cube corner).
     pub key: (i32, i32, i32),
@@ -106,10 +111,125 @@ impl BakedObject {
     }
 }
 
+/// Kernel length (FFT point count) used to synthesize a per-path spectral
+/// filter. A power of two ≥ 16 (the correction renderer's constraint);
+/// smooth octave-band material spectra need only a modest IR to shape.
+pub const ACOUSTIC_IR_LEN: usize = 1024;
+
+impl BakedScene {
+    /// Render one cached response into **per-path spectral taps** — the
+    /// production form the `Acoustic` node consumes (v3.40). Replaces the
+    /// collapsed broadband tap (`gain` at `excess`) with a real filter per
+    /// non-direct path:
+    ///
+    /// * a **reflection** with a full per-band [`MaterialSpectrum`] applies
+    ///   that spectrum directly (sampled per FFT bin via
+    ///   `reflectivity_at_hz`) — a curtain that eats the treble genuinely
+    ///   darkens a reflection instead of just scaling it;
+    /// * a **diffraction / transmission** path that was collapsed to a
+    ///   corner (a finite `lowpass_hz`, no spectrum — the diffusion or
+    ///   `SPECTRAL_COLLAPSED` case) applies a one-pole low-pass at that
+    ///   corner, scaled by the path's broadband gain;
+    /// * a **flat** path (no spectrum, no finite corner) reduces to a
+    ///   single-tap delta scaled by its gain — reproducing the classic
+    ///   broadband behavior exactly and for free.
+    ///
+    /// Each kernel is **minimum-phase** (zero algorithmic latency), so a
+    /// path's time remains purely its physical `excess` delay; the filter
+    /// merely colours it. Returns `(excess_delay, kernel)` per non-direct
+    /// path, direct-first order preserved. Both `run_acoustic` and the
+    /// golden oracles share this function, so a rendered room and its
+    /// expected curve always agree.
+    pub fn spectral_taps(&self, obj: &BakedObject, ir_len: usize) -> Vec<(i64, Vec<f32>)> {
+        spectral_taps(obj, ir_len)
+    }
+}
+
+/// Free-function form of [`BakedScene::spectral_taps`], usable with a bare
+/// [`BakedObject`] (the executor, tests) without holding a scene.
+pub fn spectral_taps(obj: &BakedObject, ir_len: usize) -> Vec<(i64, Vec<f32>)> {
+    let direct_delay = obj.direct().map(|d| d.delay_samples).unwrap_or(0.0);
+    obj.paths
+        .iter()
+        .filter(|p| p.kind != PathKind::Direct)
+        .map(|p| {
+            let excess = (p.delay_samples - direct_delay).max(0.0).round() as i64;
+            (excess, path_filter_kernel(p, obj.sample_rate, ir_len))
+        })
+        .collect()
+}
+
+/// Build the minimum-phase spectral filter kernel for one non-direct path
+/// (see [`BakedScene::spectral_taps`]). A flat path yields a one-tap gain
+/// delta.
+pub fn path_filter_kernel(p: &BakedPath, sample_rate: f32, ir_len: usize) -> Vec<f32> {
+    let nyq = (sample_rate * 0.5).max(1.0);
+    // A reflection carrying the full per-band material spectrum shapes
+    // directly (its collapsed `gain` was derived from the same spectrum —
+    // no double counting).
+    if p.kind == PathKind::Reflected {
+        if let Some(sp) = &p.spectrum {
+            return render_magnitude_shape(&|f| sp.reflectivity_at_hz(f), ir_len, sample_rate);
+        }
+    }
+    // A path collapsed to a corner only (diffraction / transmission / a
+    // `SPECTRAL_COLLAPSED` flag): one-pole low-pass at the corner, scaled
+    // by the path broadband gain.
+    if p.lowpass_hz.is_finite() && p.lowpass_hz > 1.0 && p.lowpass_hz < nyq * 0.999 {
+        let fc = p.lowpass_hz;
+        let g = p.gain;
+        return render_magnitude_shape(
+            &|f| g / (1.0 + (f / fc).powi(2)).sqrt(),
+            ir_len,
+            sample_rate,
+        );
+    }
+    // Truly flat: a pure gain tap.
+    vec![p.gain]
+}
+
+/// Synthesize the minimum-phase FIR whose magnitude follows `shape`
+/// (linear) across the Nyquist half-spectrum, truncated to drop its
+/// decaying zero tail. A constant shape collapses to a near-impulse.
+fn render_magnitude_shape(shape: &dyn Fn(f32) -> f32, ir_len: usize, sample_rate: f32) -> Vec<f32> {
+    let n = ir_len.max(16).next_power_of_two();
+    let half = n / 2 + 1;
+    let nyq = sample_rate * 0.5;
+    let mut mag_db = Vec::with_capacity(half);
+    for j in 0..half {
+        let f = j as f32 / (half - 1) as f32 * nyq;
+        let m = shape(f).max(0.0);
+        let db = if m <= 1e-9 { -120.0 } else { 20.0 * m.log10() };
+        mag_db.push(db as f64);
+    }
+    let rendered = crate::dsp::correction::phase::render_from_magnitude_db(
+        &mag_db,
+        &crate::dsp::correction::phase::RenderParams {
+            sample_rate: sample_rate as f64,
+            ir_len_samples: n,
+            phase_mode: crate::dsp::correction::phase::PhaseMode::Minimum,
+            ..Default::default()
+        },
+    )
+    .expect("path magnitude shape renders");
+    let s = &rendered.samples;
+    let max_abs = s.iter().fold(0.0f64, |m, &v| m.max(v.abs()));
+    let mut last = 0usize;
+    for (i, &v) in s.iter().enumerate() {
+        if v.abs() > 1e-5 * max_abs.max(1e-12) {
+            last = i;
+        }
+    }
+    s[..=last.min(s.len() - 1)]
+        .iter()
+        .map(|&v| v as f32)
+        .collect()
+}
+
 /// A bake policy controlling which path kinds are retained (a host may bake
 /// only what it renders — e.g. reflections for a panner, transmission for a
 /// networked room).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BakePolicy {
     pub reflections: bool,
     pub diffraction: bool,
@@ -130,17 +250,30 @@ impl Default for BakePolicy {
 /// set of static source positions against one listener. The render-time API
 /// (`listener_images`) is read-only and allocation-free; baking is
 /// control/offline-path and heap-happy by design.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Serde (v3.37): the scene serializes **deterministically** — the response
+/// map is a [`BTreeMap`] so iteration order is stable, and the solver world
+/// is skipped (`#[serde(skip)]` — rebuilds need it, rendering never does),
+/// keeping a logged scene to the flat response data it renders from. This
+/// is what lets aelog embed an animated world's scene snapshots and hash
+/// them like any other command.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BakedScene {
     /// Listener position used for all bakes.
     pub listener: Vec3,
     /// Cache cell size (metres).
     pub cell: f32,
-    /// The position → response map.
-    cache: std::collections::HashMap<(i32, i32, i32), BakedObject>,
+    /// The position → response map. A `BTreeMap` so serialization (and
+    /// therefore aelog hashing) is order-stable; the serde adapter emits it
+    /// as an ordered entry list (JSON object keys must be strings, and a
+    /// cell tuple is not one).
+    #[serde(with = "baked_cache_serde")]
+    cache: std::collections::BTreeMap<(i32, i32, i32), BakedObject>,
     /// Solver state snapshot so lookups can rebuild missing cells from the
     /// same world later. Public so hosts can seed a scene from an
-    /// [`AcousticBaker`]'s world and accumulate cells incrementally.
+    /// [`AcousticBaker`]'s world and accumulate cells incrementally. Not
+    /// serialized (solver internals are out of scope for a render log).
+    #[serde(skip)]
     pub world: Option<AcousticWorld>,
     sample_rate: f32,
     /// The bake policy retained for rebuilds.
@@ -158,7 +291,7 @@ impl BakedScene {
         Self {
             listener,
             cell: cell.max(0.05),
-            cache: std::collections::HashMap::new(),
+            cache: std::collections::BTreeMap::new(),
             world: None,
             sample_rate: 48_000.0,
             policy: BakePolicy::default(),
@@ -290,6 +423,51 @@ impl BakedScene {
 
 fn cell_index(v: f32, cell: f32) -> i32 {
     (v / cell).floor() as i32
+}
+
+/// Serde adapter for a low-pass corner in Hz. `f32::INFINITY` means "no
+/// filter" and is the default on every direct/unfiltered path, but JSON
+/// cannot represent non-finite floats — so it round-trips as the sentinel
+/// `-1.0` (a corner can never legitimately be negative).
+mod hz_serde {
+    use serde::{Deserialize, Serialize};
+
+    const INF_SENTINEL: f32 = -1.0;
+
+    pub fn serialize<S: serde::Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        let out = if v.is_finite() { *v } else { INF_SENTINEL };
+        out.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        let v = f32::deserialize(d)?;
+        Ok(if v == INF_SENTINEL { f32::INFINITY } else { v })
+    }
+}
+
+/// Serde adapter for the cell cache: a `BTreeMap<(i32, i32, i32), …>`
+/// cannot be a JSON object (non-string keys), so it serializes as an
+/// **ordered entry list** — `BTreeMap` iteration keeps it deterministic,
+/// which is what aelog hashing relies on.
+mod baked_cache_serde {
+    use super::BakedObject;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+
+    /// The cell → response map. Named so the adapter signatures stay
+    /// readable (clippy's type-complexity bar).
+    type CacheMap = BTreeMap<(i32, i32, i32), BakedObject>;
+
+    pub fn serialize<S: Serializer>(m: &CacheMap, s: S) -> Result<S::Ok, S::Error> {
+        let entries: Vec<((i32, i32, i32), BakedObject)> =
+            m.iter().map(|(k, o)| (*k, o.clone())).collect();
+        entries.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<CacheMap, D::Error> {
+        let entries = Vec::<((i32, i32, i32), BakedObject)>::deserialize(d)?;
+        Ok(entries.into_iter().collect())
+    }
 }
 
 /// Control-path builder that owns an [`AcousticWorld`] and produces
@@ -516,5 +694,60 @@ mod tests {
             fp < cp,
             "fabric darkens at least one reflection ({fp} < {cp} expected)"
         );
+    }
+
+    #[test]
+    fn spectral_taps_render_per_path_filters() {
+        use crate::spatial::acoustic::geometry::AcousticRoom;
+        use crate::spatial::acoustic::material::MaterialKind;
+        use crate::spatial::acoustic::solver::wall_index;
+
+        // A flat room: every reflection's kernel must collapse to a single
+        // gain tap (the classic broadband behavior, reproduced exactly).
+        let mut room = AcousticRoom::default();
+        let world = AcousticWorld::new(room, FS);
+        let mut s_flat = BakedScene::new(Vec3::ZERO, DEFAULT_BAKE_CELL_M);
+        s_flat.world = Some(world);
+        let obj_flat = s_flat
+            .bake(Vec3::new(1.0, 2.0, 1.5), FS, BakePolicy::default())
+            .clone();
+        for (excess, kern) in spectral_taps(&obj_flat, ACOUSTIC_IR_LEN) {
+            assert_eq!(
+                kern.len(),
+                1,
+                "flat path ({excess}) must be a single gain tap"
+            );
+        }
+
+        // Fabric MinX wall: the MinX reflection is spectrally coloured — a
+        // multi-tap minimum-phase low-pass kernel (its magnitude rolls off
+        // toward Nyquist), rather than a collapsed broadband gain.
+        room.walls[wall_index(crate::spatial::Wall::MinX)] = MaterialKind::Fabric.spectrum();
+        let mut s_fab = BakedScene::new(Vec3::ZERO, DEFAULT_BAKE_CELL_M);
+        s_fab.world = Some(AcousticWorld::new(room, FS));
+        let obj_fab = s_fab
+            .bake(Vec3::new(1.0, 2.0, 1.5), FS, BakePolicy::default())
+            .clone();
+        let taps_fab = spectral_taps(&obj_fab, ACOUSTIC_IR_LEN);
+        assert!(
+            taps_fab.iter().any(|(_, k)| k.len() > 1),
+            "at least one fabric reflection is a real filter"
+        );
+        // The filter really is a low-pass: H(π) = Σ(-1)^k·h[k] is far below
+        // H(0) = Σ h[k] for at least one coloured path (fabric's reflectivity
+        // falls toward Nyquist).
+        let mut saw_lowpass = false;
+        for (_, kern) in taps_fab.iter().filter(|(_, k)| k.len() > 1) {
+            let dc: f32 = kern.iter().sum();
+            let nyq: f32 = kern
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| v * if i % 2 == 0 { 1.0 } else { -1.0 })
+                .sum();
+            if nyq.abs() < dc.abs() * 0.9 {
+                saw_lowpass = true;
+            }
+        }
+        assert!(saw_lowpass, "a fabric reflection is spectrally low-pass");
     }
 }

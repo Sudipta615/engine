@@ -64,7 +64,11 @@ fn audio_input_reconstructs_exact_track() {
     let log = rec.finish();
 
     let out = replay_events(&log).unwrap();
-    assert_eq!(out.audio_input, track(), "chunks concatenate in order");
+    assert_eq!(
+        out.audio_input,
+        vec![track()],
+        "mono chunks concatenate into the single channel plane"
+    );
     assert!(out.listener_motion.is_empty());
 }
 
@@ -90,7 +94,7 @@ fn recorded_audio_drives_byte_identical_render() {
             track()[i]
         );
     }
-    assert_eq!(out.audio_input, track());
+    assert_eq!(out.audio_input, vec![track()]);
 }
 
 #[test]
@@ -158,7 +162,7 @@ fn combined_session_replays_audio_listener_and_gate_exactly() {
     // Audio track and listener trajectory both reconstructed exactly: the
     // initial sample at master 0, then one sample per block — each stamped
     // with the master at record time (before that block's advance).
-    assert_eq!(out.audio_input, trk);
+    assert_eq!(out.audio_input, vec![trk.clone()]);
     let n = trk.len() / BLOCK as usize; // 200 blocks
     assert_eq!(out.listener_motion.len(), 1 + n);
     // Each block's position is stamped *before* that block's advance, so
@@ -182,6 +186,112 @@ fn combined_session_replays_audio_listener_and_gate_exactly() {
 }
 
 #[test]
+fn clip_addressed_audio_replays_multi_input_mix() {
+    // Two clip-addressed buffers ("mic", "synth") summed by a mix — the
+    // multi-input graph. Each clip's recorded chunks reconstruct into its
+    // own track and feed only its node, so the capture is the exact mix
+    // (and neither clip leaks into the other's node).
+    let mut g = Graph2::new();
+    let mic = g.add_buffer_clip("mic-buf", "mic", vec![], false);
+    let synth = g.add_buffer_clip("synth-buf", "synth", vec![], false);
+    let mix = g.add_mix("sum", 2);
+    let sink = g.add_sink("out");
+    g.add_edge(mic, PortId::OUT, mix, PortId(0)).unwrap();
+    g.add_edge(synth, PortId::OUT, mix, PortId(1)).unwrap();
+    g.add_edge(mix, PortId::OUT, sink, PortId::IN).unwrap();
+    let order = g.compile().unwrap().clone();
+
+    let mic_track: Vec<f32> = (0..200 * BLOCK as usize)
+        .map(|i| (i as f32 * 0.001).sin())
+        .collect();
+    let synth_track: Vec<f32> = (0..200 * BLOCK as usize)
+        .map(|i| (i as f32 * 0.0005).cos())
+        .collect();
+
+    let mut rec = AelogRecorder::new(SR, BLOCK);
+    rec.set_state(TransportState::Playing, 0);
+    for (m, s) in mic_track
+        .chunks(BLOCK as usize)
+        .zip(synth_track.chunks(BLOCK as usize))
+    {
+        rec.record_clip_audio("mic", m);
+        rec.record_clip_audio("synth", s);
+        rec.advance_block(BLOCK);
+    }
+    let log = rec.finish();
+
+    // Each clip reconstructs into its own track; nothing unaddressed.
+    let out = replay_events(&log).unwrap();
+    assert!(out.audio_input.is_empty(), "no unaddressed track recorded");
+    assert_eq!(out.clip_tracks.len(), 2, "one track per clip");
+    let by_clip: std::collections::HashMap<&str, &[Vec<f32>]> = out
+        .clip_tracks
+        .iter()
+        .map(|(n, t)| (n.as_str(), t.as_slice()))
+        .collect();
+    assert_eq!(by_clip["mic"][0], mic_track.as_slice());
+    assert_eq!(by_clip["synth"][0], synth_track.as_slice());
+
+    // Replay through the multi-input graph: each clip feeds only its node,
+    // so the capture is the exact per-sample mix.
+    let out = replay_render(&log, &g, &order, sink).unwrap();
+    assert_eq!(out.captured.len(), mic_track.len());
+    for i in 0..mic_track.len() {
+        let want = mic_track[i] + synth_track[i];
+        assert!(
+            (out.captured[i] - want).abs() < 1e-5,
+            "mixed[{i}] = {} vs {want}",
+            out.captured[i]
+        );
+    }
+}
+
+#[test]
+fn stereo_audio_replays_exact_channel_planes() {
+    // A stereo session: each recorded chunk carries left + right planes.
+    // Replay reconstructs a 2-plane track and the stereo buffer plays each
+    // channel on its own output port — so the spatial/stereo render is
+    // byte-exact per channel.
+    let mut g = Graph2::new();
+    let b = g.add_buffer_channels("stereo-in", vec![vec![], vec![]], false);
+    let sl = g.add_sink("l");
+    let sr = g.add_sink("r");
+    g.add_edge(b, PortId(0), sl, PortId::IN).unwrap();
+    g.add_edge(b, PortId(1), sr, PortId::IN).unwrap();
+    let order = g.compile().unwrap().clone();
+
+    let left: Vec<f32> = (0..64 * BLOCK as usize)
+        .map(|i| (i as f32 * 0.002).sin())
+        .collect();
+    let right: Vec<f32> = (0..64 * BLOCK as usize)
+        .map(|i| (i as f32 * 0.0015).cos())
+        .collect();
+
+    let mut rec = AelogRecorder::new(SR, BLOCK);
+    rec.set_state(TransportState::Playing, 0);
+    for (l, r) in left
+        .chunks(BLOCK as usize)
+        .zip(right.chunks(BLOCK as usize))
+    {
+        rec.record_audio_input_channels(&[l.to_vec(), r.to_vec()]);
+        rec.advance_block(BLOCK);
+    }
+    let log = rec.finish();
+
+    // The track reconstructs as two channel planes, exactly.
+    let out = replay_events(&log).unwrap();
+    assert_eq!(out.audio_input.len(), 2, "two channel planes");
+    assert_eq!(out.audio_input[0], left, "left plane exact");
+    assert_eq!(out.audio_input[1], right, "right plane exact");
+
+    // Replay through the stereo buffer: each port carries its channel.
+    let out = replay_render(&log, &g, &order, sl).unwrap();
+    assert_eq!(out.captured, left, "left port reproduces the left plane");
+    let out = replay_render(&log, &g, &order, sr).unwrap();
+    assert_eq!(out.captured, right, "right port reproduces the right plane");
+}
+
+#[test]
 fn buffer_node_renders_embedded_clip_without_external_track() {
     // No recorded audio: the buffer's own clip plays (one-shot), and replay
     // leaves the capture silent-free as the clip.
@@ -197,7 +307,7 @@ fn buffer_node_renders_embedded_clip_without_external_track() {
     let log = rec.finish();
 
     let out = replay_render(&log, &g, &order, sink).unwrap();
-    assert_eq!(out.audio_input, Vec::<f32>::new(), "no audio recorded");
+    assert_eq!(out.audio_input, Vec::<Vec<f32>>::new(), "no audio recorded");
     assert_eq!(
         &out.captured[..3],
         &[1.0, 2.0, 3.0],

@@ -94,12 +94,18 @@ pub enum NodeKind {
     /// 1:1 room-response node: the input plane passes through (direct) plus
     /// one delayed, gain-scaled copy per baked propagation path of the
     /// source position — the acoustic world as a graph-routable primitive.
+    /// An optional scene id selects a named baked scene (per-listener),
+    /// so several `Acoustic` nodes can render distinct rooms and be mixed.
     Acoustic,
-    /// A recorded-clip source (0-in / 1-out): plays an embedded mono audio
-    /// buffer one-shot (silence after the end) or looping — the graph's
-    /// **audio-input** primitive. When an external track is attached to the
-    /// executor (`OfflineExecutor::set_external_input`) that track plays
-    /// instead (the aelog replay path).
+    /// A recorded-clip source (0-in / N-out, one mono port per channel):
+    /// plays an embedded multi-channel clip one-shot (silence after the
+    /// end) or looping — the graph's **audio-input** primitive. An
+    /// external track wins when attached to the executor (the aelog
+    /// replay path): the global track
+    /// (`OfflineExecutor::set_external_input`) feeds unaddressed nodes,
+    /// and per-clip tracks (`OfflineExecutor::set_external_clip`) feed
+    /// only the nodes bearing that clip address (`NodeParams::Buffer`
+    /// `clip`).
     Buffer,
     /// 1:1 FIR convolver: convolves its input with an embedded kernel and
     /// emits with one kernel-length of pipeline delay (the algorithmic
@@ -190,11 +196,30 @@ pub enum NodeParams {
     None,
     /// `Acoustic` — the source position in the baked acoustic world whose
     /// room response this node renders (the listener + response come from
-    /// the [`BakedScene`](crate::spatial::acoustic::bake::BakedScene)
-    /// attached to the executor).
-    Acoustic { position: Vec3 },
-    /// `Buffer` — the embedded mono clip and whether it loops.
-    Buffer { samples: Vec<f32>, looping: bool },
+    /// the [`BakedScene`](crate::spatial::acoustic::bake::BakedScene)).
+    /// `scene: Some(name)` selects a **named scene** from the executor's
+    /// registry (`OfflineExecutor::set_scene`), letting one graph render
+    /// distinct room responses for several listeners and mix them in the
+    /// topology; `scene: None` uses the executor's active (global) scene.
+    Acoustic {
+        position: Vec3,
+        scene: Option<String>,
+    },
+    /// `Buffer` — the embedded clip as **channel-major planes** (one
+    /// `Vec<f32>` per channel), whether it loops, and an optional **clip
+    /// address**. The node exposes one mono output port per channel, so a
+    /// stereo/spatial track routes as explicit mono wires (the HRTF
+    /// convention). An addressed node (`clip: Some(name)`) plays the
+    /// executor's per-clip track registered for `name`
+    /// (`OfflineExecutor::set_external_clip`) when one is attached — the
+    /// aelog multi-input path; an unaddressed node plays the global
+    /// external track (`OfflineExecutor::set_external_input`). Either
+    /// falls back to the embedded samples.
+    Buffer {
+        samples: Vec<Vec<f32>>,
+        looping: bool,
+        clip: Option<String>,
+    },
     /// `Convolution` — the FIR kernel to convolve with. The node emits its
     /// output with `kernel.len()` samples of pipeline delay (the
     /// block-partitioned lookahead convention), so its reported taps and
@@ -219,14 +244,32 @@ impl NodeParams {
             NodeParams::Gain { gain } => format!("{gain}"),
             NodeParams::Delay { samples } => format!("{samples} samples"),
             NodeParams::None => String::new(),
-            NodeParams::Acoustic { position } => {
-                format!("({:.2}, {:.2}, {:.2})", position.x, position.y, position.z)
+            NodeParams::Acoustic { position, scene } => {
+                let base = format!("({:.2}, {:.2}, {:.2})", position.x, position.y, position.z);
+                match scene {
+                    Some(s) => format!("{base} scene \"{s}\""),
+                    None => base,
+                }
             }
-            NodeParams::Buffer { samples, looping } => {
-                if *looping {
-                    format!("{} samples (loop)", samples.len())
+            NodeParams::Buffer {
+                samples,
+                looping,
+                clip,
+            } => {
+                let frames = samples.first().map(|c| c.len()).unwrap_or(0);
+                let n = samples.len();
+                let body = if n > 1 {
+                    format!(
+                        "{}ch {frames} samples{}",
+                        n,
+                        if *looping { " (loop)" } else { "" }
+                    )
                 } else {
-                    format!("{} samples", samples.len())
+                    format!("{frames} samples{}", if *looping { " (loop)" } else { "" })
+                };
+                match clip {
+                    Some(c) => format!("{body} clip \"{c}\""),
+                    None => body,
                 }
             }
             NodeParams::Convolution { kernel } => format!("{} taps", kernel.len()),

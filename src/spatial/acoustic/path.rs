@@ -13,7 +13,7 @@ use crate::spatial::acoustic::geometry::Wall;
 use crate::spatial::math::Vec3;
 
 /// The kind of interaction a path represents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum PathKind {
     /// Line of sight, no interaction.
     Direct,

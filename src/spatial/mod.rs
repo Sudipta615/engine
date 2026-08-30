@@ -169,10 +169,10 @@ pub mod upmix;
 pub mod vbap;
 pub mod voice;
 pub use acoustic::{
-    diffract_around_edge, wall_index, AcousticBaker, AcousticPath, AcousticRoom, AcousticWorld,
-    BakePolicy, BakedObject, BakedPath, BakedScene, DiffractionEdge, MaterialKind,
-    MaterialSpectrum, PathFlags, PathKind, Portal, Wall, ALL_WALLS, DEFAULT_BAKE_CELL_M, MAX_PATHS,
-    MAX_REFLECTION_ORDER, OCTAVE_BANDS, OCTAVE_BANDS_HZ,
+    diffract_around_edge, spectral_taps, wall_index, AcousticBaker, AcousticPath, AcousticRoom,
+    AcousticWorld, BakePolicy, BakedObject, BakedPath, BakedScene, DiffractionEdge, MaterialKind,
+    MaterialSpectrum, PathFlags, PathKind, Portal, Wall, ACOUSTIC_IR_LEN, ALL_WALLS,
+    DEFAULT_BAKE_CELL_M, MAX_PATHS, MAX_REFLECTION_ORDER, OCTAVE_BANDS, OCTAVE_BANDS_HZ,
 };
 pub use ambisonic::{
     channel_count, encode_plane_wave, encode_plane_wave_n, rotate_bus_frame, rotate_bus_frame_n,

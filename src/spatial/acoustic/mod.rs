@@ -55,7 +55,8 @@ pub mod path;
 pub mod solver;
 
 pub use bake::{
-    AcousticBaker, BakePolicy, BakedObject, BakedPath, BakedScene, DEFAULT_BAKE_CELL_M,
+    spectral_taps, AcousticBaker, BakePolicy, BakedObject, BakedPath, BakedScene, ACOUSTIC_IR_LEN,
+    DEFAULT_BAKE_CELL_M,
 };
 pub use geometry::{
     portal_diffraction_edges, AcousticRoom, DiffractionEdge, Portal, Wall, WallSurface, ALL_WALLS,

@@ -210,9 +210,10 @@ fn acoustic_graph_serializes_and_round_trips() {
         .values()
         .find(|n| n.kind == NodeKind::Acoustic)
         .unwrap();
-    match room.params {
-        NodeParams::Acoustic { position } => {
+    match &room.params {
+        NodeParams::Acoustic { position, scene } => {
             assert!((position.x - 1.5).abs() < 1e-6 && (position.z - 1.0).abs() < 1e-6);
+            assert!(scene.is_none(), "plain add_acoustic has no scene id");
         }
         ref other => panic!("expected Acoustic params, got {other:?}"),
     }
@@ -260,15 +261,87 @@ fn material_bake_changes_the_node_taps() {
     );
 
     let (g, order, sink) = impulse_graph_with_acoustic(pos);
-    let cap_c = render(&g, &order, sink, Some(s_c));
-    let cap_f = render(&g, &order, sink, Some(s_f));
+    let cap_c = render(&g, &order, sink, Some(s_c.clone()));
+    let cap_f = render(&g, &order, sink, Some(s_f.clone()));
     assert_ne!(cap_c, cap_f, "material changes the rendered taps");
-    // Fabric absorbs: its reflection taps are weaker in aggregate.
-    let sum = |v: &[f32]| v.iter().map(|s| s.abs()).sum::<f32>();
+    // Fabric absorbs: its *broadband* reflected gain is weaker (v3.40
+    // colours the reflection spectrally — the low-pass spreads the impulse
+    // across the kernel's taps, so the right metric is the collapsed gain,
+    // not the raw impulse energy).
+    let bband = |s: &BakedScene| {
+        let obj = s.get(pos).unwrap();
+        obj.paths
+            .iter()
+            .filter(|p| p.kind != engine::prelude::PathKind::Direct)
+            .map(|p| p.gain.abs())
+            .sum::<f32>()
+    };
     assert!(
-        sum(&cap_f[1..]) < sum(&cap_c[1..]),
-        "fabric reflections weaker: {} vs {}",
-        sum(&cap_f[1..]),
-        sum(&cap_c[1..])
+        bband(&s_f) < bband(&s_c),
+        "fabric reflections weaker in broadband gain"
     );
+}
+
+#[test]
+fn per_listener_scenes_render_distinct_responses_mixed() {
+    // Two bakes of the same room for two different listener positions but
+    // the SAME source cell — one named scene per listener. Two Acoustic
+    // nodes reference the scenes by id and a Mix sums them in the topology:
+    // the output is the elementwise sum of the two distinct room responses.
+    let room = Room {
+        enabled: true,
+        width: 12.0,
+        depth: 10.0,
+        height: 3.0,
+        absorption: 0.2,
+        reflection_order: 1,
+        rt60_ms: 800.0,
+        late_mix: 0.0,
+        speed_of_sound: 343.0,
+    };
+    let world = AcousticWorld::new(
+        AcousticRoom::from_render_room(&room, MaterialSpectrum::flat_reflective(room.absorption)),
+        SR,
+    );
+    let baker = AcousticBaker::new(world, 0.5);
+    let pos = Vec3::new(1.0, 5.0, 1.5);
+    let front = baker.bake_single(pos, Vec3::new(6.0, 5.0, 1.5), SR, BakePolicy::default());
+    let back = baker.bake_single(pos, Vec3::new(6.0, 2.0, 1.5), SR, BakePolicy::default());
+    let exp_front = expected_response(&front, pos, 2048);
+    let exp_back = expected_response(&back, pos, 2048);
+    assert_ne!(
+        exp_front, exp_back,
+        "different listeners → distinct responses"
+    );
+
+    let mut g = Graph2::new();
+    let src = g.add_source("imp");
+    let split = g.add_split("s", 2);
+    let n_front = g.add_acoustic_scene("front", pos, "front");
+    let n_back = g.add_acoustic_scene("back", pos, "back");
+    let mix = g.add_mix("sum", 2);
+    let sink = g.add_sink("out");
+    g.add_edge(src, PortId::OUT, split, PortId::IN).unwrap();
+    g.add_edge(split, PortId(0), n_front, PortId::IN).unwrap();
+    g.add_edge(split, PortId(1), n_back, PortId::IN).unwrap();
+    g.add_edge(n_front, PortId::OUT, mix, PortId(0)).unwrap();
+    g.add_edge(n_back, PortId::OUT, mix, PortId(1)).unwrap();
+    g.add_edge(mix, PortId::OUT, sink, PortId::IN).unwrap();
+
+    let order = g.compile().unwrap().clone();
+    let mut ex = OfflineExecutor::new(&g, &order, BLOCK, SR).unwrap();
+    ex.set_scene("front", front);
+    ex.set_scene("back", back);
+    ex.process_blocks(4).unwrap();
+    let cap = ex.capture(sink).unwrap();
+
+    // The mix is the elementwise sum of the two listeners' responses.
+    assert_eq!(cap.len(), 2048);
+    for (k, got) in cap.iter().enumerate() {
+        let want = exp_front[k] + exp_back[k];
+        assert!(
+            (got - want).abs() < 1e-6,
+            "mixed[{k}] = {got}, expected {want}"
+        );
+    }
 }
