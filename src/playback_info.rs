@@ -1,6 +1,7 @@
 pub const DEFAULT_SAMPLE_RATE: u32 = 44100;
 
-/// Re-export DSP stats for consumers of this type.
+// Re-export DSP stats and the typed diagnostics for consumers of this type.
+pub use crate::diagnostics::{BitPerfectCause, Diagnostic, DiagnosticKind};
 pub use crate::dsp::pipeline::EngineStats;
 #[cfg(feature = "audio-output")]
 pub use crate::output::output_info::OutputInfo;
@@ -58,7 +59,12 @@ pub struct PlaybackInfo {
     /// mapping due to a sample rate change and needs to be reloaded.
     pub convolution_ir_needs_reload: bool,
     /// Latest fatal engine error that requires UI intervention or playback halt.
+    /// The human-readable text, preserved for logs and the string surface.
     pub engine_error: Option<String>,
+    /// Typed diagnostic categories accompanying [`Self::engine_error`]. The
+    /// last entry (if any) corresponds to `engine_error`; older entries stay
+    /// so a host can see a short history. Empty when there is no error.
+    pub engine_diagnostics: Vec<Diagnostic>,
     /// Number of samples that exceeded ±1.0 in the output callback and
     /// were hard-clamped. A non-zero value indicates the upstream DSP
     /// produced overshoots that the limiter failed to catch (e.g.
@@ -129,6 +135,12 @@ pub struct PlaybackInfo {
     /// (full / degraded / dropped voice counts), mirrored on the telemetry
     /// cadence. `None` until the first refresh.
     pub spatial: Option<SpatialTelemetry>,
+    /// Spatial-health diagnostics: an explainable per-source status
+    /// (localization quality, direct-vs-reflected ratio, occlusion
+    /// severity, phase risk) derived on the telemetry cadence from the
+    /// existing spatial meters + scene + voice counts. `None` until the
+    /// first refresh.
+    pub spatial_health: Option<crate::spatial::health::SpatialHealthSnapshot>,
 }
 
 /// Spatial master output telemetry (Phase 17). Mirrored from the
@@ -279,6 +291,25 @@ impl Default for PlaybackInfo {
             // rest, overwritten with live values on the telemetry cadence
             // while the spatial master is processing.
             spatial: Some(SpatialTelemetry::default()),
+            spatial_health: None,
+            engine_diagnostics: Vec::new(),
         }
+    }
+}
+
+impl PlaybackInfo {
+    /// Record a typed engine error: sets the human-readable `engine_error`
+    /// and appends a typed [`Diagnostic`] (the last entry mirrors
+    /// `engine_error`, earlier entries remain as history).
+    pub fn set_engine_error(&mut self, kind: DiagnosticKind, message: impl Into<String>) {
+        let message = message.into();
+        self.engine_error = Some(message.clone());
+        self.engine_diagnostics.push(Diagnostic::new(kind, message));
+    }
+
+    /// Clear the engine error and its diagnostic history.
+    pub fn clear_engine_error(&mut self) {
+        self.engine_error = None;
+        self.engine_diagnostics.clear();
     }
 }

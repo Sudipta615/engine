@@ -151,15 +151,29 @@ fn test_tick_without_start() {
 #[test]
 fn test_tick_publishes_spatial_telemetry() {
     // Phase 17: the SpatialNode's output meters + voice plan land on the
-    // lock-free PlaybackInfo snapshot every telemetry tick.
+    // lock-free PlaybackInfo snapshot every telemetry tick (2 s cadence).
     let mut engine = AudioEngine::new_default().unwrap();
+    // Force the telemetry window to be due so the publish block actually
+    // runs (the default `spatial: Some(_)` would otherwise mask it).
+    engine.telemetry.last_cpu_reset = std::time::Instant::now() - std::time::Duration::from_secs(3);
     engine.tick();
     let info = engine.playback_info();
     let spatial = info
         .spatial
-        .expect("spatial telemetry published on the first tick");
+        .expect("spatial telemetry published on the tick");
     assert!(spatial.peak_db_l.is_finite() && spatial.peak_db_r.is_finite());
     assert!(spatial.rms_db_l.is_finite() && spatial.rms_db_r.is_finite());
+
+    // Spatial health rides the same cadence. The default engine leaves the
+    // spatial master disabled, so the published report is a coherent
+    // Inactive state — the publication path itself is what we assert here
+    // (per-source status is exercised in the SpatialNode tests).
+    let health = info
+        .spatial_health
+        .expect("spatial health published on the tick");
+    assert_eq!(health.status, crate::spatial::health::HealthLevel::Inactive);
+    assert_eq!(health.active_sources, 0);
+    assert!(health.per_source.is_empty());
 }
 
 #[test]

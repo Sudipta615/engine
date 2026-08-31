@@ -106,6 +106,8 @@ pub enum VolumePath {
     Software,
 }
 
+use crate::diagnostics::BitPerfectCause;
+
 /// Diagnostic breakdown of every condition evaluated for bit-perfect output.
 ///
 /// This is the engine's **single** bit-perfect verdict: `EngineStats.bit_perfect`
@@ -202,6 +204,9 @@ pub struct BitPerfectReport {
     pub result: BitPerfectResult,
     /// First reason why bit-perfect condition failed, if any.
     pub reason: Option<String>,
+    /// Typed, serializable category for the first failure (the programmatic
+    /// twin of `reason`). `None` when bit-perfect holds.
+    pub cause: Option<BitPerfectCause>,
 }
 
 impl BitPerfectReport {
@@ -217,6 +222,11 @@ impl BitPerfectReport {
         if self.dither_active || self.crossfade_active {
             self.bit_perfect_samples = false;
             if self.reason.is_none() {
+                self.cause = Some(if self.dither_active {
+                    BitPerfectCause::DitherActive
+                } else {
+                    BitPerfectCause::CrossfadeActive
+                });
                 self.reason = Some(if self.dither_active {
                     "Dither is active at the integer quantization boundary".to_string()
                 } else {
@@ -307,6 +317,9 @@ pub struct EngineStats {
     pub bit_perfect: bool,
     /// If not bit-perfect, the first reason why.
     pub bit_perfect_reason: Option<String>,
+    /// If not bit-perfect, the typed category of the first failure — the
+    /// programmatic twin of [`Self::bit_perfect_reason`].
+    pub bit_perfect_cause: Option<BitPerfectCause>,
     /// Full 6-condition bit-perfect breakdown report.
     pub bit_perfect_report: BitPerfectReport,
 

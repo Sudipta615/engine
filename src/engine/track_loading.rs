@@ -271,9 +271,9 @@ impl AudioEngine {
             self.write_playback_info(|pb| {
                 pb.resampler_disabled = true;
                 pb.resampler_failed_fatal = true;
-                pb.engine_error = Some(
-                    "Resampler initialization failed; cannot play at requested rate/speed"
-                        .to_string(),
+                pb.set_engine_error(
+                    crate::diagnostics::DiagnosticKind::Resampler,
+                    "Resampler initialization failed; cannot play at requested rate/speed",
                 );
             });
             return Err(EngineError::Resampler(format!(
@@ -637,8 +637,10 @@ impl AudioEngine {
                 self.write_playback_info(|pb| {
                     pb.resampler_disabled = true;
                     pb.resampler_failed_fatal = true;
-                    pb.engine_error =
-                        Some("Resampler initialization failed during gapless handoff".to_string());
+                    pb.set_engine_error(
+                        crate::diagnostics::DiagnosticKind::Resampler,
+                        "Resampler initialization failed during gapless handoff",
+                    );
                 });
                 return Err(EngineError::Resampler(format!(
                     "Required resampler ({} Hz -> {} Hz) for gapless handoff could \

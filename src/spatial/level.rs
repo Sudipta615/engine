@@ -12,8 +12,8 @@ use crate::dsp::biquad::{BiquadCoeffsF32, BiquadStateF32};
 
 /// Distance attenuation law applied to an object's direct path (spec §38).
 ///
-/// `Custom` is a declared seam; this phase implements the three analytic
-/// clawds plus the inverse-square reference used most by spatial mixes.
+/// This phase implements the four analytic laws below; a user-defined
+/// distance law is a declared seam.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DistanceModel {
     /// No distance attenuation — level is constant regardless of distance.

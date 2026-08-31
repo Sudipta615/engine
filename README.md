@@ -10,7 +10,8 @@ CLI players, desktop GUIs (Slint, Iced, Qt, GTK, egui), streaming daemons, test
 harnesses, or pro-audio suites — and it ships with a stable **C FFI** so it can be driven
 from C, C++, Python, C#, Node.js, and any language that can call C.
 
-> **Documentation:** [Architecture](docs/ARCHITECTURE.md) · [Signal Flow](docs/SIGNAL_FLOW.md) ·
+> **Documentation:** [Owner's Guide](docs/OWNERS_GUIDE.md) (plain-English, full-system map) ·
+> [Architecture](docs/ARCHITECTURE.md) · [Signal Flow](docs/SIGNAL_FLOW.md) ·
 > [Embedding guide](docs/EMBEDDING.md) · [Evolution](docs/EVOLUTION.md) · [Contributing & versioning](AGENTS.md)
 
 ---
@@ -54,7 +55,7 @@ from C, C++, Python, C#, Node.js, and any language that can call C.
    │  Decode loop ─▶ Mix bus ─▶ DSP graph ─▶ Output domain ─▶ safety limiter     │
    │  (per-stream decoders +  (N slots: primary,  (compiled plan:              │
    │   resamplers, SPSC rings) crossfade, lanes)  mix → aux → correction →   │
-   │                                              eq → … → limiter)          │
+   │                                              eq → … → spatial)          │
    │  ──────────────────────────────────────────────────────────────────────────│
    │  Each endpoint: SPSC ring → rate resampler → Slip drift correction         │
    └────────────────────────────────────────────────────────────────────────────┘
@@ -108,6 +109,8 @@ Source frames
   ├─ WSOLA time-stretch / pitch-shift                  (varispeed, TimeStretch, PitchShift)
   ├─ Perceptual logarithmic volume (dB, ramped)
   ├─ Seek / transition fade
+  ├─ Spatial master output stage                (opt-in binaural head model
+  │                                              + room; MC passes through)
   └─ Plan done → output domain:
       resampler (Rubato sinc) → 4× true-peak lookahead limiter → TPDF dither
        └─▶ master ring → primary DAC + every endpoint
@@ -116,12 +119,13 @@ Source frames
 ```
 
 The plan is data: `mix → aux → correction → eq → dynamics → convolution → balance →
-crossfeed → stereo → timestretch → volume → seek_fade` (`routing` is prepended on
-the multichannel plan; the correction step is the Phase 7 room/headphone
-correction node, skipped when disabled), compiled per mode (stereo f32 / f64,
-multichannel). Any stage can be selectively disabled; disabled paths are bit-exact.
-The output-domain resampler, final safety limiter, and dither run downstream of the
-graph.
+crossfeed → stereo → timestretch → volume → seek_fade → spatial` (the final step
+is the Phase 17 `SpatialNode` — an opt-in binaural head-model master stage,
+skipped when disabled; `routing` is prepended on the multichannel plan; the
+correction step is the Phase 7 room/headphone correction node, skipped when
+disabled), compiled per mode (stereo f32 / f64, multichannel). Any stage can be
+selectively disabled; disabled paths are bit-exact. The output-domain resampler,
+final safety limiter, and dither run downstream of the graph.
 
 Two **hard bypass modes** bypass the entire graph:
 - **Bit-perfect** — only volume ramps and seek fades survive; every DSP stage is skipped.
@@ -405,8 +409,10 @@ Everything is opt-in; the default set covers everyday playback.
 
 ## 🧪 Testing & quality gates
 
-The repository ships **42 integration/fidelity test files** plus in-crate unit suites —
-over 860 tests. Dedicated suites under [`tests/fidelity/`](tests/fidelity/) cover EQ
+The repository ships **58 test files — 55 fidelity suites under
+[`tests/fidelity/`](tests/fidelity/) plus 3 headless integration tests — with
+roughly 1,300 test functions in total** (including the in-crate unit suites).
+Dedicated suites cover EQ
 frequency response, lookahead-limiter correctness and measurement, dither measurement,
 resampler quality/measurement, EBU R128, golden reference vectors, decoder robustness +
 fuzz mutation, multichannel graph, gapless/crossfade/seamless-seek, timestretch fidelity,
@@ -496,8 +502,10 @@ cross-target compile check of the native WASAPI/ASIO backends. Always re-run `ca
 │   │                          #   monitor, output profiles, WAV writer, loopback
 │   └── bin/                   # audio-engine-cli, replaygain-scanner
 ├── benches/                   # dsp_bench, pipeline_bench, graph_plan_bench, spatial_bench
-├── docs/                      # ARCHITECTURE.md, SIGNAL_FLOW.md, EMBEDDING.md, EVOLUTION.md
-└── tests/                     # headless_playback.rs, fidelity/ (26 suites)
+├── docs/                      # OWNERS_GUIDE.md, ARCHITECTURE.md, SIGNAL_FLOW.md,
+│                              #   EMBEDDING.md, EVOLUTION.md, QUALITY.md
+└── tests/                     # headless_playback.rs + decoder_from_memory.rs +
+                               #   memory_and_hotplug.rs, fidelity/ (55 suites)
 ```
 
 ---

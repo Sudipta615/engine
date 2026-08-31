@@ -2,6 +2,118 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.49.0] — 2026-08-31
+
+### Added
+
+- **Versioned configuration envelope + migration framework** (`config`).
+  New `VersionedConfig` wraps an [`EngineConfig`] with a `version` schema
+  ({ `version`: 1, …config } via `#[serde(flatten)]`); `load`, `save_pretty`
+  and `migrate` expose an explicit, future-proof upgrade path. A legacy
+  pre-versioning payload (a bare `EngineConfig` JSON) deserializes as
+  already-current — the historical no-op guarantee — and `EngineConfig`
+  itself is unchanged, so hosts using it today keep working. Re-exported as
+  `config::{CONFIG_VERSION, migrate_step, VersionedConfig, ConfigLoadError}`.
+- **Unified quality-evaluation harness (Phase 2).** New [`eval`]
+  module (see [`docs/QUALITY.md`]): a versioned [`ReferenceVectorRegistry`]
+  (content-addressed via the aelog `SHA-256` substrate — a changed
+  expectation changes the address, so a drifting spec is always
+detectable) plus objective measurement primitives (Goertzel amplitude,
+  THD+N, bit-exactness, DTFT impulse-response magnitude **and phase**) and
+  **nine** DSP/spatial suites: [`DspPipeline`] bit-exact + transparency,
+  parametric-EQ biquad frequency **and phase** response, limiter true-peak
+  ceiling, resampler in-band gain, binaural inter-aural level, **EBU R128
+  loudness** (BS.1770-4 reference tone), **partitioned-FFT convolution vs
+  a naive-direct reference**, **channel separation / crosstalk**, and
+  **HRTF-interpolation convexity** against the measured grid.
+  [`EvaluationReport`] renders a human-readable PASS/FAIL table
+  (`render_text`) and machine-readable JSON (`to_json`), and
+  [`eval::EvaluationReport::compare`] diffs two engine versions into a
+  [`VersionComparison`] (unchanged / drift / improvement / regression) so
+  regressions are detected automatically across builds.
+  [`eval::run_quality`] assembles every suite, and the `quality_harness`
+  fidelity test asserts all components pass, the report is deterministic +
+  versioned, and cross-version drift is detectable. Everything runs off
+  the audio path; measurement numbers mirror the existing
+  golden/fidelity conventions. The controlled listening-test layer is
+  documented in [`docs/QUALITY.md`].
+- **Consolidated, versioned track metadata model** (`decode`). New
+  [`TrackMetadata`] aggregates the previously scattered metadata into one
+  `Clone`/`PartialEq` model: editorial [`TrackTags`] (title/artist/album /
+  album-artist/genre/date/track/disc numbers/artwork reference), duration,
+  technical [`AudioFormatInfo`], loudness tags
+  ([`LoudnessMetadata`]), and opt-in offline measured loudness
+  ([`LoudnessScanResult`]) and chapters ([`CueSheet`]).
+  [`TrackMetadata::from_path`] is cheap (tags + loudness reads, no decode);
+  `from_path_with_measurement` runs a full scan. Reuses the existing
+  codec-routing extractors, so values match what playback reads on load.
+  `LoudnessMetadata`, `GaplessInfo`, `AudioFormatInfo` now derive
+  `PartialEq` so the aggregate is comparable.
+- **Spatial-health diagnostics (explainable per-source status).** New
+  [`spatial::SpatialHealthSnapshot`] derives *why* the spatial render
+  behaves as it does — **localization quality** (measured-HRTF grid
+  coverage or the analytic fallback, plus angular-spread blur),
+  **direct-vs-reflected energy ratio** (direct path gain vs room send ×
+  wall reflection coefficient), **occlusion severity** (applied
+  attenuation + low-pass cutoff), and **phase risk** (measured
+  inter-channel correlation of the master output + per-source spread /
+  extreme-pan heuristics) — as a serde-serializable per-source report with
+  stable `HealthLevel` codes (`inactive`/`good`/`moderate`/`poor`) and a
+  human note per factor. Runs entirely on the **telemetry/control path**
+  (the engine tick, from the existing meter snapshot + scene + voice
+  counts); the audio path is untouched. `PlaybackInfo` gains
+  `spatial_health`, the metering snapshot gains the measured
+  `stereo_correlation` (cross-energy accumulation, allocation-free and
+  opt-in), and the C FFI gains `engine_spatial_health`.
+- **Deterministic AudioProfile perceptual layer (Phase 3).** New
+  [`profile`] module fusing loudness, dynamics, spectral, transient,
+  stereo, spatial, and content measurements into one versioned,
+  serializable [`AudioProfile`] with documented units/ranges and
+  confidence semantics (duration × sub-profile coverage). Built entirely
+  on deterministic DSP — BS.1770-4 loudness via the shared
+  [`LoudnessMeter`] (identical to the scanner), a Hann-windowed FFT
+  power average (centroid / rolloff / flatness / slope / brightness),
+  windowed onset detection, and running L/R + mid/side statistics
+  (correlation / width / balance / phase risk / side fraction).
+  [`AnalysisMask`] lets consumers request only the analysis they need;
+  the bounded-memory streaming [`ProfileAnalyzer`] and
+  `analyze_decoder`/`analyze_path` run entirely off the audio path;
+  and the on-disk [`profile::cache`] persists results validated against
+  file size/mtime and the schema version, optionally deduplicating
+  identical content across paths via a content fingerprint
+  (`analyze_path_cached_by_fingerprint` with the `fingerprint`
+  feature). Content-class probabilities are normalized heuristic
+  indicators with an explicit no-evidence prior — never a hidden
+  learned model.
+- **Typed, serializable diagnostics.** New `engine::DiagnosticKind`
+  (`EngineFault` / `TrackLoad` / `Decode` / `Output` / `BitPerfect` /
+  `Configuration`) and `engine::BitPerfectCause` (all stable snake_case
+  codes) replace the previously string-only `EngineStats`
+  `engine_error`/`bit_perfect_reason` fields with structured categories;
+  the message strings remain for humans and stay exactly as before.
+  [`PlaybackInfo`] exposes a serializable `engine_diagnostics: Vec<Diagnostic>`
+  snapshot, and the C FFI gains `engine_diagnostics_info` (typed kind /
+  bit-perfect cause codes + the human message) so hosts can query typed
+  diagnostics without parsing prose. Config validation is now
+  categorized too: `config::{ConfigIssue, ConfigIssueKind, ConfigSeverity}`
+  ride alongside `ConfigValidation::errors`/`warnings` (same checks, same
+  messages), giving hosts a stable machine-readable `kind.code()` per issue.
+
+### Changed
+
+- **Spatial seam reconciliation (docs/code consistency).** The binaural
+  module docs no longer claim the head model is "azimuth-only": elevation is
+  carried by the pinna [`ElevationNotch`] in the analytic path and by
+  bilinear elevation interpolation in a loaded [`HrtfDataset`]. `object`/
+  `scene` velocity docs now describe the live per-block Doppler path
+  (`object.velocity − listener.velocity`) instead of "future Doppler"; the
+  panner's air-absorption docs reflect that the HF roll-off is applied, and
+  the `level::DistanceModel` and `SpatialSourceType` docs are corrected.
+  NetCDF-4/HDF5 `nc4` SOFA is **explicitly deferred with rationale** in the
+  spatial module docs: the robust readers link `libhdf5`, conflicting with
+  the pure-Rust/no-FFI rule, and the typed rejection already isolates the gap
+  behind `HrtfCorpus`.
+
 ## [3.48.0] — 2026-08-30
 
 ### Added

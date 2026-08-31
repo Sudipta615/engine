@@ -607,6 +607,76 @@ pub extern "C" fn engine_spatial_info(
     EngineStatus::Ok as i32
 }
 
+/// Spatial-health diagnostics (spec §103 extension): explainable per-source
+/// status derived from the spatial meters + scene on the telemetry cadence.
+/// Each level out-param uses `EngineHealthLevel` (0 = Inactive, 1 = Good,
+/// 2 = Moderate, 3 = Poor). `correlation` is the measured inter-channel
+/// correlation `[-1, 1]` (0 = unmeasured), `direct_reflected_ratio_db` is
+/// the scene-wide direct-vs-reflected ratio (`+∞` = no reflections).
+/// Out-params are optional — pass NULL to skip.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn engine_spatial_health(
+    handle: *mut EngineHandleFFI,
+    status: *mut i32,
+    localization: *mut i32,
+    reflection_dominance: *mut i32,
+    occlusion: *mut i32,
+    phase_risk: *mut i32,
+    voice_pressure: *mut i32,
+    correlation: *mut f32,
+    direct_reflected_ratio_db: *mut f32,
+    active_sources: *mut i32,
+) -> i32 {
+    let h = match unsafe { handle.as_ref() } {
+        Some(h) => h,
+        None => return EngineStatus::InvalidHandle as i32,
+    };
+    let health = h.handle.playback_info().spatial_health;
+    let level_code = |l: crate::spatial::health::HealthLevel| -> i32 {
+        match l {
+            crate::spatial::health::HealthLevel::Inactive => 0,
+            crate::spatial::health::HealthLevel::Good => 1,
+            crate::spatial::health::HealthLevel::Moderate => 2,
+            crate::spatial::health::HealthLevel::Poor => 3,
+        }
+    };
+    unsafe {
+        // A not-yet-published report reads as a coherent inactive set.
+        *status = health.as_ref().map(|h| level_code(h.status)).unwrap_or(0);
+        *localization = health
+            .as_ref()
+            .map(|h| level_code(h.localization.level))
+            .unwrap_or(0);
+        *reflection_dominance = health
+            .as_ref()
+            .map(|h| level_code(h.reflection_dominance.level))
+            .unwrap_or(0);
+        *occlusion = health
+            .as_ref()
+            .map(|h| level_code(h.occlusion.level))
+            .unwrap_or(0);
+        *phase_risk = health
+            .as_ref()
+            .map(|h| level_code(h.phase_risk.level))
+            .unwrap_or(0);
+        *voice_pressure = health
+            .as_ref()
+            .map(|h| level_code(h.voice_pressure.level))
+            .unwrap_or(0);
+        *correlation = health.as_ref().map(|h| h.stereo_correlation).unwrap_or(0.0);
+        *direct_reflected_ratio_db = health
+            .as_ref()
+            .map(|h| h.direct_reflected_ratio_db)
+            .unwrap_or(f32::INFINITY);
+        *active_sources = health
+            .as_ref()
+            .map(|h| h.active_sources as i32)
+            .unwrap_or(0);
+    }
+    EngineStatus::Ok as i32
+}
+
 /// Set the spatial master renderer quality tier (Phase 17, spec §86).
 /// `quality` uses `EngineSpatialQuality` (0 = Low, 1 = Medium, 2 = High,
 /// 3 = Ultra).
@@ -932,6 +1002,101 @@ pub extern "C" fn engine_endpoint_info(
     EngineStatus::Ok as i32
 }
 
+// ── Structured diagnostics (enum-ified categories) ──────────────────────────
+
+/// Stable integer code for a [`crate::DiagnosticKind`] across the FFI boundary.
+fn diagnostic_kind_code(k: crate::DiagnosticKind) -> i32 {
+    match k {
+        crate::DiagnosticKind::Internal => 0,
+        crate::DiagnosticKind::Decoder => 1,
+        crate::DiagnosticKind::Output => 2,
+        crate::DiagnosticKind::Resampler => 3,
+        crate::DiagnosticKind::Stream => 4,
+        crate::DiagnosticKind::Endpoint => 5,
+        crate::DiagnosticKind::BitPerfect => 6,
+        crate::DiagnosticKind::Configuration => 7,
+        crate::DiagnosticKind::Spatial => 8,
+        crate::DiagnosticKind::Loudness => 9,
+    }
+}
+
+/// Stable integer code for a [`crate::BitPerfectCause`] across the FFI boundary.
+fn bit_perfect_cause_code(c: crate::BitPerfectCause) -> i32 {
+    match c {
+        crate::BitPerfectCause::None => 0,
+        crate::BitPerfectCause::VolumeNotUnity => 1,
+        crate::BitPerfectCause::EqActive => 2,
+        crate::BitPerfectCause::DynamicsActive => 3,
+        crate::BitPerfectCause::SpeedOrResampleActive => 4,
+        crate::BitPerfectCause::SampleRateMismatch => 5,
+        crate::BitPerfectCause::UnknownPrecision => 6,
+        crate::BitPerfectCause::BitDepthTruncation => 7,
+        crate::BitPerfectCause::FormatConversionLossy => 8,
+        crate::BitPerfectCause::OutputNotDirectExclusive => 9,
+        crate::BitPerfectCause::DitherActive => 10,
+        crate::BitPerfectCause::CrossfadeActive => 11,
+    }
+}
+
+/// Read the engine's structured diagnostics from telemetry.
+///
+/// Out-params (each optional — pass NULL to skip):
+/// - `engine_error_kind` — [`crate::DiagnosticKind`] code for the latest
+///   engine error, or `-1` when there is none.
+/// - `engine_error_message` / `engine_error_message_len` — a C-string buffer
+///   (at least `engine_error_message_len` bytes) that receives the error's
+///   human message, NUL-terminated; empty when there is no error.
+/// - `bit_perfect_cause` — [`crate::BitPerfectCause`] code (0 = none) for
+///   the bit-perfect verdict's first failure.
+/// - `diagnostic_count` — total number of typed diagnostics recorded.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn engine_diagnostics_info(
+    handle: *mut EngineHandleFFI,
+    engine_error_kind: *mut i32,
+    engine_error_message: *mut c_char,
+    engine_error_message_len: usize,
+    bit_perfect_cause: *mut i32,
+    diagnostic_count: *mut i32,
+) -> i32 {
+    let h = match unsafe { handle.as_ref() } {
+        Some(h) => h,
+        None => return EngineStatus::InvalidHandle as i32,
+    };
+    let info = h.handle.playback_info();
+
+    // Latest engine diagnostic (typed). `engine_error` text is preserved.
+    let latest = info.engine_diagnostics.last();
+    unsafe {
+        if !engine_error_kind.is_null() {
+            *engine_error_kind = match latest {
+                Some(diag) => diagnostic_kind_code(diag.kind()),
+                None => -1,
+            };
+        }
+        if !engine_error_message.is_null() && engine_error_message_len > 0 {
+            let text = info.engine_error.as_deref().unwrap_or("");
+            let bytes = text.as_bytes();
+            let n = bytes.len().min(engine_error_message_len.saturating_sub(1));
+            std::ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, engine_error_message, n);
+            *engine_error_message.add(n) = 0;
+        }
+        if !bit_perfect_cause.is_null() {
+            *bit_perfect_cause = info
+                .engine_stats
+                .as_ref()
+                .and_then(|s| s.bit_perfect_cause)
+                .map(bit_perfect_cause_code)
+                .unwrap_or(0);
+        }
+        if !diagnostic_count.is_null() {
+            *diagnostic_count = info.engine_diagnostics.len() as i32;
+        }
+    }
+    EngineStatus::Ok as i32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1242,6 +1407,140 @@ mod tests {
             EngineStatus::InvalidArgument as i32
         );
 
+        shutdown(&mut ffi);
+    }
+
+    #[test]
+    fn ffi_diagnostics_report_empty_state_and_stable_codes() {
+        let (mut ffi, ptr) = ffi_with_engine(EngineConfig::default());
+
+        // No error: kind -1, empty message, no bit-perfect cause, count 0.
+        let mut kind = 999i32;
+        let mut cause = 999i32;
+        let mut count = 999i32;
+        let mut buf = [0i8; 64];
+        assert_eq!(
+            engine_diagnostics_info(
+                ptr,
+                &mut kind,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut cause,
+                &mut count,
+            ),
+            EngineStatus::Ok as i32
+        );
+        assert_eq!(kind, -1);
+        assert_eq!(count, 0);
+        assert_eq!(cause, 0);
+        assert_eq!(
+            unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
+                .to_str()
+                .unwrap(),
+            ""
+        );
+
+        // Null handle is rejected; null out-pointers are tolerated.
+        assert_eq!(
+            engine_diagnostics_info(
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ),
+            EngineStatus::InvalidHandle as i32
+        );
+        assert_eq!(
+            engine_diagnostics_info(
+                ptr,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut count,
+            ),
+            EngineStatus::Ok as i32
+        );
+        assert_eq!(count, 0);
+
+        // Stable FFI integer mappings.
+        assert_eq!(diagnostic_kind_code(crate::DiagnosticKind::Resampler), 3);
+        assert_eq!(diagnostic_kind_code(crate::DiagnosticKind::Endpoint), 5);
+        assert_eq!(
+            diagnostic_kind_code(crate::DiagnosticKind::Configuration),
+            7
+        );
+        assert_eq!(bit_perfect_cause_code(crate::BitPerfectCause::None), 0);
+        assert_eq!(bit_perfect_cause_code(crate::BitPerfectCause::EqActive), 2);
+        assert_eq!(
+            bit_perfect_cause_code(crate::BitPerfectCause::OutputNotDirectExclusive),
+            9
+        );
+        assert_eq!(
+            bit_perfect_cause_code(crate::BitPerfectCause::DitherActive),
+            10
+        );
+
+        shutdown(&mut ffi);
+    }
+
+    #[test]
+    fn ffi_spatial_health_reports_inactive_before_publish() {
+        let (mut ffi, ptr) = ffi_with_engine(EngineConfig::default());
+        let mut status = 99i32;
+        let mut loc = 99i32;
+        let mut refl = 99i32;
+        let mut occ = 99i32;
+        let mut phase = 99i32;
+        let mut voice = 99i32;
+        let mut corr = 99.0f32;
+        let mut ratio = 99.0f32;
+        let mut sources = 99i32;
+        // Before the first telemetry publish the report reads as a coherent
+        // inactive set (status 0 = Inactive, ratio +∞).
+        assert_eq!(
+            engine_spatial_health(
+                ptr,
+                &mut status,
+                &mut loc,
+                &mut refl,
+                &mut occ,
+                &mut phase,
+                &mut voice,
+                &mut corr,
+                &mut ratio,
+                &mut sources,
+            ),
+            EngineStatus::Ok as i32
+        );
+        assert_eq!(status, 0);
+        assert_eq!(loc, 0);
+        assert_eq!(refl, 0);
+        assert_eq!(occ, 0);
+        assert_eq!(phase, 0);
+        assert_eq!(voice, 0);
+        assert_eq!(corr, 0.0);
+        assert!(ratio.is_infinite());
+        assert_eq!(sources, 0);
+
+        // Null handle rejected.
+        assert_eq!(
+            engine_spatial_health(
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ),
+            EngineStatus::InvalidHandle as i32
+        );
         shutdown(&mut ffi);
     }
 

@@ -9,7 +9,7 @@ pub enum LoudnessMode {
 }
 
 /// Loudness metadata for a track (pre-computed during scanning)
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct LoudnessMetadata {
     /// ReplayGain track gain in dB
     pub replaygain_track_db: Option<f32>,

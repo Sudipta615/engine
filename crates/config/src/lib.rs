@@ -10,6 +10,7 @@ mod enums;
 mod rate_policy;
 mod scene_config;
 mod spatial_render;
+mod versioned;
 
 pub use dsp_config::{
     BandConfig, BassManagementConfig, ChannelEqConfig, ChannelEqEntry, ChannelMixConfig,
@@ -19,8 +20,8 @@ pub use dsp_config::{
     LimiterConfig, LoudnessConfig, MultibandCompressorConfig, StereoEnhancerConfig,
 };
 pub use engine_config::{
-    AuxBusConfig, ConfigValidation, EndpointConfig, EngineConfig, EnginePreset, SlotSendConfig,
-    SlotTrimEntry, SpatialConfig, SpatialRoomConfig,
+    AuxBusConfig, ConfigIssue, ConfigIssueKind, ConfigSeverity, ConfigValidation, EndpointConfig,
+    EngineConfig, EnginePreset, SlotSendConfig, SlotTrimEntry, SpatialConfig, SpatialRoomConfig,
 };
 pub use enums::{
     AudioBackend, ChannelPolicy, CompressorDetector, CrossfadeCurve, CrossfeedProfile,
@@ -35,6 +36,7 @@ pub use scene_config::{
     SpatialSceneConfig,
 };
 pub use spatial_render::{SpatialMeterConfig, SpatialQuality, SpatialVoiceConfig, VoicePriority};
+pub use versioned::{migrate_step, ConfigLoadError, VersionedConfig, CONFIG_VERSION};
 
 pub mod types {
     pub mod enums {

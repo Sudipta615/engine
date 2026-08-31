@@ -36,6 +36,17 @@ file / URI / memory
 │  └────────────────┬──────────────┘           │
 │                   ▼                          │
 │  ┌────────────────┴──────────────┐           │
+│  │ Aux bus (AuxBusNode)          │  per-slot post-fader sends accumulated,
+│  │ send taps + insert + return   │  optional convolution insert (reverb),
+│  │                               │  returned into the master pre-EQ
+│  └────────────────┬──────────────┘           │
+│                   ▼                          │
+│  ┌────────────────┴──────────────┐           │
+│  │ Room/headphone correction     │  Phase 7: per-channel IR bank,
+│  │ (CorrectionNode)              │  skipped when disabled (bit-exact)
+│  └────────────────┬──────────────┘           │
+│                   ▼                          │
+│  ┌────────────────┴──────────────┐           │
 │  │ Parametric EQ (+ graphic EQ)  │  up to 64 bands + AutoEQ presets,
 │  │ (post-mix)                    │  10/15/31 ISO graphic layer, preamp
 │  └────────────────┬──────────────┘           │
@@ -59,19 +70,24 @@ file / URI / memory
 │                   ▼                          │
 │  ┌────────────────┴──────────────┐           │
 │  │ Volume + seek fade            │  software gain w/ ramps
+│  └────────────────┬──────────────┘           │
+│                   ▼                          │
+│  ┌────────────────┴──────────────┐           │
+│  │ Spatial master (SpatialNode)  │  opt-in binaural head model + room
+│  │ (last plan step)              │  on the front pair; MC passes through
 │  └───────────────────────────────┘           │
 │                                              │
 │              analyzer tap ──────────────────▶│  RMS / peak / spectrum /
 │  (fed from the decode loop)                  │  dominant frequency → PlaybackInfo
 │                                              │
-│  Post-mix block then goes to the output      │
-│  domain (not shown here; see below).         │
+│  The processed block then goes to the        │
+│  output domain (not shown here; see below).  │
 └──────────────────────────────────────────────┘
 
 Then, in the **output domain** (after the process loop, at the output rate):
 
 ```
-post-mix block (f32 or f64)
+processed block (f32 or f64)
         │
         ▼
 ┌─────────────────────┐
@@ -114,6 +130,10 @@ is demoted back to `f32` for the ring. Two hard bypass modes skip the entire
 chain: **bit-perfect** (only volume ramps and seek fades survive) and **DoP
 bypass** (a pure passthrough so 24-bit DSD-over-PCM words reach the DAC
 unmodified). The safety limiter and dither run in the output domain in f32.
+Documented exceptions to the f64 chain: the WSOLA time-stretch core runs f32
+in both modes (cache locality/SIMD — a deliberate, documented trade-off),
+rubato's internal FFT precision is rubato's own, and the final safety
+limiter is f32 in both modes.
 
 ## Side paths
 
@@ -225,6 +245,7 @@ edge set *defines* the signal flow, and execution order is derived:
 
 ```
 Build        Graph2::add_source/add_gain/add_delay/add_mix/add_split/add_sink
+             (+ add_acoustic/add_buffer/add_convolution/add_hrtf/add_resampler)
              └─ add_edge (fail-fast: endpoints, typed buses, fan-in)
 Validate     Graph2::validate → ValidationReport
              (errors: bad ports, SignalType mismatch, fan-in, cycles
@@ -232,7 +253,8 @@ Validate     Graph2::validate → ValidationReport
 Compile      Graph2::compile → ExecutionOrder (deterministic Kahn topo sort)
              └─ every mutation invalidates → dynamic recompilation
 Execute      OfflineExecutor::process_block  (offline, block-by-block)
-             └─ per-edge planes; Source/Sink/Gain/Delay/Mix/Split ops
+             └─ per-edge planes; Source/Sink/Gain/Delay/Mix/Split +
+                Acoustic/Buffer/Convolution/HRTF/Resampler ops
 ```
 
 Example — a dry/wet bus is arbitrary topology, not a special case:
@@ -519,8 +541,8 @@ under a deterministic hash and reused:
 
 ```
 recording.aelog ──▶ log_hash()  ──┐
-graph           ──▶ graph_fingerprint() ──┼─▶ key (FNV-1a over canonical JSON)
-sink id         ──────────────────┘
+graph           ──▶ graph_fingerprint() ──┼─▶ key (SHA-256 content address
+sink id         ──────────────────┘           of the render identity; v3.42)
         │
         ▼
 AelogCache (file store under the app data dir)
@@ -681,7 +703,7 @@ ones, nearest-speaker out-of-coverage fallback), or `AmbisonicRenderer` (a
 FOA bus decoded to any layout) — on a `SpeakerLayout` (stereo / 5.1 / 7.1 /
 7.1.4 / custom), and renders decoded object planes into a caller-supplied
 interleaved multichannel buffer that can be pushed through the existing
-output core (`SampleSink::push_frames_interleaved`). The object pipeline
+output core (`SampleSink::push_interleaved`). The object pipeline
 order is: `listener-space transform → distance model → directivity (source
 facing vs. listener angle) → occlusion (attenuation + low-pass) → pan
 coefficients (BasicPanner equal-power or VBAP basis solve with energy
@@ -714,7 +736,7 @@ step: the `SpatialNode` spatializes the graph's stereo master through the
 head model (optionally with the room) with a full control surface, while
 multichannel masters pass through untouched. A host that already has an
 ambisonic bus can skip the scene and feed `AmbisonicRenderer` directly
-(now up to order 2): the renderer rotates each frame by the listener
+(up to order 3): the renderer rotates each frame by the listener
 orientation (world-fixed fields) and applies the decode matrix (`Basic`
 sampling or per-order `MaxRe` weights) plus calibration. Scenes persist
 through the scene-file format: `save_scene_json` / `load_scene_json`
@@ -763,5 +785,5 @@ reports transport failures asynchronously.
 
 Every tick publishes a `PlaybackInfo` snapshot into an `ArcSwap`:
 position, state, volume, format, DSP status, analyzer levels, queue state,
-and u64 counters (clips, NaNs, underruns, CPU overloads, deadlock misses).
+and u64 counters (clips, NaNs, underruns, CPU overloads, deadline misses).
 Hosts read it lock-free from any thread.

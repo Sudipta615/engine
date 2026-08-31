@@ -19,7 +19,51 @@ src/
 ├── playlist.rs               # Playback queue: shuffle, repeat, history
 ├── sink.rs                   # SampleSink trait — where processed audio goes
 ├── audio_io.rs               # Async file/URI I/O helpers (memory-mapped + async)
+├── diagnostics.rs            # Typed diagnostics: DiagnosticKind (EngineFault /
+│                             #   TrackLoad / Decode / Output / BitPerfect /
+│                             #   Configuration) + BitPerfectCause + Diagnostic
+├── paths.rs                  # App-data directory resolution (etcetera)
+├── dsp_utils.rs              # Small shared DSP helpers
+├── buffer.rs                 # The `buffer` module façade: declares the
+│                             #   buffer/ submodules, re-exports, shared
+│                             #   limits/errors (MAX_AUDIO_BLOCK_FRAMES =
+│                             #   4096, MAX_CHANNELS = 16, …)
 ├── ffi.rs                    # C FFI surface (engine_create/destroy, controls)
+├── eval/                     # Phase 2 quality-evaluation harness (see
+│                             #   docs/QUALITY.md): versioned reference-vector
+│                             #   registry (registry.rs — content-addressed
+│                             #   via aelog::cache SHA-256, Expect::Equal /
+│                             #   AtMost/AtLeast specs, ReferenceVector
+│                             #   {id,version,engine,checks,address});
+│                             #   objective measurement primitives (measure.rs
+│                             #   — Goertzel amplitude, THD+N, bit-exactness,
+│                             #   DTFT IR magnitude/phase); 9 DSP/spatial
+│                             #   suites (suites.rs — pipeline bit-exact+THD,
+│                             #   parametric-EQ FR+phase, limiter true-peak
+│                             #   ceiling, resampler in-band gain, binaural
+│                             #   inter-aural level, EBU R128 loudness,
+│                             #   convolution vs naive-direct, channel
+│                             #   separation, HRTF interpolation convexity);
+│                             #   report types + render_text/to_json +
+│                             #   cross-version compare (mod.rs — CheckResult /
+│                             #   ComponentReport / EvaluationReport /
+│                             #   VersionComparison; run_quality() entry)
+├── profile/                  # Phase 3 deterministic AudioProfile layer
+│                             #   (perceptual analysis, off the audio path):
+│                             #   mod.rs — versioned AudioProfile + 7
+│                             #   sub-profiles (Loudness/Dynamics/Spectral /
+│                             #   Transient/Stereo/Spatial/Content) with
+│                             #   documented units/ranges + AnalysisMask
+│                             #   (consumers request only what they need) +
+│                             #   confidence semantics; analysis.rs —
+│                             #   bounded-memory streaming ProfileAnalyzer
+│                             #   (BS.1770-4 via the shared LoudnessMeter,
+│                             #   Hann-windowed FFT power averaging, onset
+│                             #   deltas, running L/R + mid/side stats) +
+│                             #   analyze_decoder/analyze_path + cached
+│                             #   variants; cache.rs — on-disk ProfileCache
+│                             #   (size/mtime + optional content-fingerprint
+│                             #   keys, version-validated)
 │
 ├── engine/                   # ── The core state machine ──
 │   ├── mod.rs                # AudioEngine struct + public API
@@ -39,7 +83,10 @@ src/
 │   ├── volume.rs             # Volume control modes (software / hardware)
 │   ├── output_setup.rs       # Output backend creation & device selection
 │   ├── helpers.rs            # Shared helpers (event emission, playback info writes)
-│   ├── decode_loop/          # Decode-and-process hot loop (single / transition)
+│   ├── telemetry.rs          # EngineTelemetry — PlaybackInfo publication cadence
+│   ├── buffers.rs            # EngineScratch — preallocated hot-path buffers
+│   ├── decode_loop/          # Decode-and-process hot loop (common.rs +
+│   │                         #   single.rs + crossfade.rs + mod.rs)
 │   ├── lanes.rs              # Multi-track lane registry (Phase 4 S6): an
 │   │                         #   independent decoder+resampler per bus slot
 │   │                         #   ≥ 2, fed as secondaries each block
@@ -53,7 +100,8 @@ src/
 │       ├── dsp.rs            # dither, crossfeed, compressor, limiter, bit-perfect
 │       ├── output.rs         # backend / device / profiles / volume modes
 │       ├── multichannel.rs   # channel mix / trim / routing / LFE / bass mgmt
-│       └── capture.rs        # WASAPI loopback capture start/stop
+│       ├── capture.rs        # WASAPI loopback capture start/stop
+│       └── correction.rs     # Phase-7 correction: enable/depth/IR load/MeasureRoom
 │
 ├── decode/                   # ── Decoding ──
 │   ├── mod.rs                # Format routing, metadata/loudness extractors
@@ -64,6 +112,9 @@ src/
 │   ├── channel_mix.rs        # Upmix/downmix templates & custom matrices
 │   ├── format_descriptors.rs # Requested→actual format downgrade reporting
 │   ├── cue.rs                # Cue-sheet parsing
+│   ├── metadata.rs           # TrackMetadata — versioned, consolidated track
+│   │                         #   model (TrackTags + AudioFormatInfo + loudness
+│   │                         #   + optional measured loudness + chapters)
 │   ├── loudness_cache.rs     # On-disk loudness scan cache
 │   ├── symphonia_decoder/    # Symphonia-backed decoders (FLAC, WAV, AAC, MP3, …)
 │   ├── dsd/                  # Native DSD decoders (DSF/DFF) + wire packing/decimation
@@ -129,15 +180,17 @@ src/
 │   │                         #   oracle for the graph equivalence suite
 │   │                         #   (mod.rs + controls/process/format/tests)
 │   ├── correction/           # Room & headphone correction (Phase 7):
-│   │                         #   sweep/ (ESS measurement + deconvolution),
-│   │                         #   ir/ (WAV import + conditioning), phase/
-│   │                         #   (min/linear/hybrid rendering), derive/
+│   │                         #   sweep.rs (ESS measurement + deconvolution),
+│   │                         #   ir.rs (WAV import + conditioning), phase.rs
+│   │                         #   (min/linear/hybrid rendering), derive.rs
 │   │                         #   (smoothed regularized inverse) — all
 │   │                         #   control-thread f64 DSP
 │   ├── equalizer/            # Parametric EQ (RBJ) + shared types
 │   ├── graphic_eq.rs         # Graphic EQ model (10/15/31 ISO bands) → compiled into EQ
 │   ├── loudness/             # EBU R128 loudness meter/normalizer
-│   ├── resampler/            # Rubato-based sinc resampler (+ resampler_handle.rs)
+│   ├── resampler/            # Rubato-based sinc resampler
+│   ├── resampler_handle.rs   # ResamplerHandle — per-stream resampler facade
+│   │                         #   (quality tiers, fallback state)
 │   ├── limiter.rs            # Lookahead limiter with true-peak detection
 │   ├── true_peak.rs          # Spec-compliant 4× oversampled FIR detector
 │   ├── dither.rs             # TPDF dither
@@ -158,11 +211,16 @@ src/
 │                             #   production hot path since Phase 3 — split
 │                             #   by concern into construction / access /
 │                             #   controls / lifecycle / process / limiter /
-│                             #   report / plan / swap / nodes/mix/
-│                             #   (MixBusNode split into mod/envelope/sum:
-│                             #   N-slot + N-channel bus with post-fader
-│                             #   lane sends), and nodes/aux_node.rs
-│                             #   (AuxBusNode + shared AuxSendBus: per-send
+│                             #   report / plan / swap; nodes/ holds one file
+│                             #   per stage (aux, correction, eq, dynamics,
+│                             #   convolution, crossfeed, stereo, timestretch,
+│                             #   gain/volume, spatial, routing, limiter,
+│                             #   dither, resampler, loudness + mix/)
+│                             #   — nodes/mix/ (MixBusNode split into
+│                             #   mod/envelope/sum: N-slot + N-channel bus
+│                             #   with post-fader lane sends), and
+│                             #   nodes/aux_node.rs (AuxBusNode + shared
+│                             #   AuxSendBus: per-send
 │                             #   automation + accumulator + insert + return;
 │                             #   Phase 2: per-node
 │                             #   SPSC control queues + publish/swap/retire
@@ -312,7 +370,8 @@ src/
 │   │                         #   diffraction + portal transmission paths),
 │   │                         #   bake.rs (BakedScene position-dependent
 │   │                         #   response cache + AcousticBaker; renderers
-│   │                         #   consume via set_baked / listener_images —                │   │                         #   cache, not a new model; Phase 35, v3.37:
+│   │                         #   consume via set_baked / listener_images —
+│   │                         #   cache, not a new model; Phase 35, v3.37:
 │   │                         #   deterministic serde — BTreeMap cache as
 │   │                         #   ordered entries, −1.0 low-pass-infinity
 │   │                         #   sentinel, solver world skipped — for
@@ -321,7 +380,9 @@ src/
 │   │                         #   (excess, min-phase FIR kernel) per
 │   │                         #   non-direct path — material spectrum or
 │   │                         #   diffraction corner → FIR via the correction
-│   │                         #   magnitude→IR synthesizer; flat → single-tap)
+│   │                         #   magnitude→IR synthesizer; flat → single-tap;
+│   │                         #   Phase 42, v3.48: AirAbsorption model shapes
+│   │                         #   kernels per path distance when enabled)
 
 │   ├── math.rs               # Vec3 / Quat + the single documented coordinate
 │   │                         #   system (+X right, +Y front, +Z up; metres /
@@ -395,6 +456,33 @@ src/
 │   │                         #   interpolation + one-pole smoothing +
 │   │                         #   optional rate limit; host applies the
 │   │                         #   result to the listener per block
+│   ├── automation.rs         # Spatial automation: CurveScalar / CurveVec3 /
+│   │                         #   CurveQuat positional-seconds curves + a
+│   │                         #   SpatialAutomation evaluated allocation-free
+│   │                         #   at block rate (spec §47)
+│   ├── diagnostics.rs        # SpatialDebugView — per-object / per-speaker /
+│   │                         #   per-reflection debug info for hosts
+│   ├── doppler.rs            # Doppler — live per-block pitch from
+│   │                         #   (object.velocity − listener.velocity)
+│   ├── health.rs             # SpatialHealthSnapshot — explainable per-source
+│   │                         #   status (localization quality, direct-vs-
+│   │                         #   reflected ratio, occlusion severity, phase
+│   │                         #   risk) on the telemetry path
+│   ├── metering.rs           # SpatialMeterState / SpatialMeters — per-speaker /
+│   │                         #   bus / LFE peak + RMS accumulators (spec §70)
+│   ├── nearfield.rs          # Near-field model (spec §40): bounded proximity
+│   │                         #   gain + LF low-shelf boost, smoothed per block
+│   ├── provider.rs           # HrtfProvider / HrtfCorpusProvider /
+│   │                         #   HrtfDatasetProvider — HRTF loading seams
+│   ├── quality.rs            # SpatialQuality tiers (Low/Medium/High/Ultra) —
+│   │                         #   render refinement, never correctness
+│   ├── upmix.rs              # UpmixMode / UpmixTrims — stereo→surround
+│   │                         #   compatibility policies (spec §87–88)
+│   ├── voice.rs              # VoiceBudget — per-scene voice admission
+│   │                         #   (capacity / full-quality sub-capacity /
+│   │                         #   priorities), per-block plan (spec §76)
+│   ├── sofa.rs               # (feature `sofa-import`) NetCDF-3 classic SOFA
+│   │                         #   import → HrtfCorpus; nc4/HDF5 refused (typed)
 │   ├── render.rs             # SpatialRenderer trait (incl. HybridBlockInputs /
 │   │                         #   process_hybrid_block), RendererKind (Basic /
 │   │                         #   Vbap / Ambisonic / Binaural), RenderError
@@ -425,7 +513,7 @@ src/
 │   ├── rate_policy.rs        # Output sample-rate policy helpers
 │   ├── endpoint.rs           # Multi-endpoint routing matrix (Phase 5b): per-
 │   │                         #   endpoint ring + nominal-ratio resampler +
-│   │                           rubato Slip drift trim + final limiter, plus
+│   │                         #   rubato Slip drift trim + final limiter, plus
 │   │                         #   the drift controller and virtual endpoint
 │   ├── cpal_output/          # cpal shared-mode fallback (all platforms)
 │   ├── alsa_output/          # Native ALSA exclusive (`hw:`/`plughw:`)
@@ -437,12 +525,16 @@ src/
 │   ├── device_monitor.rs     # Hotplug monitoring
 │   └── output_profile.rs     # Per-device output profiles
 │
-└── buffer/                   # ── Buffers ──
-    ├── pcm_ring.rs           # Lock-free SPSC ring (cache-padded atomics)
-    ├── fixed_frame.rs        # FixedFrameBuffer — interleaved f32 frame ring
-    ├── audio_frame.rs        # AudioFrame — typed sample frame
-    ├── dsd.rs                # DSD byte ring
-    └── output.rs             # Output ring helpers
+├── buffer/                   # ── Buffers (submodules of `buffer.rs`) ──
+│   ├── pcm_ring.rs           # Lock-free SPSC ring (cache-padded atomics)
+│   ├── fixed_frame.rs        # FixedFrameBuffer — interleaved f32 frame ring
+│   ├── audio_frame.rs        # AudioFrame — typed sample frame
+│   ├── dsd.rs                # DSD byte ring
+│   └── output.rs             # Output ring helpers
+└── bin/                      # ── Reference binaries ──
+    ├── audio_engine_cli.rs   # Interactive REPL player
+    ├── replaygain_scanner.rs # EBU R128 / ReplayGain scan + tag write-back
+    └── aelog_replay.rs       # Deterministic aelog replay (--graph / --cache)
 ```
 
 ## Concurrency model
@@ -507,3 +599,7 @@ before repeating.
 | `resample` | Rubato sinc resampler |
 | `codec-*` | Per-codec Symphonia/pure-Rust decoders |
 | `audio-output` | Output backends (on by default) |
+| `network-streaming` | HTTP(S) Range-request streaming via `ureq` |
+| `c-ffi` | Stable C FFI surface |
+| `sofa-import` | NetCDF-3 classic SOFA → `HrtfCorpus` (nc4/HDF5 refused) |
+| `codec-dsd` | Accepted no-op for API compatibility (DSD compiled unconditionally) |

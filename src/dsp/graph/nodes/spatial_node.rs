@@ -411,6 +411,36 @@ impl SpatialNode {
         }
     }
 
+    /// Spatial-health snapshot (spec §103 extension): an explainable
+    /// per-source status derived from the existing meters + scene + voice
+    /// counts. **Control/telemetry path only** — reads the renderer's meter
+    /// accumulator like [`Self::spatial_telemetry`], then the snapshot is
+    /// published via `ArcSwap<PlaybackInfo>` for lock-free host reads.
+    pub fn spatial_health(&self) -> crate::spatial::health::SpatialHealthSnapshot {
+        use crate::spatial::health::{build_health, HrtfCoverage, SpatialHealthInputs};
+        let meters = self.binaural.meters().snapshot();
+        let hrtf = self
+            .binaural
+            .hrtf_grid()
+            .map(|(a0, a1, e0, e1)| HrtfCoverage {
+                azimuth_min_deg: a0,
+                azimuth_max_deg: a1,
+                elevation_min_deg: e0,
+                elevation_max_deg: e1,
+            });
+        build_health(SpatialHealthInputs {
+            scene: &self.scene,
+            meters: &meters,
+            enabled: self.enabled,
+            quality: self.binaural.quality(),
+            voice_active: self.voice_active,
+            voice_full: self.voice_full,
+            voice_degraded: self.voice_degraded,
+            voice_dropped: self.voice_dropped,
+            hrtf,
+        })
+    }
+
     /// Move the two program objects onto the virtual screen and set the
     /// screen gain.
     pub fn apply_screen(
@@ -1033,6 +1063,53 @@ mod tests {
         assert!(t.peak_db_l > -30.0, "L peak {}", t.peak_db_l);
         assert!(t.peak_db_r > -30.0, "R peak {}", t.peak_db_r);
         assert!(t.peak_db_l.is_finite() && t.rms_db_r.is_finite());
+    }
+
+    #[test]
+    fn spatial_health_reports_explainable_per_source_status() {
+        let mut node = SpatialNode::new(48_000.0);
+        node.prepare(48_000.0, 2);
+        node.set_enabled(true);
+        node.apply_config(
+            &config::SpatialConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            48_000.0,
+        );
+        node.apply_screen(0.0, 30.0, 0.0, 1.0);
+        let frames = 256;
+        // A mono-like programme (identical L/R content): the panned ±30°
+        // objects stay phase-coherent, so the measured correlation reports
+        // low phase risk rather than flagging the *test signal* itself.
+        let mut l: Vec<f32> = (0..frames).map(|i| (i as f32 * 0.01).sin()).collect();
+        let mut r: Vec<f32> = (0..frames).map(|i| (i as f32 * 0.01).sin()).collect();
+        let mut planes: Vec<&mut [f32]> = vec![l.as_mut_slice(), r.as_mut_slice()];
+        node.process_block_f32(&mut planes);
+
+        let h = node.spatial_health();
+        // Two program objects (L/R) on the virtual screen, analytic head
+        // model, no room, no occlusion, no voice budget → all Good.
+        assert_eq!(h.status, crate::spatial::health::HealthLevel::Good);
+        assert_eq!(h.active_sources, 2);
+        assert_eq!(h.per_source.len(), 2);
+        assert_eq!(
+            h.localization.level,
+            crate::spatial::health::HealthLevel::Good
+        );
+        assert_eq!(h.occlusion.level, crate::spatial::health::HealthLevel::Good);
+        assert_eq!(
+            h.voice_pressure.level,
+            crate::spatial::health::HealthLevel::Good
+        );
+        for s in &h.per_source {
+            assert!(!s.reasons.is_empty());
+        }
+
+        // Disabled stage → Inactive report.
+        node.set_enabled(false);
+        let h = node.spatial_health();
+        assert_eq!(h.status, crate::spatial::health::HealthLevel::Inactive);
     }
 
     #[test]

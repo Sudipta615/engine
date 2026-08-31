@@ -5,6 +5,7 @@ use super::{
     },
     DspNodeInfo, DspPipeline, PrecisionMode, PREAMP_RAMP_DURATION_MS,
 };
+use crate::diagnostics::BitPerfectCause;
 use crate::dsp::{
     crossfade::TrackMixer,
     equalizer::EqBandParams,
@@ -462,16 +463,22 @@ impl DspPipeline {
             OutputSampleFormat::Unknown => false,
         };
 
+        let mut cause = None;
         let mut reason = None;
         if !volume_unity {
+            cause = Some(BitPerfectCause::VolumeNotUnity);
             reason = Some("Volume / balance / preamp is not unity (0 dB)".to_string());
         } else if !eq_bypassed {
+            cause = Some(BitPerfectCause::EqActive);
             reason = Some("EQ is active".to_string());
         } else if !dynamics_bypassed {
+            cause = Some(BitPerfectCause::DynamicsActive);
             reason = Some("Dynamics / DSP processor is active".to_string());
         } else if !resampler_bypassed {
+            cause = Some(BitPerfectCause::SpeedOrResampleActive);
             reason = Some("Resampler / speed modifier is active".to_string());
         } else if !sample_rate_matched {
+            cause = Some(BitPerfectCause::SampleRateMismatch);
             reason = Some(format!(
                 "Sample rate mismatch: source {} Hz != output {} Hz",
                 source_sample_rate, output_sample_rate
@@ -480,22 +487,26 @@ impl DspPipeline {
             || output_bit_depth == 0
             || output_format == OutputSampleFormat::Unknown
         {
+            cause = Some(BitPerfectCause::UnknownPrecision);
             reason = Some(format!(
                 "Source or output precision is unknown (output format: {}); bit-perfect cannot be proven",
                 output_format.label()
             ));
         } else if !bit_depth_not_truncated {
+            cause = Some(BitPerfectCause::BitDepthTruncation);
             reason = Some(format!(
                 "Bit depth truncation: source {} bits > output {} bits",
                 source_bit_depth, output_bit_depth
             ));
         } else if !format_conversion_lossless {
+            cause = Some(BitPerfectCause::FormatConversionLossy);
             reason = Some(format!(
                 "Source precision ({} bits) is not lossless for {} output",
                 source_bit_depth,
                 output_format.label()
             ));
         } else if !output_exclusive {
+            cause = Some(BitPerfectCause::OutputNotDirectExclusive);
             reason = Some("Output is not direct/exclusive hardware".to_string());
         }
 
@@ -577,6 +588,7 @@ impl DspPipeline {
             volume_path: VolumePath::None,
             result,
             reason,
+            cause,
         }
     }
 
@@ -879,6 +891,7 @@ impl DspPipeline {
             limiter_gain_reduction_db: self.limiter_gain_reduction_db(),
             bit_perfect: bp_report.is_bit_perfect,
             bit_perfect_reason: bp_report.reason.clone(),
+            bit_perfect_cause: bp_report.cause,
             bit_perfect_report: bp_report,
             output_latency_ms: latency_report.total_latency_ms,
             latency_report,

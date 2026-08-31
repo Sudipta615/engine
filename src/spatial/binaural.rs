@@ -35,10 +35,15 @@
 //!
 //! ## Documented simplifications
 //!
-//! - No elevation cues: the model is azimuth-only (the HRTF's spectral
-//!   elevation cues are the documented future seam). An elevated source is
-//!   projected onto the horizontal plane and keeps its full level — a
-//!   source overhead is not artificially attenuated.
+//! - Elevation cue: the analytic head model supplies the *amplitude-based*
+//!   elevation cue — a pinna [`ElevationNotch`] whose center and depth grow
+//!   with elevation ([`elevation_notch_hz`] / [`elevation_notch_depth_db`];
+//!   zero-depth at 0° so a horizontal source passes through). There is no
+//!   elevation-dependent ITD (the Woodworth delay is azimuth-only) and no
+//!   `cos(elevation)` level term, so an *analytic* source overhead keeps its
+//!   full level apart from the notch. When a spectral [`HrtfDataset`] is
+//!   loaded the direct paths instead use bilinear azimuth/elevation
+//!   interpolation, which carries the full spectral elevation cues.
 //! - No constant-power invariant: the head diffracts (the ipsilateral ear
 //!   *boosts* off-axis highs), so energy grows off-axis exactly as with a
 //!   real head. Symmetry is the invariant: mirroring a source swaps the
@@ -353,6 +358,19 @@ impl BinauralRenderer {
         self.dataset.is_some()
     }
 
+    /// The loaded dataset's grid extents `(az_min, az_max, el_min, el_max)`
+    /// in degrees, for spatial-health localization scoring (control path).
+    /// `None` when no dataset is loaded (analytic model in use).
+    pub fn hrtf_grid(&self) -> Option<(f32, f32, f32, f32)> {
+        let ds = self.dataset.as_ref()?;
+        let az = ds.azimuths();
+        let el = ds.elevations();
+        if az.is_empty() || el.is_empty() {
+            return None;
+        }
+        Some((az[0], az[az.len() - 1], el[0], el[el.len() - 1]))
+    }
+
     /// Expose the current ITD ring length (samples) — used by tests to size
     /// measurement windows.
     pub fn itd_len(&self) -> usize {
@@ -487,8 +505,8 @@ impl BinauralRenderer {
 
             // Level chain (spec §68): source gain · distance · directivity ·
             // occlusion transmission. (No cos-elevation term — the head
-            // model is azimuth-only; elevation is not attenuated, documented
-            // in the module docs.)
+            // model carries elevation through the pinna notch / spectral
+            // dataset, not a broadband level cut; documented in module docs.)
             let dist_gain = obj
                 .distance_model
                 .distance_gain(dist, obj.reference_distance);

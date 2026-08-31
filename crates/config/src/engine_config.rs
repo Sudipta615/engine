@@ -402,10 +402,75 @@ pub enum EnginePreset {
     Fidelity,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigSeverity {
+    #[default]
+    Error,
+    Warning,
+}
+
+/// Stable, serializable category for a configuration issue. `code()` returns
+/// a machine-readable name a host can branch on without parsing the message.
+/// Do not rename the codes casually.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ConfigIssueKind {
+    /// General / uncategorised invalid value.
+    #[default]
+    General,
+    /// Dither policy inconsistency.
+    DitherPolicy,
+    /// Mix-bus slot count / per-slot trim or send config.
+    MixBus,
+    /// Aux bus return / insert config.
+    AuxBus,
+    /// Room/headphone correction parameters.
+    Correction,
+    /// Spatial master room / screen / gain parameters.
+    Spatial,
+    /// Output endpoint (id / gain / duplicates).
+    Endpoint,
+    /// Output backend availability.
+    Backend,
+}
+
+impl ConfigIssueKind {
+    pub fn code(self) -> &'static str {
+        match self {
+            ConfigIssueKind::General => "general",
+            ConfigIssueKind::DitherPolicy => "dither_policy",
+            ConfigIssueKind::MixBus => "mix_bus",
+            ConfigIssueKind::AuxBus => "aux_bus",
+            ConfigIssueKind::Correction => "correction",
+            ConfigIssueKind::Spatial => "spatial",
+            ConfigIssueKind::Endpoint => "endpoint",
+            ConfigIssueKind::Backend => "backend",
+        }
+    }
+}
+
+/// A single typed configuration validation issue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigIssue {
+    pub kind: ConfigIssueKind,
+    pub severity: ConfigSeverity,
+    pub message: String,
+}
+
+impl std::fmt::Display for ConfigIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ConfigValidation {
     pub errors: Vec<String>,
     pub warnings: Vec<String>,
+    /// Typed, serializable companion to `errors` / `warnings`, giving a host a
+    /// stable category per issue. Derived from the same checks, so it always
+    /// agrees with the string vectors.
+    pub issues: Vec<ConfigIssue>,
 }
 impl ConfigValidation {
     pub fn is_valid(&self) -> bool {
@@ -423,100 +488,203 @@ impl EngineConfig {
             && !self.multiband_compressor.enabled
             && !self.convolution.enabled;
         if all_dsp_off && self.dither_enabled {
-            v.warnings
-                .push("All DSP stages are disabled but dither is enabled.".to_string());
+            let msg = "All DSP stages are disabled but dither is enabled.".to_string();
+            v.warnings.push(msg);
+            v.issues.push(ConfigIssue {
+                kind: ConfigIssueKind::DitherPolicy,
+                severity: ConfigSeverity::Warning,
+                message: v.warnings.last().unwrap().clone(),
+            });
         }
         if self.mix_slots < 2 {
-            v.errors.push("mix_slots must be at least 2".to_string());
+            let msg = "mix_slots must be at least 2".to_string();
+            v.errors.push(msg);
+            v.issues.push(ConfigIssue {
+                kind: ConfigIssueKind::MixBus,
+                severity: ConfigSeverity::Error,
+                message: v.errors.last().unwrap().clone(),
+            });
         }
         if self.mix_slots > 8 {
-            v.warnings
-                .push("mix_slots above 8 will be clamped".to_string());
+            let msg = "mix_slots above 8 will be clamped".to_string();
+            v.warnings.push(msg);
+            v.issues.push(ConfigIssue {
+                kind: ConfigIssueKind::MixBus,
+                severity: ConfigSeverity::Warning,
+                message: v.warnings.last().unwrap().clone(),
+            });
         }
         for trim in &self.mix_trims {
             if trim.slot >= 8 {
                 v.errors
                     .push(format!("mix_trims slot {} is outside range", trim.slot));
+                v.issues.push(ConfigIssue {
+                    kind: ConfigIssueKind::MixBus,
+                    severity: ConfigSeverity::Error,
+                    message: v.errors.last().unwrap().clone(),
+                });
             }
             if trim.channel >= 16 {
                 v.errors.push(format!(
                     "mix_trims channel {} is outside range",
                     trim.channel
                 ));
+                v.issues.push(ConfigIssue {
+                    kind: ConfigIssueKind::MixBus,
+                    severity: ConfigSeverity::Error,
+                    message: v.errors.last().unwrap().clone(),
+                });
             }
             if !trim.gain_db.is_finite() || !(-60.0..=24.0).contains(&trim.gain_db) {
-                v.errors.push(format!("invalid trim gain {}", trim.gain_db));
+                let msg = format!("invalid trim gain {}", trim.gain_db);
+                v.errors.push(msg);
+                v.issues.push(ConfigIssue {
+                    kind: ConfigIssueKind::MixBus,
+                    severity: ConfigSeverity::Error,
+                    message: v.errors.last().unwrap().clone(),
+                });
             }
         }
         for send in &self.mix_sends {
             if send.slot >= 8 {
-                v.errors
-                    .push(format!("mix_sends slot {} is outside range", send.slot));
+                let msg = format!("mix_sends slot {} is outside range", send.slot);
+                v.errors.push(msg);
+                v.issues.push(ConfigIssue {
+                    kind: ConfigIssueKind::MixBus,
+                    severity: ConfigSeverity::Error,
+                    message: v.errors.last().unwrap().clone(),
+                });
             }
             if !send.master_gain.is_finite() || !(0.0..=1.0).contains(&send.master_gain) {
-                v.errors
-                    .push(format!("invalid master send {}", send.master_gain));
+                let msg = format!("invalid master send {}", send.master_gain);
+                v.errors.push(msg);
+                v.issues.push(ConfigIssue {
+                    kind: ConfigIssueKind::MixBus,
+                    severity: ConfigSeverity::Error,
+                    message: v.errors.last().unwrap().clone(),
+                });
             }
             if !send.aux_gain.is_finite() || !(0.0..=1.0).contains(&send.aux_gain) {
-                v.errors.push(format!("invalid aux send {}", send.aux_gain));
+                let msg = format!("invalid aux send {}", send.aux_gain);
+                v.errors.push(msg);
+                v.issues.push(ConfigIssue {
+                    kind: ConfigIssueKind::MixBus,
+                    severity: ConfigSeverity::Error,
+                    message: v.errors.last().unwrap().clone(),
+                });
             }
         }
         if !self.aux.return_gain.is_finite() || !(0.0..=1.0).contains(&self.aux.return_gain) {
-            v.errors
-                .push(format!("invalid aux return {}", self.aux.return_gain));
+            let msg = format!("invalid aux return {}", self.aux.return_gain);
+            v.errors.push(msg);
+            v.issues.push(ConfigIssue {
+                kind: ConfigIssueKind::AuxBus,
+                severity: ConfigSeverity::Error,
+                message: v.errors.last().unwrap().clone(),
+            });
         }
         if !self.correction.depth.is_finite() || !(0.0..=1.0).contains(&self.correction.depth) {
-            v.errors.push(format!(
-                "invalid correction depth {}",
-                self.correction.depth
-            ));
+            let msg = format!("invalid correction depth {}", self.correction.depth);
+            v.errors.push(msg);
+            v.issues.push(ConfigIssue {
+                kind: ConfigIssueKind::Correction,
+                severity: ConfigSeverity::Error,
+                message: v.errors.last().unwrap().clone(),
+            });
         }
         if self.correction.max_boost_db.is_finite()
             && !(0.0..=24.0).contains(&self.correction.max_boost_db)
         {
-            v.errors.push(format!(
+            let msg = format!(
                 "invalid correction max_boost_db {}",
                 self.correction.max_boost_db
-            ));
+            );
+            v.errors.push(msg);
+            v.issues.push(ConfigIssue {
+                kind: ConfigIssueKind::Correction,
+                severity: ConfigSeverity::Error,
+                message: v.errors.last().unwrap().clone(),
+            });
         }
         if self.correction.smoothing_octaves.is_finite()
             && !(0.02..=1.0).contains(&self.correction.smoothing_octaves)
         {
-            v.errors.push(format!(
+            let msg = format!(
                 "invalid correction smoothing_octaves {}",
                 self.correction.smoothing_octaves
-            ));
+            );
+            v.errors.push(msg);
+            v.issues.push(ConfigIssue {
+                kind: ConfigIssueKind::Correction,
+                severity: ConfigSeverity::Error,
+                message: v.errors.last().unwrap().clone(),
+            });
         }
         let s = &self.spatial;
         if !s.gain.is_finite() || !(0.0..=4.0).contains(&s.gain) {
-            v.errors.push(format!("invalid spatial gain {}", s.gain));
+            let msg = format!("invalid spatial gain {}", s.gain);
+            v.errors.push(msg);
+            v.issues.push(ConfigIssue {
+                kind: ConfigIssueKind::Spatial,
+                severity: ConfigSeverity::Error,
+                message: v.errors.last().unwrap().clone(),
+            });
         }
         if !s.half_width_deg.is_finite() || !(0.0..=90.0).contains(&s.half_width_deg) {
-            v.errors.push(format!(
-                "invalid spatial half_width_deg {}",
-                s.half_width_deg
-            ));
+            let msg = format!("invalid spatial half_width_deg {}", s.half_width_deg);
+            v.errors.push(msg);
+            v.issues.push(ConfigIssue {
+                kind: ConfigIssueKind::Spatial,
+                severity: ConfigSeverity::Error,
+                message: v.errors.last().unwrap().clone(),
+            });
         }
         if let Err(e) = s.room.validate_scene() {
             v.errors.push(e);
+            v.issues.push(ConfigIssue {
+                kind: ConfigIssueKind::Spatial,
+                severity: ConfigSeverity::Error,
+                message: v.errors.last().unwrap().clone(),
+            });
         }
         let mut endpoint_ids = std::collections::HashSet::new();
         for endpoint in &self.endpoints {
             if endpoint.id.trim().is_empty() {
-                v.errors.push("endpoint id must not be empty".to_string());
+                let msg = "endpoint id must not be empty".to_string();
+                v.errors.push(msg);
+                v.issues.push(ConfigIssue {
+                    kind: ConfigIssueKind::Endpoint,
+                    severity: ConfigSeverity::Error,
+                    message: v.errors.last().unwrap().clone(),
+                });
             }
             if !endpoint_ids.insert(endpoint.id.trim().to_string()) {
-                v.errors
-                    .push(format!("duplicate endpoint id '{}'", endpoint.id));
+                let msg = format!("duplicate endpoint id '{}'", endpoint.id);
+                v.errors.push(msg);
+                v.issues.push(ConfigIssue {
+                    kind: ConfigIssueKind::Endpoint,
+                    severity: ConfigSeverity::Error,
+                    message: v.errors.last().unwrap().clone(),
+                });
             }
             if !endpoint.gain.is_finite() || !(0.0..=4.0).contains(&endpoint.gain) {
-                v.errors
-                    .push(format!("invalid endpoint gain {}", endpoint.gain));
+                let msg = format!("invalid endpoint gain {}", endpoint.gain);
+                v.errors.push(msg);
+                v.issues.push(ConfigIssue {
+                    kind: ConfigIssueKind::Endpoint,
+                    severity: ConfigSeverity::Error,
+                    message: v.errors.last().unwrap().clone(),
+                });
             }
         }
         if self.output_backend == AudioBackend::ExclusiveAsio && !cfg!(target_os = "windows") {
-            v.warnings
-                .push("ExclusiveAsio is only available on Windows.".to_string());
+            let msg = "ExclusiveAsio is only available on Windows.".to_string();
+            v.warnings.push(msg);
+            v.issues.push(ConfigIssue {
+                kind: ConfigIssueKind::Backend,
+                severity: ConfigSeverity::Warning,
+                message: v.warnings.last().unwrap().clone(),
+            });
         }
         v
     }
@@ -563,5 +731,59 @@ impl EngineConfig {
                 ..Default::default()
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bad_mix_slots() -> EngineConfig {
+        let mut c = EngineConfig::default();
+        c.mix_slots = 1; // below the minimum of 2
+        c
+    }
+
+    fn bad_endpoint_gain() -> EngineConfig {
+        let mut c = EngineConfig::default();
+        c.endpoints.push(EndpointConfig {
+            id: "test".to_string(),
+            backend: AudioBackend::default(),
+            device: None,
+            gain: 99.0, // far above the 0..=4.0 range
+            enabled: true,
+            drift_correction: true,
+        });
+        c
+    }
+
+    #[test]
+    fn validates_and_produces_typed_issues_agreeing_with_strings() {
+        let v = bad_mix_slots().validate();
+        assert!(!v.is_valid());
+        assert!(!v.errors.is_empty());
+        assert_eq!(v.errors.len(), v.issues.len());
+        assert!(v.issues.iter().any(|i| i.kind == ConfigIssueKind::MixBus
+            && i.severity == ConfigSeverity::Error
+            && !i.message.is_empty()));
+        // codes are stable and machine-readable
+        assert_eq!(ConfigIssueKind::MixBus.code(), "mix_bus");
+    }
+
+    #[test]
+    fn endpoint_issues_carry_endpoint_kind() {
+        let v = bad_endpoint_gain().validate();
+        assert!(v.issues.iter().any(|i| {
+            i.kind == ConfigIssueKind::Endpoint && i.message.contains("endpoint gain")
+        }));
+    }
+
+    #[test]
+    fn severity_serializes_to_snake_case() {
+        let w = ConfigSeverity::Warning;
+        let j = serde_json::to_string(&w).unwrap();
+        assert_eq!(j, "\"warning\"");
+        let back: ConfigSeverity = serde_json::from_str(&j).unwrap();
+        assert_eq!(back, ConfigSeverity::Warning);
     }
 }

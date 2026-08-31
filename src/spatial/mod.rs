@@ -132,8 +132,12 @@
 //! head model at the block boundary. Measured HRTF corpora load from the
 //! JSON interchange or, with the optional `sofa-import` feature, natively
 //! from the NetCDF-classic subset of a `.sofa` file ([`sofa`]). Still
-//! future: order-4+, native NetCDF-4/HDF5 (`nc4`) SOFA (a documented seam),
-//! and spatial recording.
+//! future: order-4+ and spatial recording. **Native NetCDF-4/HDF5 (`nc4`)
+//! SOFA is deliberately deferred** — a documented seam (module docs of
+//! [`sofa`]) — because the only robust HDF5 readers link `libhdf5`, which
+//! conflicts with this layer's parent crate's pure-Rust, no-FFI rule; the
+//! importer's typed rejection already isolates the gap behind [`HrtfCorpus`]
+//! so an optional future feature can close it without touching the renderer.
 //!
 //! The spatial layer contains **no** Dolby/DTS codecs, bitstreams, metadata,
 //! or trademarks — it is an independent implementation (§3, §115).
@@ -147,6 +151,7 @@ pub mod diagnostics;
 pub mod directivity;
 pub mod doppler;
 pub mod field;
+pub mod health;
 pub mod hrtf;
 pub mod level;
 pub mod math;
@@ -191,6 +196,10 @@ pub use diagnostics::{
 pub use directivity::{CustomDirectivity, Directivity};
 pub use doppler::{Doppler, DopplerState};
 pub use field::{FieldId, SpatialField, SpatialFieldStore, MAX_FIELDS};
+pub use health::{
+    build_health, HealthFactor, HealthLevel, HrtfCoverage, SourceHealth, SpatialHealthInputs,
+    SpatialHealthSnapshot,
+};
 pub use hrtf::{
     ear_delay_sec, elevation_notch_depth_db, elevation_notch_hz, head_shadow_alpha,
     load_hrtf_corpus_json, max_itd_sec, save_hrtf_corpus_json, woodworth_itd_sec, Ear,

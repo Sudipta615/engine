@@ -11,7 +11,7 @@ use crate::decode::dsd::DsdWireFormat;
 /// FLAC (TOTAL_SAMPLES − logical_frames), and Ogg Vorbis headers.
 ///
 /// All frame counts are in **source-sample-rate** domain (not output rate).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct GaplessInfo {
     /// Leading silence frames produced by the encoder to prime its filters.
     /// These must be discarded before the logical audio begins.
@@ -189,7 +189,7 @@ pub struct RawDsdChunk {
 ///
 /// Supersedes the lean [`DecodeInfo`] struct for richer UI display and
 /// bit-perfect chain verification.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct AudioFormatInfo {
     pub codec: String,
     pub container: String,

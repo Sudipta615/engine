@@ -2,10 +2,12 @@ pub mod audio_io;
 pub mod buffer;
 pub mod commands;
 pub mod decode;
+pub mod diagnostics;
 pub mod dsp;
 pub mod dsp_utils;
 #[cfg(feature = "audio-output")]
 pub mod engine;
+pub mod eval;
 pub mod events;
 #[cfg(feature = "c-ffi")]
 pub mod ffi;
@@ -14,12 +16,14 @@ pub mod output;
 pub mod paths;
 pub mod playback_info;
 pub mod playlist;
+pub mod profile;
 pub mod sink;
 pub mod source;
 pub mod spatial;
 
 // Re-exports for convenience
 pub use commands::EngineCommand;
+pub use diagnostics::{BitPerfectCause, Diagnostic, DiagnosticKind};
 pub use events::EngineEvent;
 pub use playback_info::{PlaybackInfo, PlaybackState, SpatialTelemetry};
 pub use playlist::{Playlist, RepeatMode};
@@ -33,6 +37,7 @@ pub use audio_io::NetworkByteSource;
 pub use audio_io::{AudioByteSource, FileByteSource, MemoryByteSource};
 pub use config::{AudioBackend, EngineConfig, ResamplerQuality};
 pub use decode::extract_track_metadata;
+pub use profile::{AnalysisMask, AudioProfile, DynamicCharacter, ProfileError};
 pub use sink::{DacSink, NoopSink, SampleSink, VecSink};
 
 pub mod prelude {
@@ -65,6 +70,13 @@ pub mod prelude {
         events::EngineEvent,
         playback_info::{PlaybackInfo, PlaybackState},
         playlist::{Playlist, RepeatMode},
+        profile::{
+            analyze_decoder, analyze_path, analyze_path_cached, lookup, lookup_for_id, store,
+            store_with_id, AnalysisMask, AudioProfile, ContentProfile, DynamicCharacter,
+            DynamicProfile, LoudnessProfile, MaskingProfile, ProfileAnalyzer, ProfileError,
+            SpatialProfile, SpectralProfile, StereoProfile, TransientProfile,
+            AUDIO_PROFILE_VERSION,
+        },
         sink::{DacSink, NoopSink, SampleSink, VecSink},
         source::AudioSource,
         spatial::{
@@ -76,9 +88,9 @@ pub mod prelude {
             FieldId, HeadSample, HeadShadow, HeadTracker, HybridBlockInputs, LayoutCalibration,
             Listener, MaterialKind, MaterialSpectrum, ObjectAudioRef, ObjectId, Occlusion,
             PathKind, Portal, Quat, RenderError, RendererKind, Room, SpatialAudioObject,
-            SpatialBed, SpatialBedStore, SpatialField, SpatialFieldStore, SpatialObjectStore,
-            SpatialRenderer, SpatialScene, Speaker, SpeakerId, SpeakerLayout, TrackingConfig,
-            VbapRenderer, Vec3, Wall, ACOUSTIC_IR_LEN,
+            SpatialBed, SpatialBedStore, SpatialField, SpatialFieldStore, SpatialHealthSnapshot,
+            SpatialObjectStore, SpatialRenderer, SpatialScene, Speaker, SpeakerId, SpeakerLayout,
+            TrackingConfig, VbapRenderer, Vec3, Wall, ACOUSTIC_IR_LEN,
         },
     };
     pub use config::{AudioBackend, ChannelPolicy, ResamplerQuality};

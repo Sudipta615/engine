@@ -23,6 +23,13 @@ pub struct SpatialMeters {
     pub lfe_rms: f32,
     /// Active voice count last block.
     pub active_voices: usize,
+    /// Normalized inter-channel correlation of the first two output channels
+    /// (the stereo ears/speakers) over the metering window, `[-1, 1]`;
+    /// `1.0` = perfectly phase-coherent, `-1.0` = anti-phase. `0.0` means
+    /// unknown (no samples, or a channel silent). Mono output reports `1.0`.
+    /// Derived from the cross-energy accumulator on the render path
+    /// (allocation-free, opt-in via the meter's `enabled` flag).
+    pub stereo_correlation: f32,
 }
 
 /// Renderer-owned meter accumulator (realtime-safe).
@@ -32,6 +39,10 @@ pub struct SpatialMeterState {
     lfe_index: Option<usize>,
     peak: Vec<f32>,
     energy: Vec<f64>,
+    /// Sum of `L×R` over the window (first two channels) — the numerator of
+    /// the normalized inter-channel correlation. Allocation-free and opt-in
+    /// (only accumulated while `enabled`).
+    cross_energy: f64,
     samples: u64,
     enabled: bool,
 }
@@ -49,6 +60,7 @@ impl SpatialMeterState {
             lfe_index: None,
             peak: vec![0.0; channels],
             energy: vec![0.0; channels],
+            cross_energy: 0.0,
             samples: 0,
             enabled: true,
         }
@@ -77,6 +89,11 @@ impl SpatialMeterState {
             }
             self.energy[ch] += (v as f64) * (v as f64);
         }
+        if self.channels >= 2 {
+            let l = frame.first().copied().unwrap_or(0.0) as f64;
+            let r = frame.get(1).copied().unwrap_or(0.0) as f64;
+            self.cross_energy += l * r;
+        }
         self.samples += 1;
     }
 
@@ -96,6 +113,11 @@ impl SpatialMeterState {
                 let s = interleaved[base + ch] as f64;
                 self.energy[ch] += s * s;
             }
+            if self.channels >= 2 {
+                let l = interleaved[base] as f64;
+                let r = interleaved[base + 1] as f64;
+                self.cross_energy += l * r;
+            }
         }
         self.samples += f as u64;
     }
@@ -104,6 +126,7 @@ impl SpatialMeterState {
     pub fn clear(&mut self) {
         self.peak.fill(0.0);
         self.energy.fill(0.0);
+        self.cross_energy = 0.0;
         self.samples = 0;
     }
 
@@ -128,6 +151,19 @@ impl SpatialMeterState {
             Some(i) if i < n => (self.peak[i], rms_of(i)),
             _ => (0.0, 0.0),
         };
+        let stereo_correlation = if self.channels < 2 {
+            1.0
+        } else if self.samples == 0 {
+            0.0
+        } else {
+            let e0 = self.energy[0];
+            let e1 = self.energy[1];
+            if e0 <= 0.0 || e1 <= 0.0 {
+                0.0
+            } else {
+                (self.cross_energy / (e0 * e1).sqrt()).clamp(-1.0, 1.0) as f32
+            }
+        };
         SpatialMeters {
             speaker_peak: self.peak.clone(),
             speaker_rms: (0..n).map(rms_of).collect(),
@@ -136,6 +172,7 @@ impl SpatialMeterState {
             lfe_peak,
             lfe_rms,
             active_voices: 0,
+            stereo_correlation,
         }
     }
 }
@@ -181,5 +218,44 @@ mod tests {
         let s = m.snapshot();
         assert_eq!(s.speaker_peak[0], 0.0);
         assert_eq!(s.bus_rms, 0.0);
+    }
+
+    #[test]
+    fn correlation_tracks_inter_channel_phase() {
+        // Perfectly correlated mono-ish stereo: L == R → ρ = 1.
+        let mut m = SpatialMeterState::new(2);
+        m.feed_block(&[0.5, 0.5, 1.0, 1.0], 2);
+        let s = m.snapshot();
+        assert!((s.stereo_correlation - 1.0).abs() < 1e-6);
+
+        // Anti-phase: L = +x, R = −x → ρ = −1.
+        let mut m = SpatialMeterState::new(2);
+        m.feed_block(&[0.5, -0.5, 1.0, -1.0], 2);
+        let s = m.snapshot();
+        assert!((s.stereo_correlation + 1.0).abs() < 1e-6);
+
+        // Uncorrelated: L = sin-ish, R = cos-ish over a window → ρ ≈ 0.
+        let mut m = SpatialMeterState::new(2);
+        for i in 0..256 {
+            let t = i as f32 * std::f32::consts::TAU / 256.0;
+            let frame = [t.sin() * 0.5, t.cos() * 0.5];
+            m.feed_frame(&frame);
+        }
+        let s = m.snapshot();
+        assert!(
+            s.stereo_correlation.abs() < 0.05,
+            "ρ = {}",
+            s.stereo_correlation
+        );
+
+        // One silent channel → unknown (0.0).
+        let mut m = SpatialMeterState::new(2);
+        m.feed_block(&[0.5, 0.0], 1);
+        assert_eq!(m.snapshot().stereo_correlation, 0.0);
+
+        // Mono meter reports perfect correlation (no phase risk).
+        let mut m = SpatialMeterState::new(1);
+        m.feed_block(&[0.9, 0.4], 2);
+        assert_eq!(m.snapshot().stereo_correlation, 1.0);
     }
 }

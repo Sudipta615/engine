@@ -7,6 +7,7 @@ pub mod decoder;
 pub mod dsd;
 pub mod fingerprint;
 pub mod loudness_cache;
+pub mod metadata;
 #[cfg(feature = "codec-opus")]
 pub mod opus;
 pub mod scanner;
@@ -59,6 +60,7 @@ pub use channel_mix::{mix_interleaved_to_stereo_with_template, mix_interleaved_w
 pub use format_descriptors::{
     AudioFormatInfo, DsdTransport, DsdTransportReport, GaplessInfo, RawDsdChunk,
 };
+pub use metadata::{TrackMetadata, TrackTags, METADATA_VERSION};
 
 // The standalone metadata extractors below dispatch by file extension so a
 // single entry point serves every codec: Ogg Opus tags can only be read by

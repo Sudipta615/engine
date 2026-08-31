@@ -449,6 +449,27 @@ float   engine_position_secs(EngineHandleFFI* h);  /* -1.0 on error */
 float   engine_duration_secs(EngineHandleFFI* h);  /* -1.0 on error */
 int32_t engine_playback_state(EngineHandleFFI* h); /* 0 stopped,1 playing,2 paused,3 buffering */
 int64_t engine_playlist_len(EngineHandleFFI* h);   /* -1 on error */
+
+/* structured diagnostics (v3.49+; each out-param optional, pass NULL to skip) */
+int32_t engine_diagnostics_info(EngineHandleFFI* h,
+                                int32_t* engine_error_kind,    /* DiagnosticKind code, -1 if none */
+                                char*    engine_error_message,  /* buffer of engine_error_message_len bytes */
+                                size_t   engine_error_message_len,
+                                int32_t* bit_perfect_cause,     /* BitPerfectCause code, 0 = none */
+                                int32_t* diagnostic_count);
+
+/* spatial health (v3.49+; out-params optional, pass NULL to skip). */
+/* Level codes: 0 Inactive, 1 Good, 2 Moderate, 3 Poor. */
+int32_t engine_spatial_health(EngineHandleFFI* h,
+                              int32_t* status,               /* overall verdict */
+                              int32_t* localization,         /* localization quality */
+                              int32_t* reflection_dominance, /* direct-vs-reflected */
+                              int32_t* occlusion,            /* occlusion severity */
+                              int32_t* phase_risk,           /* measured inter-channel phase risk */
+                              int32_t* voice_pressure,       /* voice-budget pressure */
+                              float*   correlation,          /* inter-channel correlation [-1,1] */
+                              float*   direct_reflected_ratio_db, /* +INF = no reflections */
+                              int32_t* active_sources);      /* enabled source count */
 ```
 
 Minimal C program:

@@ -347,6 +347,7 @@ impl AudioEngine {
                 stats.bit_perfect_report = bp.clone();
                 stats.bit_perfect = bp.is_bit_perfect;
                 stats.bit_perfect_reason = bp.reason.clone();
+                stats.bit_perfect_cause = bp.cause;
             }
             stats.true_peak_dbtp = self.graph.limiter_max_true_peak_dbtp();
 
@@ -446,6 +447,10 @@ impl AudioEngine {
                 // Phase 17: mirror the spatial master's output meters and
                 // voice-budget admission counts onto the lock-free snapshot.
                 next.spatial = Some(self.graph.spatial().spatial_telemetry());
+                // Spatial health (spec §103 extension): explainable per-source
+                // status derived from the meters + scene on the telemetry
+                // cadence. Control path only — never touches the audio path.
+                next.spatial_health = Some(self.graph.spatial().spatial_health());
                 #[cfg(feature = "audio-output")]
                 {
                     next.output_info = out_info.clone();
@@ -479,7 +484,10 @@ impl AudioEngine {
                         .unwrap_or("transport error")
                 );
                 self.write_playback_info(|info| {
-                    info.engine_error = Some(message.clone());
+                    info.set_engine_error(
+                        crate::diagnostics::DiagnosticKind::Endpoint,
+                        message.clone(),
+                    );
                     if let Some(endpoint_info) = info
                         .endpoints
                         .iter_mut()

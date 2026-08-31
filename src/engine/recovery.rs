@@ -393,7 +393,7 @@ impl AudioEngine {
                             self.write_playback_info(|pb| {
                                 pb.resampler_disabled = true;
                                 pb.resampler_failed_fatal = true;
-                                pb.engine_error = Some("Resampler failed to build for new sample rate; halted to prevent incorrect pitch".to_string());
+                                pb.set_engine_error(crate::diagnostics::DiagnosticKind::Resampler, "Resampler failed to build for new sample rate; halted to prevent incorrect pitch");
                             });
                             // Actually halt: continuing would play at the wrong
                             // rate/pitch (the decode path treats a missing
@@ -436,7 +436,7 @@ impl AudioEngine {
                             self.write_playback_info(|pb| {
                                 pb.resampler_disabled = true;
                                 pb.resampler_failed_fatal = true;
-                                pb.engine_error = Some("Resampler build failed during transition; halted to prevent incorrect pitch".to_string());
+                                pb.set_engine_error(crate::diagnostics::DiagnosticKind::Resampler, "Resampler build failed during transition; halted to prevent incorrect pitch");
                             });
                             // Actually halt (see the Single case above).
                             self.stream_ended = true;
@@ -689,12 +689,17 @@ impl AudioEngine {
                 match self.recover_output_stream() {
                     Ok(()) => {
                         info!("Stream recovered after error detection");
-                        self.write_playback_info(|pb| pb.engine_error = None);
+                        self.write_playback_info(|pb| pb.clear_engine_error());
                     }
                     Err(e) => {
                         let err_msg = format!("Stream recovery failed: {}", e);
                         error!("{}", err_msg);
-                        self.write_playback_info(|pb| pb.engine_error = Some(err_msg.clone()));
+                        self.write_playback_info(|pb| {
+                            pb.set_engine_error(
+                                crate::diagnostics::DiagnosticKind::Stream,
+                                err_msg.clone(),
+                            )
+                        });
                     }
                 }
                 return;

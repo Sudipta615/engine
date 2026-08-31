@@ -27,7 +27,8 @@ pub struct Listener {
     pub position: Vec3,
     /// World-space orientation (a unit quaternion; +Y = facing).
     pub orientation: Quat,
-    /// Velocity (m/s); used for future Doppler (declared seam).
+    /// Velocity (m/s); offsets the per-object Doppler reference frame — each
+    /// object's shift uses `object.velocity − listener.velocity` (spec §42).
     pub velocity: Vec3,
     /// Whether the listener-head rotation is applied. Always true in this
     /// phase; kept as a field so disabling world-locked audio is trivial.

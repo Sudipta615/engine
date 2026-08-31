@@ -25,9 +25,10 @@ pub struct ObjectId(pub usize);
 
 /// Runtime classification of a spatial source (spec §31). `Point` is fully
 /// rendered; `Extended` is approximated by the angular-region spread model
-/// ([`crate::spatial::spread`], §30); `Diffuse` / `Bed` are documented seams
-/// for the fields and beds phases. Classification does not change rendering
-/// yet — it is authored metadata the scene carries forward.
+/// ([`crate::spatial::spread`], §30); `Diffuse` maps to the field-mixer path
+/// and `Bed` to the bed renderer. Classification is authored metadata the
+/// scene carries forward — the renderers key off each class's concrete ports
+/// (spread / room_send / lfe_send / beds / fields) rather than one switch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpatialSourceType {
     Point,
@@ -63,7 +64,9 @@ pub struct SpatialAudioObject {
     pub source: ObjectAudioRef,
     /// World-space position (metres), relative to the listener reference.
     pub position: Vec3,
-    /// Velocity (m/s); used for future Doppler (declared seam).
+    /// Velocity (m/s); drives the per-block Doppler shift (spec §42) when
+    /// [`Doppler`] is enabled, using the radial component of
+    /// `velocity − listener.velocity`.
     pub velocity: Vec3,
     /// World-space orientation; local `+Y` is the source's facing direction
     /// (drives [`Directivity`] and future source-rotation behavior).

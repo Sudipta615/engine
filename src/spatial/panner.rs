@@ -87,7 +87,8 @@ pub struct BasicPanner {
     /// One-pole factor applied each block toward each path's target. `1.0`
     /// disables smoothing (= exact target), `0.0` holds (not useful).
     smooth: f32,
-    /// Low-cost air-absorption seam (disabled by default ⇒ exact ×1.0).
+    /// Optional air-absorption model, applied per object as a distance-
+    /// dependent HF roll-off (disabled by default ⇒ exact ×1.0).
     air_absorption: AirAbsorption,
     /// Per-object LFE smoothed gain (bounded by MAX_OBJECTS).
     sm_lfe: Vec<f32>,
@@ -190,9 +191,9 @@ impl BasicPanner {
     }
 
     /// Configure the optional air-absorption model (disabled by default =
-    /// exact ×1.0). The model's cutoff is computed here and exposed for a
-    /// future filter stage; this phase applies the broad distance gain only,
-    /// keeping the HF roll-off as a documented seam.
+    /// exact ×1.0). Applied per object as a distance-dependent HF roll-off
+    /// (`AbsorptionState`) alongside the broad distance gain; disabling it
+    /// keeps the path bit-exact.
     pub fn set_air_absorption(&mut self, a: AirAbsorption) -> &mut Self {
         self.air_absorption = a;
         self
