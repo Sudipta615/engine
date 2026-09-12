@@ -739,22 +739,24 @@ mod tests {
     use super::*;
 
     fn bad_mix_slots() -> EngineConfig {
-        let mut c = EngineConfig::default();
-        c.mix_slots = 1; // below the minimum of 2
-        c
+        EngineConfig {
+            mix_slots: 1, // below the minimum of 2
+            ..Default::default()
+        }
     }
 
     fn bad_endpoint_gain() -> EngineConfig {
-        let mut c = EngineConfig::default();
-        c.endpoints.push(EndpointConfig {
-            id: "test".to_string(),
-            backend: AudioBackend::default(),
-            device: None,
-            gain: 99.0, // far above the 0..=4.0 range
-            enabled: true,
-            drift_correction: true,
-        });
-        c
+        EngineConfig {
+            endpoints: vec![EndpointConfig {
+                id: "test".to_string(),
+                backend: AudioBackend::default(),
+                device: None,
+                gain: 99.0, // far above the 0..=4.0 range
+                enabled: true,
+                drift_correction: true,
+            }],
+            ..Default::default()
+        }
     }
 
     #[test]

@@ -405,6 +405,10 @@ name = "graph_pipeline_equivalence"
 path = "tests/fidelity/graph_pipeline_equivalence.rs"
 
 [[test]]
+name = "graph2_graph_equivalence"
+path = "tests/fidelity/graph2_graph_equivalence.rs"
+
+[[test]]
 name = "ess_measurement"
 path = "tests/fidelity/ess_measurement.rs"
 
