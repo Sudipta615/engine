@@ -2264,3 +2264,79 @@ clippy clean; `engine`/`config` both at 3.48.0.
 reflection low-pass corner so the production path and the offline node agree on
 distance colour; a frequency-dependent attenuation model richer than the
 one-pole; and distance roll-off for the late field.
+
+## Phase 45 — Realtime lowering substrate (v3.50.0) — **Implemented**
+
+**Status: done (v3.50.0).** A compiled Graph 2.0 `ExecutionOrder` is now
+executable on the audio thread with **zero allocation** — the realtime
+lowering substrate the Phase-46/47 node port and engine migration build on.
+The production `dsp::graph` hot path is untouched.
+
+**The split.** `graph2/exec.rs` (2,434 lines) became `graph2/exec/` per the
+`dsp/pipeline/` house pattern: `mod.rs` (wiring, the `OfflineExecutor`
+struct, control surface, `process_block` dispatch), `offline.rs` (the
+per-node `run_*` ops), `ops.rs` (the **shared node-processing kernels**),
+`buffers.rs` (per-node pipeline-state types plus allocation-free `*_into`
+forms of the overlap-add / windowed-sinc math), `tests.rs` (the offline
+battery, moved verbatim). `CONVOLUTION_FFT_THRESHOLD` lives in `ops.rs` and
+re-exports unchanged.
+
+**The sharing contract (S3).** One set of per-node kernels — `kernel_gain`,
+`kernel_delay`, `kernel_source`, `direct_convolve_into`, `to_ir_taps_into`,
+… — is used by *both* executors. The offline ops delegate to them; the
+realtime ops call the exact same functions against preallocated scratch.
+Offline/realtime divergence is structurally impossible, and the fidelity
+suite pins it bit-exactly.
+
+**The realtime executor (`graph2/rt/`).** `RtPlan::build` (control thread)
+snapshots a compiled graph into an immutable, fully-preallocated form:
+per-edge plane pools (one `block`-frame plane per wire), fixed scratch
+(`scratch_in`/`scratch_out`/`scratch_conv` sized from the widest kernel),
+precomputed input/output adjacency (the audio thread never scans edges),
+per-node state with capacity-bounded constructors (`ConvState::
+with_emit_capacity`, `ResamplerState::with_block`, …), and control-side
+resolution of everything expensive — HRTF dataset IRs interpolated at build,
+acoustic scenes compiled into per-path spectral kernels + the fixed
+raw-history ring, the direct gain as a scalar. `RtExecutor::publish` hands
+the plan to the audio thread through an atomic-pointer publish/swap/retire
+handshake (the Phase-2 generation-swap discipline, reused verbatim: coalesce
+pending, retire at the block boundary, reclaim control-side); `render_block`
+enum-dispatches per node kind — never trait objects — reads the plan through
+disjoint field borrows (the production `run_plan` discipline), and sums
+sinks into the caller's output plane.
+
+**Documented scope boundaries (pinned by tests, not silently skipped).**
+Resampler nodes are ratio-1 (the fixed-grid reader's reachable history grows
+unboundedly for ratio > 1 — `RtPlan::build` rejects with
+`RtPlanError::ResamplerRatioUnsupported`); sinks sum into one output (there
+is no unbounded capture buffer on the audio thread; single-sink graphs match
+offline captures bit-exactly, `-0.0` included); node state starts fresh on a
+plan swap (state carry across swaps lands with the Phase-46 control-surface
+port). Tempo-mapped automation, external tracks and live scene swaps remain
+offline-only; a swap is a rebuild + publish.
+
+**Fixed along the way.** `sort.rs` Kahn's decrement ran once per
+producer-pair instead of once per edge, so two channels of one source
+feeding the same `Mix` left residual in-degree and compile failed with a
+spurious `Cycle([])`. The decrement now counts edges exactly; the
+multi-channel-Buffer → Mix topologies (previously unbuildable) compile.
+
+**Acceptance.** `tests/fidelity/graph2_rt_offline_equivalence.rs` — 17
+bit-exact cases (`f32::to_bits`) over block sweeps {1, 16, 256, 1024}:
+gain chains, sine/impulse sources, multi-plane Split/Mix, delay across
+boundaries, convolution overlap-add, HRTF per-ear alignment (incl. the
+longer-IR delayed pair), Buffer one-shot/loop/multi-channel, ratio-1
+resampler, baked acoustic room responses, dry/wet bus, conv/delay
+latency-aligned parallel branches, the publish/swap/adopt handshake (fresh
+state pinned as the Phase-45 contract), and multi-sink summing.
+`realtime_allocation.rs` gains `graph2_rt_executor_does_not_allocate`: a
+full-topology render (source, split, gain, delay, convolution, HRTF,
+resampler, mix) with a mid-loop publish must allocate zero bytes on the
+audio path. 45 graph2 lib tests; all offline battery expectations unchanged;
+fmt + clippy clean; `engine`/`config` both at 3.50.0.
+
+**Unlocks (Phase 46).** Porting the production node set (`MixBusNode`,
+`AuxNode`, `SpatialNode`, limiter, dither, channel-format nodes) onto the
+kernel seam so there is exactly one implementation, with per-node SPSC
+control queues + sticky-atomic mirrors replayed on generation swap — the
+`Graph2ControlHandle` mirroring `GraphControlHandle`.

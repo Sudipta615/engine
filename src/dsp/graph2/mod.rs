@@ -58,16 +58,18 @@ pub mod edge;
 pub mod exec;
 pub mod latency;
 pub mod node;
+pub mod rt;
 pub mod sort;
 pub mod validate;
 
 pub use edge::{EdgeDef, EdgeEndpoint, EdgeId};
-pub use exec::OfflineExecutor;
+pub use exec::{OfflineExecutor, CONVOLUTION_FFT_THRESHOLD};
 pub use latency::{analyze, compensate, node_latency, LatencyReport};
 pub use node::{
     HrtfSource, NodeCapabilities, NodeDef, NodeId, NodeKind, NodeParams, PortDirection, PortId,
     PortSpec, SignalType, SourceParams, TestSignal,
 };
+pub use rt::{RtExecutor, RtPlan, RtPlanError, RtScenes};
 pub use sort::{topological_order, ExecutionOrder};
 pub use validate::{validate, Graph2Error, ValidationReport};
 

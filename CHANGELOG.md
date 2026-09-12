@@ -2,6 +2,67 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.50.0] — 2026-09-12
+
+### Added
+
+- **Graph 2.0 realtime lowering substrate** (`dsp::graph2::rt`, Phase 45): a
+  compiled `ExecutionOrder` is now executable on the audio thread with **zero
+  allocation**. [`RtPlan`] snapshots a topology into an immutable,
+  fully-preallocated form — per-edge plane pools sized from the plan, fixed
+  scratch, precomputed input/output adjacency, per-node state (delay rings,
+  convolution overlap-add queues, HRTF per-ear pipelines, ratio-1 resampler
+  windows, acoustic spectral kernels + raw-history rings) — and
+  [`RtExecutor`] renders it **enum-dispatched per block** (never trait
+  objects), adopting new plans at block boundaries through an atomic-pointer
+  publish / swap / retire handshake (the Phase-2 generation-swap discipline,
+  reused). Control-side state (HRTF dataset IRs, baked acoustic scenes,
+  listener drives) is resolved at plan build into fixed buffers, so a scene
+  swap is a rebuild + publish, never a live mutation. Deliberate Phase-45
+  scope boundaries (documented in `rt`'s module docs and pinned by tests):
+  resampler nodes are ratio-1 only, sinks sum into the caller's output, and
+  node state starts fresh on a plan swap (state carry lands with the
+  Phase-46 control-surface port).
+- **Shared node-processing kernel seam** (`dsp::graph2::exec::ops`, Phase 45
+  S3): one set of per-node processing kernels (`kernel_gain`, `kernel_delay`,
+  `kernel_source`, `direct_convolve_into`, `to_ir_taps_into`, …) used by
+  **both** executors, so offline and realtime renders go through the exact
+  same arithmetic — divergence is structurally impossible.
+- **Graph2 RT fidelity suite** (`tests/fidelity/graph2_rt_offline_equivalence.rs`):
+  17 bit-exact cases (`f32::to_bits`) across the topology matrix — gain
+  chains, sine/impulse sources, multi-plane Split/Mix, delay across block
+  boundaries, convolution overlap-add, HRTF per-ear alignment, Buffer
+  one-shot/loop/multi-channel replay, ratio-1 resampler, baked acoustic room
+  responses, dry/wet buses, conv/delay parallel-branch latency alignment,
+  the plan publish/swap/adopt handshake, and multi-sink summing — each swept
+  over block sizes {1, 16, 256, 1024}.
+- **Zero-allocation case for the Graph2 RT executor** in
+  `tests/fidelity/realtime_allocation.rs`: a full-topology RT render (source,
+  split, gain, delay, convolution, HRTF, resampler, mix) with a mid-loop plan
+  publish must perform zero heap allocations on the audio path.
+
+### Fixed
+
+- **`Graph2` topological order with multi-edge node pairs** (`dsp::graph2::sort`):
+  Kahn's decrement ran once per *producer pair* instead of once per *edge*, so
+  two channels of one `Buffer`/`Split` feeding the same `Mix` left the mix
+  with residual in-degree and compilation failed with a spurious `Cycle`.
+  The decrement now counts edges from the ready node exactly.
+
+### Changed
+
+- **`dsp::graph2::exec.rs` (2,434 lines) split into `dsp::graph2::exec/`**
+  per the `dsp/pipeline/` house pattern: `mod.rs` (wiring, `OfflineExecutor`
+  struct, control surface, `process_block` dispatch), `offline.rs` (per-node
+  `run_*` ops), `ops.rs` (the shared kernels), `buffers.rs` (per-node
+  pipeline-state types + overlap-add / windowed-sinc math, with new
+  allocation-free `*_into` forms), `tests.rs` (the offline battery, moved
+  verbatim). Behavior is unchanged; the offline executor's public API is
+  identical.
+- `Kernel lengths ≥ 512 route a Convolution node through the partitioned-FFT
+  engine` — [`CONVOLUTION_FFT_THRESHOLD`] moved from `exec.rs` to
+  `exec::ops` and re-exported from `dsp::graph2` unchanged.
+
 ## [3.49.0] — 2026-08-31
 
 ### Added

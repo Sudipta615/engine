@@ -74,13 +74,18 @@ pub fn topological_order(
     while let Some(&n) = ready.iter().next() {
         ready.remove(&n);
         steps.push(n);
+        // Decrement every consumer's in-degree once **per edge** from `n`
+        // (two channels of one source feeding one mix both clear — a
+        // `contains` check would only clear one).
         for (target, producers_of) in producers.iter() {
-            if producers_of.contains(&n) {
-                let d = indegree.get_mut(target).expect("known node");
-                *d -= 1;
-                if *d == 0 {
-                    ready.insert(*target);
-                }
+            let edges_from_n = producers_of.iter().filter(|&&p| p == n).count();
+            if edges_from_n == 0 {
+                continue;
+            }
+            let d = indegree.get_mut(target).expect("known node");
+            *d -= edges_from_n;
+            if *d == 0 {
+                ready.insert(*target);
             }
         }
     }

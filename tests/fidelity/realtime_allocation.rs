@@ -1217,3 +1217,83 @@ fn realtime_hrtf_dataset_path_does_not_allocate() {
         "steady-state HRTF dataset rendering allocated on the audio path"
     );
 }
+
+/// The Graph 2.0 **realtime executor** (Phase 45) must render a compiled
+/// topology with zero allocation on the audio path — plan build and publish
+/// are control-side; the measured loop only adopts and renders.
+///
+/// The topology exercises every RT op family: a sine Source (phase state),
+/// a Split fan-out, a Gain branch, a Delay ring across block boundaries, a
+/// Convolution overlap-add pipeline, an HRTF per-ear pair, a ratio-1
+/// Resampler window, and a Mix fan-in before the Sink — so any
+/// `Vec::push`/`resize`/`collect` that slips into an RT op fails here.
+/// A mid-loop `publish` also exercises the block-boundary adopt (the
+/// retired-plan handoff itself must not allocate audio-side).
+#[test]
+fn graph2_rt_executor_does_not_allocate() {
+    use engine::dsp::graph2::rt::{RtPlan, RtScenes};
+    use engine::prelude::{Graph2, NodeParams, PortId, RtExecutor, SourceParams, TestSignal};
+
+    const BLOCK: usize = 256;
+    let mut g = Graph2::new();
+    let src = g.add_source("tone");
+    g.set_params(
+        src,
+        NodeParams::Source(SourceParams {
+            signal: TestSignal::Sine,
+            frequency_hz: 997.0,
+        }),
+    );
+    let split = g.add_split("sw", 2);
+    let gain = g.add_gain("dry", 0.5);
+    let conv = g.add_convolution("ir", vec![0.4, -0.2, 0.1, 0.05, 0.3, -0.15, 0.07, 0.02]);
+    let delay = g.add_delay("wet", 300);
+    let hrtf = g.add_hrtf("bin", vec![0.9, 0.3, -0.1], vec![0.8, 0.25]);
+    let rsmp = g.add_resampler("rs", 1.0);
+    let mix = g.add_mix("sum", 4);
+    let sink = g.add_sink("out");
+    g.add_edge(src, PortId::OUT, split, PortId::IN).unwrap();
+    g.add_edge(split, PortId(0), gain, PortId::IN).unwrap();
+    g.add_edge(split, PortId(1), delay, PortId::IN).unwrap();
+    g.add_edge(gain, PortId::OUT, rsmp, PortId::IN).unwrap();
+    g.add_edge(delay, PortId::OUT, conv, PortId::IN).unwrap();
+    g.add_edge(conv, PortId::OUT, hrtf, PortId::IN).unwrap();
+    g.add_edge(rsmp, PortId::OUT, mix, PortId(0)).unwrap();
+    g.add_edge(hrtf, PortId(0), mix, PortId(1)).unwrap();
+    g.add_edge(hrtf, PortId(1), mix, PortId(2)).unwrap();
+    g.add_edge(delay, PortId::OUT, mix, PortId(3)).unwrap();
+    g.add_edge(mix, PortId::OUT, sink, PortId::IN).unwrap();
+    let order = g.compile().unwrap().clone();
+
+    // Control side: build (allocating is fine) + warm-up render.
+    let scenes = RtScenes::new();
+    let mut ex =
+        RtExecutor::new(RtPlan::build(&g, &order, BLOCK, 48_000.0, Some(&scenes), None).unwrap());
+    let mut out = vec![0.0f32; BLOCK];
+    for _ in 0..4 {
+        ex.render_block(&mut out);
+    }
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    // Steady state, with a mid-loop plan publish to exercise the adopt.
+    for block in 0..10_000 {
+        if block == 5_000 {
+            // Publishing is control-side work; the adopt at the block
+            // boundary must be allocation-free audio-side.
+            ARMED.store(false, Ordering::Relaxed);
+            ex.publish(RtPlan::build(&g, &order, BLOCK, 48_000.0, Some(&scenes), None).unwrap());
+            ARMED.store(true, Ordering::Relaxed);
+        }
+        ex.render_block(&mut out);
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocations = THREAD_ALLOCS.with(|c| c.get());
+
+    assert_eq!(
+        allocations, 0,
+        "steady-state Graph2 RT rendering allocated on the audio path"
+    );
+}

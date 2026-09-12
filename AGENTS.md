@@ -35,10 +35,18 @@ drive the whole surface.
 │   ├── decode/                 # decoders + channel layout/mix + tags + fingerprint
 │   ├── dsp/                    # DSP primitives + `resampler/` (Rubato)
 │   │   ├── pipeline/           #   reference chain (the bit-exact oracle)
-│   │   └── graph/              #   production hot path: node arena + compiled
+│   │   ├── graph/              #   production hot path: node arena + compiled
 │   │                           #   plans split by concern (construction/plan/swap/
 │   │                           #   access/controls/lifecycle/process/limiter/report
 │   │                           #   + nodes/: mix/{mod,envelope,sum}, aux_node, …)
+│   │   ├── graph2/             #   Graph 2.0 (Phase 25+): typed-port topology —
+│   │                           #   node/edge/validate/sort + exec/ (offline
+│   │                           #   executor split by concern: mod/offline/ops/
+│   │                           #   buffers/tests, with ops.rs the shared node
+│   │                           #   kernels) + rt/ (Phase 45 v3.50: realtime
+│   │                           #   executor — immutable preallocated RtPlan,
+│   │                           #   atomic publish/swap/retire, zero-alloc
+│   │                           #   enum-dispatched audio path)
 │   ├── spatial/                # speaker-independent spatial layer (Phases 8–19):
 │   │                           #   math/ (Vec3+Quat+one coordinate system),
 │   │                           #   scene/object/speaker/level/render + panner/

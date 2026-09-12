@@ -334,7 +334,21 @@ src/
 │   │                         #   padded to reported taps) so graph
 │   │                         #   binaural branches carry real
 │   │                         #   head-related responses and compensate
-│   │                         #   like Delay(taps). The
+│   │                         #   like Delay(taps). Phase 45 (v3.50.0):
+│   │                         #   exec/ split by concern (mod.rs wiring,
+│   │                         #   offline.rs run_* ops, ops.rs shared
+│   │                         #   node-processing kernels used by BOTH
+│   │                         #   executors, buffers.rs pipeline state +
+│   │                         #   allocation-free *_into forms) and a new
+│   │                         #   rt/ realtime executor — RtPlan: immutable
+│   │                         #   preallocated snapshot (per-edge planes,
+│   │                         #   fixed scratch, adjacency, node state,
+│   │                         #   control-side IR/scene resolution);
+│   │                         #   RtExecutor: enum-dispatched per block,
+│   │                         #   zero-allocation audio path, plans adopted
+│   │                         #   at block boundaries via atomic-pointer
+│   │                         #   publish/swap/retire (Phase-2 discipline);
+│   │                         #   sort.rs multi-edge fix. The
 │   │                         #   topology, not an authored chain, defines
 │   │                         #   the signal flow — realtime dsp::graph is
 │   │                         #   untouched
