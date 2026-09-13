@@ -43,6 +43,7 @@ fn room_config() -> Room {
         reflection_order: 1,
         rt60_ms: 800.0,
         late_mix: 0.0, // keep the late field out of these reflection checks
+        late_distance: false,
         speed_of_sound: 343.0,
     }
 }

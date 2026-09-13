@@ -37,6 +37,7 @@ fn room_config() -> Room {
         reflection_order: 1,
         rt60_ms: 800.0,
         late_mix: 0.3,
+        late_distance: false,
         speed_of_sound: 343.0,
     }
 }
@@ -128,6 +129,7 @@ fn panner_renders_early_reflections() {
     p.prepare(&layout, SR).unwrap();
     let scene = scene_with_impulse_object(Room {
         late_mix: 0.0,
+        late_distance: false,
         ..room_config()
     });
     let out = render_block(&mut p, &scene, 512, 6);
@@ -206,11 +208,13 @@ fn second_order_adds_more_reflection_energy() {
     let frames = 4096usize;
     let scene_1 = scene_with_impulse_object(Room {
         late_mix: 0.0,
+        late_distance: false,
         reflection_order: 1,
         ..room_config()
     });
     let scene_2 = scene_with_impulse_object(Room {
         late_mix: 0.0,
+        late_distance: false,
         reflection_order: 2,
         ..room_config()
     });
@@ -317,10 +321,12 @@ fn late_mix_zero_removes_late_field() {
     let frames = 4096usize;
     let scene_dry = scene_with_impulse_object(Room {
         late_mix: 0.0,
+        late_distance: false,
         ..room_config()
     });
     let scene_wet = scene_with_impulse_object(Room {
         late_mix: 0.5,
+        late_distance: false,
         ..room_config()
     });
     let out_dry = render_block(&mut dry, &scene_dry, frames, 6);

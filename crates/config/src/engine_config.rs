@@ -383,6 +383,12 @@ pub struct SpatialRoomConfig {
     /// Late-field wet mix `0..1`.
     #[serde(default = "default_room_late_mix")]
     pub late_mix: f32,
+    /// Late-field distance roll-off (Phase 50): attenuate each object's
+    /// room-send by its distance model at its direct distance, so the
+    /// tail rolls off with source distance like the direct and
+    /// early-reflection paths. Default `false` = legacy bit-exact.
+    #[serde(default)]
+    pub late_distance: bool,
     /// Program reflection send `0..1` (the object-side room send).
     #[serde(default = "default_room_wet")]
     pub wet: f32,
@@ -430,6 +436,7 @@ impl Default for SpatialRoomConfig {
             reflection_order: default_room_order(),
             rt60_ms: default_room_rt60(),
             late_mix: default_room_late_mix(),
+            late_distance: false,
             wet: default_room_wet(),
             speed_of_sound: default_speed_of_sound(),
         }

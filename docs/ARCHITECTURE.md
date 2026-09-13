@@ -390,7 +390,11 @@ src/
 │   │                         #   diffraction corner → FIR via the correction
 │   │                         #   magnitude→IR synthesizer; flat → single-tap;
 │   │                         #   Phase 42, v3.48: AirAbsorption model shapes
-│   │                         #   kernels per path distance when enabled)
+│   │                         #   kernels per path distance when enabled;
+│   │                         #   Phase 50, v4.2.0: the family's own
+│   │                         #   magnitude (one/two-pole, exponential)
+│   │                         #   + listener_images composes the air corner
+│   │                         #   into each realtime tap corner)
 
 │   ├── math.rs               # Vec3 / Quat + the single documented coordinate
 │   │                         #   system (+X right, +Y front, +Z up; metres /
@@ -404,7 +408,10 @@ src/
 │   ├── speaker.rs            # Speaker, SpeakerLayout (stereo / 5.1 / 7.1 /
 │   │                         #   7.1.4 / custom), LayoutCalibration
 │   ├── level.rs              # DistanceModel (Linear/Inverse/InverseSquare/
-│   │                         #   InverseReference), AirAbsorption
+│   │                         #   InverseReference), AirAbsorption +
+│   │                         #   AirRolloffModel (Phase 50: magnitude
+│   │                         #   families + corner_hz/compose_corner_hz
+│   │                         #   realtime agreement mapping)
 │   ├── directivity.rs        # Directivity (omni/cardioid/supercardioid/
 │   │                         #   custom 2° curve) + the shared listener-angle
 │   │                         #   transform (source orientation → curve)

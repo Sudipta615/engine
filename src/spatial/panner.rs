@@ -496,9 +496,13 @@ impl BasicPanner {
                 // v3.26: consume a baked response when the object's position
                 // sits in a baked cell (static scene); otherwise fall back to
                 // the live image-source solve (bit-identical to no-bake).
+                let mut from_baked = false;
                 let n_img = match self.baked.as_ref() {
                     Some(baked) => match baked.get(obj.position) {
-                        Some(obj_b) => baked.listener_images(obj_b, &mut imgs),
+                        Some(obj_b) => {
+                            from_baked = true;
+                            baked.listener_images(obj_b, &mut imgs)
+                        }
                         None => self.room_er.images_for_object(
                             room,
                             scene.listener.position,
@@ -521,9 +525,22 @@ impl BasicPanner {
                     // v3.47: colour this reflection with its surface's
                     // spectral low-pass (material spectrum / diffraction
                     // corner) when the baked path carries one; live-solve
-                    // and flat images pass through uncoloured.
-                    self.room_er
-                        .set_reflection_filter(obj_idx, img_i, img.lowpass_hz);
+                    // and flat images pass through uncoloured. Phase 50:
+                    // on the live path, fold the scene-wide air model's
+                    // distance corner into the image's corner so realtime
+                    // reflections darken with distance exactly as the
+                    // offline kernels do (baked cells arrive pre-composed
+                    // via `BakedScene::listener_images`).
+                    let corner = if from_baked {
+                        img.lowpass_hz
+                    } else {
+                        self.air_absorption.compose_corner_hz(
+                            img.lowpass_hz,
+                            img.dist,
+                            self.sample_rate,
+                        )
+                    };
+                    self.room_er.set_reflection_filter(obj_idx, img_i, corner);
                     self.solve_pan(ldir.azimuth_rad(), &mut rpairs);
                     for &(spk, g) in rpairs.iter() {
                         if g == 0.0 {
@@ -583,15 +600,18 @@ impl BasicPanner {
                 // Room: store this frame in the object's reflection ring,
                 // fire the delayed taps, and accumulate the late-field send.
                 if room_on {
-                    self.room_er.object_frame(
-                        obj_idx,
-                        s,
-                        gain * obj.room_send,
-                        frame,
-                        n_spk,
-                        out,
-                        &self.out_trim,
-                    );
+                    // Phase 50 item 3: late-field distance roll-off — the
+                    // send is attenuated by the object's own distance model
+                    // at its direct distance, so the tail rolls off with
+                    // source distance like the direct path. Off (default)
+                    // passes the legacy `gain × room_send` bit-exactly.
+                    let send = if room.late_distance {
+                        gain * obj.room_send * dist_gain
+                    } else {
+                        gain * obj.room_send
+                    };
+                    self.room_er
+                        .object_frame(obj_idx, s, send, frame, n_spk, out, &self.out_trim);
                 }
             }
         }

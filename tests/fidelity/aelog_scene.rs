@@ -35,6 +35,7 @@ fn two_scenes() -> (BakedScene, BakedScene) {
         reflection_order: 1,
         rt60_ms: 800.0,
         late_mix: 0.0,
+        late_distance: false,
         speed_of_sound: 343.0,
     };
     let base = MaterialSpectrum::flat_reflective(room.absorption);
@@ -301,6 +302,7 @@ fn listener_trajectory_drives_the_acoustic_node_golden() {
         reflection_order: 1,
         rt60_ms: 800.0,
         late_mix: 0.0,
+        late_distance: false,
         speed_of_sound: 343.0,
     };
     let world = AcousticWorld::new(

@@ -206,7 +206,7 @@ pub use hrtf::{
     ElevationNotch, HeadShadow, HrtfCorpus, HrtfDataset, HrtfLoadError, HrtfLoadOptions,
     HrtfMeasurement, HrtfNormalize, DEFAULT_HEAD_RADIUS, DEFAULT_SPEED_OF_SOUND, MAX_HRTF_TAPS,
 };
-pub use level::{AbsorptionState, AirAbsorption, DistanceModel};
+pub use level::{AbsorptionState, AirAbsorption, AirRolloffModel, DistanceModel};
 pub use math::{Quat, Vec3};
 pub use metering::{SpatialMeterState, SpatialMeters};
 pub use nearfield::{NearField, NearFieldState, NEAR_FIELD_SHELF_HZ};

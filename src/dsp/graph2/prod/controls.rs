@@ -180,6 +180,7 @@ impl Graph2Engine {
         reflection_order: u8,
         rt60_ms: f32,
         late_mix: f32,
+        late_distance: bool,
         wet: f32,
     ) {
         self.inner.set_spatial_room(
@@ -191,8 +192,15 @@ impl Graph2Engine {
             reflection_order,
             rt60_ms,
             late_mix,
+            late_distance,
             wet,
         );
+    }
+
+    /// Configure the scene-wide air-absorption model. Mirrors
+    /// `DspGraph::set_spatial_air`.
+    pub fn set_spatial_air(&self, air: crate::spatial::level::AirAbsorption) {
+        self.inner.set_spatial_air(air);
     }
 
     /// Replace a slot's automation track. Mirrors

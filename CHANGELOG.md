@@ -2,6 +2,69 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.2.0] — 2026-09-13
+
+### Added
+
+- **Acoustic agreement — realtime distance colour (Phase 50, item 1).**
+  With a baked scene's air-absorption model enabled, every reflection
+  tap's realtime low-pass corner (what the per-image biquad runs at) is
+  the **composition** of the surface corner with the air model's
+  distance corner: `BakedScene::listener_images` folds
+  [`AirAbsorption::compose_corner_hz`] so the production renderers
+  darken a farther reflection exactly at the offline spectral kernel's
+  −3 dB point. The renderers (panner / VBAP / binaural) also fold the
+  scene-wide model onto **live-solve** reflections (previously
+  spectrally flat), so live and baked paths agree on distance colour.
+  The `BinauralRenderer` gains the dormant `set_air_absorption`
+  control the other renderers already carried. The production
+  `SpatialNode` exposes it through `set_air_absorption` /
+  `air_absorption`, wired as `GraphControlHandle::set_spatial_air`
+  (+ `NodeCmd::SetSpatialAir`).
+- **Richer frequency-dependent attenuation families (Phase 50, item 2).**
+  `AirAbsorption` grows a `rolloff_model` field:
+  `one_pole` (the v3.48 default, bit-exact), `two_pole`
+  (−12 dB/oct), and `exponential` (softest skirt). Every family is
+  DC-exact (magnitude 1.0 at f = 0), monotonically non-increasing, and
+  *disabled-exact* (`enabled: false` is exactly ×1.0 at every
+  frequency). The offline kernels (`spectral_taps_with`) sample the
+  family's own magnitude — no longer a hardcoded one-pole — and the new
+  `AirAbsorption::corner_hz` maps each family to its −3 dB equivalent
+  realtime corner.
+- **Late-field distance roll-off (Phase 50, item 3).** New `Room`
+  knob `late_distance` (config: `SpatialRoomConfig.late_distance`,
+  `set_spatial_room`'s new parameter): when enabled, each object's
+  room-send to the Schroeder tail is attenuated by the object's own
+  distance model at its direct distance, so the tail rolls off with
+  source distance like the direct and early-reflection paths. Default
+  `false` keeps every legacy render bit-identical; the flag round-trips
+  through the scene file format and spatial auto-save
+  (`#[serde(default)]` — old files load with it off).
+- **Fidelity suite `acoustic_agreement`**: realtime corner ≡ offline
+  kernel −3 dB point (per family, DFT-probed), monotonic darkening with
+  distance, disabled = bit-exact golden renders, live-path fold, and
+  the late-field roll-off ratio.
+- **Rust-native plugin ABI (Phase 49).** A versioned `#[repr(C)]`
+  C-ABI plugin specification for pure-Rust effect plugins, hosted in
+  the production graph at the master insert seam: the `plugin-abi`
+  spec crate (vtable + `plugin_abi_v1()` handshake + safe host facade +
+  static registry + optional dlopen loader), the `plugin-test-echo`
+  reference plugin (`worst-case` feature allocates on purpose), the
+  `ProdStage::PluginHost` arena slot (post-volume / pre-spatial;
+  bit-exact pass-through when unconfigured, failed slots skipped),
+  live `SetPluginEnabled` / `SetPluginParams` control with swap-survival
+  mirrors, `EngineConfig.plugins` config + `ConfigIssueKind::Plugin`
+  validation, the `plugin-dylib` engine feature, and the
+  `tests/fidelity/plugin_host.rs` suite (10 tests) plus a plugin case
+  in `realtime_allocation.rs`. The production topology is now 18
+  nodes / 15 edges.
+
+### Fixed
+
+- The v3.48 `set_air_absorption` on `BasicPanner`/`VbapRenderer` was
+  stored but never applied; the reflection path now consumes it (and
+  the binaural renderer gained the field).
+
 ## [4.1.0] — 2026-09-13
 
 ### Added

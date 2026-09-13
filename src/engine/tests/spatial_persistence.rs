@@ -32,7 +32,7 @@ fn spatial_scene_survives_an_engine_restart() {
         let handle = engine.pipeline_mut().control_handle();
         handle.set_spatial_enabled(true);
         handle.set_spatial_screen(10.0, 35.0, 8.0, 0.85);
-        handle.set_spatial_room(true, 12.0, 9.0, 3.2, 0.2, 1, 550.0, 0.3, 0.5);
+        handle.set_spatial_room(true, 12.0, 9.0, 3.2, 0.2, 1, 550.0, 0.3, false, 0.5);
         handle.set_spatial_listener(20.0, -5.0, 2.0);
         // The engine tick drains queued graph controls and auto-saves the
         // changed scene.
@@ -44,7 +44,10 @@ fn spatial_scene_survives_an_engine_restart() {
     let sp = engine.pipeline().spatial();
     assert!(sp.enabled(), "restored scene must be enabled");
     assert_eq!(sp.screen(), (10.0, 35.0, 8.0, 0.85));
-    assert_eq!(sp.room(), (true, 12.0, 9.0, 3.2, 0.2, 1, 550.0, 0.3, 0.5));
+    assert_eq!(
+        sp.room(),
+        (true, 12.0, 9.0, 3.2, 0.2, 1, 550.0, 0.3, false, 0.5)
+    );
     assert_eq!(sp.listener(), (20.0, -5.0, 2.0));
 
     let _ = std::fs::remove_dir_all(&dir);

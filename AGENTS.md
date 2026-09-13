@@ -87,8 +87,9 @@ lets non-Rust hosts drive the whole surface.
 └── tests/                      # headless + `tests/fidelity/` DSP/decoder suites
 ```
 
-Two crates ship versions that **must stay in lockstep** (see Versioning):
-`engine` (workspace root) and `config` (`crates/config`).
+Four crates ship versions that **must stay in lockstep** (see Versioning):
+`engine` (workspace root), `config` (`crates/config`), `plugin-abi`
+(`crates/plugin-abi`), and `plugin-test-echo` (`crates/plugin-test-echo`).
 
 ## Versioning — Semantic Versioning (`x.y.z`)
 

@@ -86,6 +86,13 @@ pub struct Room {
     /// Late-field wet mix `0..1` — scales the tail before the ambisonic
     /// decode.
     pub late_mix: f32,
+    /// Late-field distance roll-off (Phase 50 item 3): when enabled, each
+    /// object's room-send is attenuated by the object's own distance model
+    /// at its direct distance — the tail then rolls off with source
+    /// distance exactly as the direct and early-reflection paths do
+    /// (acoustic agreement). Default `false` keeps the send (and
+    /// therefore every legacy render) bit-identical.
+    pub late_distance: bool,
     /// Speed of sound (m/s), used for the reflection delays.
     pub speed_of_sound: f32,
 }
@@ -101,6 +108,7 @@ impl Default for Room {
             reflection_order: 1,
             rt60_ms: 800.0,
             late_mix: 0.3,
+            late_distance: false,
             speed_of_sound: 343.0,
         }
     }
@@ -988,6 +996,7 @@ mod tests {
             enabled: true,
             rt60_ms: 1500.0, // long tail — worst case for runaway feedback
             late_mix: 1.0,
+            late_distance: false,
             ..Default::default()
         };
         let mut send = vec![0.0f32; 480_000]; // 10 s of noise

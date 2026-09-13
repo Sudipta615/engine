@@ -274,6 +274,7 @@ fn acoustic_node_reproduces_baked_room_response() {
         reflection_order: 1,
         rt60_ms: 800.0,
         late_mix: 0.0,
+        late_distance: false,
         speed_of_sound: 343.0,
     };
     let world = AcousticWorld::new(
@@ -344,6 +345,7 @@ fn acoustic_node_honours_the_scene_air_absorption_model() {
         reflection_order: 1,
         rt60_ms: 800.0,
         late_mix: 0.0,
+        late_distance: false,
         speed_of_sound: 343.0,
     };
     let world = AcousticWorld::new(
@@ -418,6 +420,7 @@ fn swap_baked_scene_switches_taps_without_cutting_the_tail() {
         reflection_order: 1,
         rt60_ms: 800.0,
         late_mix: 0.0,
+        late_distance: false,
         speed_of_sound: 343.0,
     };
     let base = MaterialSpectrum::flat_reflective(room.absorption);
@@ -561,6 +564,7 @@ fn listener_position_drives_the_acoustic_lookup() {
         reflection_order: 1,
         rt60_ms: 800.0,
         late_mix: 0.0,
+        late_distance: false,
         speed_of_sound: 343.0,
     };
     let world = AcousticWorld::new(
@@ -695,6 +699,7 @@ fn named_scenes_render_per_listener_responses() {
         reflection_order: 1,
         rt60_ms: 800.0,
         late_mix: 0.0,
+        late_distance: false,
         speed_of_sound: 343.0,
     };
     let world = AcousticWorld::new(

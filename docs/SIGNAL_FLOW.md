@@ -423,10 +423,38 @@ Source ──▶ Acoustic{position, scene?}
 
 [`BakedScene`] carries an [`AirAbsorption`] model; when enabled, each
 non-direct kernel is composed with a per-path, distance-dependent HF roll-off
-(`1 / √(1 + (f/f_air)²)`, `f_air = AirAbsorption::cutoff_hz(path.distance)`)
-so a farther reflection darkens with travel distance while staying equal at
-DC. Disabled by default → kernels bit-identical to v3.47; older scene logs
-`#[serde(default)]` load with air off.
+(the model's magnitude family — one-pole `1 / √(1 + (f/f_air)²)` by default,
+two-pole or exponential per `rolloff_model`, `f_air =
+AirAbsorption::cutoff_hz(path.distance)`) so a farther reflection darkens with
+travel distance while staying equal at DC. Disabled by default → kernels
+bit-identical to v3.47; older scene logs `#[serde(default)]` load with air
+off.
+
+#### Acoustic agreement: realtime distance colour (v4.2.0, Phase 50)
+
+The realtime renderers now agree with those kernels on distance colour.
+`AirAbsorption::corner_hz` maps each magnitude family to its −3 dB-equivalent
+one-pole corner, and `compose_corner_hz` folds that air corner into a
+surface corner (the exact product-shape −3 dB point; DC-exact). With the
+model enabled:
+
+- **Baked taps** arrive at the renderers pre-composed —
+  `BakedScene::listener_images` calls `compose_corner_hz` per path, so the
+  per-image biquad darkens a farther reflection exactly at the offline
+  kernel's −3 dB point.
+- **Live-solve taps** (flat surfaces, corner ∞) get the same fold in the
+  renderers (`BasicPanner` / `VbapRenderer` / `BinauralRenderer` — the
+  binaural model previously absent), using the scene-wide
+  `set_air_absorption` model.
+- **Late-field distance roll-off**: `Room.late_distance` (default `false`)
+  attenuates each object's room-send by its own distance model at its
+  direct distance, so the Schroeder tail rolls off with source distance
+  like the direct and reflection paths.
+
+Disabled (the default) = every corner, tap, and rendered sample is
+bit-identical to v4.0.0; the new suite `tests/fidelity/acoustic_agreement.rs`
+pins the agreement, the monotonic darkening, the disabled-exact golden
+renders, and the late-field roll-off ratio.
 
 ### Animated acoustic worlds in aelog (offline, v3.37.0)
 

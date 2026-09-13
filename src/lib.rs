@@ -88,8 +88,8 @@ pub mod prelude {
         spatial::{
             encode_plane_wave, head_shadow_alpha, rotate_bus_frame, sh_foa, spectral_taps,
             woodworth_itd_sec, AcousticBaker, AcousticPath, AcousticRoom, AcousticTransmission,
-            AcousticWorld, AirAbsorption, AmbisonicDecoder, AmbisonicRenderer, BakePolicy,
-            BakedObject, BakedPath, BakedScene, BasicPanner, BedId, BinauralRenderer,
+            AcousticWorld, AirAbsorption, AirRolloffModel, AmbisonicDecoder, AmbisonicRenderer,
+            BakePolicy, BakedObject, BakedPath, BakedScene, BasicPanner, BedId, BinauralRenderer,
             CustomDirectivity, DecoderPolicy, DiffractionEdge, Directivity, DistanceModel, Ear,
             FieldId, HeadSample, HeadShadow, HeadTracker, HybridBlockInputs, LayoutCalibration,
             Listener, MaterialKind, MaterialSpectrum, ObjectAudioRef, ObjectId, Occlusion,
