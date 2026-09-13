@@ -124,6 +124,123 @@ pub enum NodeKind {
     /// executor resamples onto its own frame grid (a rate/pitch remap), the
     /// latency-pass hook the v3.30 roadmap names.
     Resampler,
+    /// A production engine stage (Phase 46): one node of the canonical
+    /// engine chain, executing through the shared production arena
+    /// (`dsp::graph`) — the exact node implementation the engine runs, so
+    /// offline and realtime renders share one arithmetic path. The topology
+    /// (ports/edges/order) is Graph 2.0's; the DSP is the production node's.
+    Prod(ProdStage),
+}
+
+/// A production node of the engine's canonical signal chain, as expressed in
+/// the Graph 2.0 topology (Phase 46). Each variant names one arena slot of
+/// the production `dsp::graph` chain — the node *implementation* stays the
+/// single shared one; this kind exists so the chain can be **described as a
+/// topology** (typed ports, edges, validation, topological compile) and then
+/// *lowered* onto the production plan set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ProdStage {
+    /// The mix bus: N per-input pre-mix chains summed into the master
+    /// (crossfade envelope, lanes, per-slot sends/automation, ducking).
+    MixBus,
+    /// The aux bus node: consumes the mix node's send taps and returns into
+    /// the master, with an optional convolution insert.
+    AuxBus,
+    /// Room/headphone correction: per-channel partitioned convolution bank,
+    /// post-aux / pre-EQ.
+    Correction,
+    /// Parametric EQ (front pair).
+    Eq,
+    /// Multiband compressor (front pair).
+    Dynamics,
+    /// FIR convolution (front pair).
+    Convolution,
+    /// Balance stage (front pair).
+    Balance,
+    /// Crossfeed (front pair).
+    Crossfeed,
+    /// Stereo enhancer (front pair).
+    Stereo,
+    /// Timestretch (front pair).
+    Timestretch,
+    /// Software volume (all channels).
+    Volume,
+    /// Seek fade (all channels).
+    SeekFade,
+    /// Channel trim / routing (all channels, MC plan head).
+    Routing,
+    /// The output resampler node (per-endpoint domain, not in the mix
+    /// plans; present in the topology for completeness).
+    Resampler,
+    /// Lookahead limiter (output domain).
+    Limiter,
+    /// Output dither (output domain).
+    Dither,
+    /// The spatial master output stage (all channels, chain tail).
+    Spatial,
+}
+
+impl ProdStage {
+    /// The production arena slot this stage occupies (the `node_id` table).
+    pub fn slot(self) -> usize {
+        match self {
+            ProdStage::MixBus => 0,
+            ProdStage::Eq => 1,
+            ProdStage::Dynamics => 2,
+            ProdStage::Convolution => 3,
+            ProdStage::Balance => 4,
+            ProdStage::Crossfeed => 5,
+            ProdStage::Stereo => 6,
+            ProdStage::Timestretch => 7,
+            ProdStage::Volume => 8,
+            ProdStage::SeekFade => 9,
+            ProdStage::Routing => 10,
+            ProdStage::Resampler => 11,
+            ProdStage::Limiter => 12,
+            ProdStage::Dither => 13,
+            ProdStage::AuxBus => 14,
+            ProdStage::Correction => 15,
+            ProdStage::Spatial => 16,
+        }
+    }
+
+    /// The canonical production stage name (matches `DspNodeInfo.name` from
+    /// the reference graph's `graph_nodes()` report).
+    pub fn stage_name(self) -> &'static str {
+        match self {
+            ProdStage::MixBus => "mixer",
+            ProdStage::AuxBus => "aux_bus",
+            ProdStage::Correction => "correction",
+            ProdStage::Eq => "equalizer",
+            ProdStage::Dynamics => "compressor",
+            ProdStage::Convolution => "convolution",
+            ProdStage::Balance => "balance",
+            ProdStage::Crossfeed => "crossfeed",
+            ProdStage::Stereo => "stereo_enhancer",
+            ProdStage::Timestretch => "timestretch",
+            ProdStage::Volume => "volume",
+            ProdStage::SeekFade => "seek_fade",
+            ProdStage::Routing => "routing",
+            ProdStage::Resampler => "resampler",
+            ProdStage::Limiter => "limiter",
+            ProdStage::Dither => "dither",
+            ProdStage::Spatial => "spatial",
+        }
+    }
+
+    /// Whether the stage runs on every plane (true) or the front L/R pair
+    /// only (false) — the `StepScope` of the production plan steps.
+    pub fn all_channels(self) -> bool {
+        matches!(
+            self,
+            ProdStage::MixBus
+                | ProdStage::Correction
+                | ProdStage::Volume
+                | ProdStage::SeekFade
+                | ProdStage::Routing
+                | ProdStage::Spatial
+        )
+    }
 }
 
 impl NodeKind {
@@ -173,6 +290,22 @@ impl NodeKind {
                 stateful: true,
                 realtime_safe: true,
                 taps: true,
+            },
+            // Production stages: the engine's own capability table (mirrors
+            // `dsp::pipeline::DSP_STAGE_CAPABILITIES`). The mix bus and the
+            // stateful filters are stateful; the resampler/limiter/correction
+            // introduce pipeline latency (taps); all are realtime-safe on the
+            // production plan executor.
+            NodeKind::Prod(stage) => NodeCapabilities {
+                stateful: !matches!(
+                    stage,
+                    ProdStage::Balance | ProdStage::Volume | ProdStage::Dither
+                ),
+                realtime_safe: true,
+                taps: matches!(
+                    stage,
+                    ProdStage::Resampler | ProdStage::Limiter | ProdStage::Correction
+                ),
             },
         }
     }
@@ -276,6 +409,11 @@ pub enum NodeParams {
     /// emits with exactly that many samples of pipeline delay, so the
     /// latency pass aligns branches around it like a `Delay`.
     Resampler { ratio: f32, quality: u32 },
+    /// `Prod` — a production engine stage. Carries no algorithmic params of
+    /// its own: the node's configuration lives in the production arena's
+    /// node instance (built from `EngineConfig` on the control thread), and
+    /// the `slot` pins which arena slot this topology node corresponds to.
+    Prod { slot: u16 },
 }
 
 impl NodeParams {
@@ -335,6 +473,7 @@ impl NodeParams {
             NodeParams::Resampler { ratio, quality } => {
                 format!("x{ratio:.2} {quality} taps")
             }
+            NodeParams::Prod { slot } => format!("prod slot {slot}"),
         }
     }
 }

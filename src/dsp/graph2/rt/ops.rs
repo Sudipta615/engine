@@ -167,6 +167,10 @@ impl RtExecutor {
                 NodeKind::HRTF => self.rt_hrtf(idx),
                 NodeKind::Resampler => self.rt_resampler(idx),
                 NodeKind::Acoustic => self.rt_acoustic(idx),
+                // Production stages execute through the shared arena in the
+                // `prod` shell; the generic RT plan never carries them (the
+                // prod lowering routes them to the production executor).
+                NodeKind::Prod(_) => {}
             }
         }
     }

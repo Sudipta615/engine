@@ -11,8 +11,11 @@ generation swaps) is the **production hot path**, an N-input mix bus carries the
 primary stream, crossfade partner, and independent lane tracks, a standalone aux
 bus node provides per-send automation and an insert seam, and a multi-endpoint
 output matrix fans the master out to several devices, each with its own realtime
-thread and clock-drift-corrected resampler. A stable C FFI lets non-Rust hosts
-drive the whole surface.
+thread and clock-drift-corrected resampler. Since v3.52 the engine's graph is a
+`Graph2Engine` (Graph 2.0): its execution plans are *lowered* from a Graph2
+topology while the node arena stays the single `dsp::graph` implementation, and an
+optional shadow mode bit-compares a legacy-plan twin per block. A stable C FFI
+lets non-Rust hosts drive the whole surface.
 
 ```
 ├── Cargo.toml                  # workspace + `engine` crate (the library/bins)
@@ -35,18 +38,26 @@ drive the whole surface.
 │   ├── decode/                 # decoders + channel layout/mix + tags + fingerprint
 │   ├── dsp/                    # DSP primitives + `resampler/` (Rubato)
 │   │   ├── pipeline/           #   reference chain (the bit-exact oracle)
-│   │   ├── graph/              #   production hot path: node arena + compiled
-│   │                           #   plans split by concern (construction/plan/swap/
-│   │                           #   access/controls/lifecycle/process/limiter/report
-│   │                           #   + nodes/: mix/{mod,envelope,sum}, aux_node, …)
-│   │   ├── graph2/             #   Graph 2.0 (Phase 25+): typed-port topology —
+│   │   ├── graph/              #   production arena (the single node
+│   │                           #   implementation): compiled plan sets split
+│   │                           #   by concern (construction/plan/swap/
+│   │                           #   access/controls/lifecycle/process/
+│   │                           #   limiter/report + nodes/: mix/{mod,envelope,
+│   │                           #   sum}, aux_node, …)
+│   │   ├── graph2/             #   Graph 2.0: typed-port topology —
 │   │                           #   node/edge/validate/sort + exec/ (offline
-│   │                           #   executor split by concern: mod/offline/ops/
-│   │                           #   buffers/tests, with ops.rs the shared node
-│   │                           #   kernels) + rt/ (Phase 45 v3.50: realtime
-│   │                           #   executor — immutable preallocated RtPlan,
-│   │                           #   atomic publish/swap/retire, zero-alloc
-│   │                           #   enum-dispatched audio path)
+│   │                           #   executor; ops.rs the shared node kernels)
+│   │                           #   + rt/ (realtime executor: immutable
+│   │                           #   preallocated RtPlan, atomic publish/
+│   │                           #   swap/retire, zero-alloc enum dispatch)
+│   │                           #   + prod/ (Phases 46–47, v3.51–v3.52: the
+│   │                           #   production engine ON Graph 2.0 —
+│   │                           #   NodeKind::Prod stage kinds, the chain as
+│   │                           #   a real Graph2 topology, plan LOWERING
+│   │                           #   onto the arena PlanSet, Graph2Engine
+│   │                           #   (drop-in DspGraph replacement; shadow
+│   │                           #   mode bit-compares a legacy-plan twin
+│   │                           #   per block), Graph2ControlHandle)
 │   ├── spatial/                # speaker-independent spatial layer (Phases 8–19):
 │   │                           #   math/ (Vec3+Quat+one coordinate system),
 │   │                           #   scene/object/speaker/level/render + panner/

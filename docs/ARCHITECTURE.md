@@ -351,7 +351,28 @@ src/
 │   │                         #   sort.rs multi-edge fix. The
 │   │                         #   topology, not an authored chain, defines
 │   │                         #   the signal flow — realtime dsp::graph is
-│   │                         #   untouched
+│   │                         #   untouched. Phase 46 (v3.51.0):
+│   │                         #   NodeKind::Prod(ProdStage) — the 17
+│   │                         #   production stages as topology kinds with
+│   │                         #   per-stage capabilities + arena-slot
+│   │                         #   mapping. Phase 47 (v3.52.0): prod/ — the
+│   │                         #   production engine ON Graph 2.0:
+│   │                         #   topology.rs (the canonical chain as a
+│   │                         #   real Graph2, validated + topologically
+│   │                         #   compiled), lowering.rs (compiled order →
+│   │                         #   the production PlanSet — plans are
+│   │                         #   topology-derived, pinned identical to
+│   │                         #   the hand-authored compile by test),
+│   │                         #   mod.rs (Graph2Engine — a drop-in DspGraph
+│   │                         #   replacement: one node implementation,
+│   │                         #   lowered plan source; with_both fan-out
+│   │                         #   seam; graph2_shadow_verify keeps a
+│   │                         #   legacy-plan DspGraph twin bit-compared
+│   │                         #   every block), controls.rs (the mirrored
+│   │                         #   queued mutators), control.rs
+│   │                         #   (Graph2ControlHandle), process.rs (the 9
+│   │                         #   block entries + shadow A/B). AudioEngine
+│   │                         #   runs Graph2Engine end-to-end
 │   ├── timeline/              # Timeline & scheduler (Phase 26, v3.28):
 │   │                         #   clock.rs (AudioClock — playhead + monotonic
 │   │                         #   master, transport state, loop region, tempo

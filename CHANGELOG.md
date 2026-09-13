@@ -2,6 +2,72 @@
 
 All notable changes to this project are documented in this file.
 
+## [3.52.0] — 2026-09-13
+
+### Added
+
+- **Graph 2.0 production node kinds** (`dsp::graph2::node`, Phase 46): the
+  full production stage set — mix bus, aux bus, correction, EQ, dynamics,
+  convolution, balance, crossfeed, stereo, timestretch, volume, seek-fade,
+  routing, resampler, limiter, dither, spatial — exists as
+  `NodeKind::Prod(ProdStage)` with per-stage capability descriptors
+  (stateful / realtime-safe / latency taps) and the arena-slot mapping, so
+  the engine chain can be **described as a topology** (typed ports, edges,
+  validation, topological compile).
+- **Graph2 production topology + plan lowering** (`dsp::graph2::prod`,
+  Phase 46): the canonical signal chain as a real `Graph2` graph, compiled
+  by the deterministic topological sort and **lowered onto the production
+  `PlanSet`** — the execution plans every generation carries are now
+  topology-derived instead of hand-authored, while the node arena, config
+  application, user-state replay, control queues, and swap machinery stay
+  the single `dsp::graph` implementation (exactly one node implementation:
+  bit-exactness by construction, pinned by the
+  `lowered_plans_match_handauthored` unit test).
+- **`Graph2Engine`** (`dsp::graph2::prod`): the production engine shell on
+  Graph 2.0 — a drop-in replacement for `DspGraph` mirroring the full
+  public surface (9 block entry points, the complete queued-control
+  mutator set, typed node accessors, lifecycle, telemetry reports) with
+  `with_both` as the fan-out seam for accessor-style mutations. Exported
+  via the prelude alongside `Graph2ControlHandle` (the cloneable
+  cross-thread surface, method-for-method mirror of
+  `GraphControlHandle`).
+- **Graph2 parity suite** (`tests/fidelity/graph2_graph_equivalence.rs`,
+  Phase 46): 47 tests — the 27 `graph_pipeline_equivalence` scenarios plus
+  the 14 Phase-46 control-surface extensions (aux bus, ducking, slot
+  automation, correction, spatial, lanes, seek-fade, speed, routing,
+  precision, generation swap, queue backpressure), each bit-comparing
+  `Graph2Engine` (lowered plans) against `DspGraph` (hand-authored plans)
+  sample-for-sample (`f32::to_bits`).
+- **Shadow verification mode** (`graph2_shadow_verify` config flag,
+  Phase 47): with the flag on, the engine keeps a legacy-plan `DspGraph`
+  twin driven in lock-step (every control mutator fans out; accessor
+  mutations go through `with_both`) and **bit-compares every processed
+  block** (`f32::to_bits`) — the A/B that proves the lowered plans drive
+  the same nodes in the same order. A mismatch is a diagnostic (counter +
+  first-difference), never an output change; the active engine's output
+  always stands. Default **off** (the comparison deliberately allocates:
+  it is a CI/diagnostic instrument, not a realtime stage) — pinned by a
+  dedicated realtime test.
+- **Engine migration onto Graph2Engine** (Phase 47): `AudioEngine.graph`
+  is a `Graph2Engine`; the decode loops, tick thread, command handlers,
+  and spatial persistence all drive the Graph2-lowered production path
+  with the command/event/telemetry/FFI surfaces unchanged.
+- **Graph2 realtime zero-allocation cases** in
+  `tests/fidelity/realtime_allocation.rs`: the production stereo path,
+  the multichannel path (lowered `NormalMc` plan), and the generation-swap
+  adopt all prove zero allocation on the audio thread — identical contract
+  to `DspGraph`; plus the shadow-mode default-off/diagnostic-only pin.
+
+## [3.51.0] — 2026-09-13
+
+### Added
+
+- **Phase 46 node parity substrate**: production `NodeKind::Prod` kinds,
+  the `graph2::prod` topology/lowering, the `Graph2Engine` shell, the
+  `Graph2ControlHandle` mirror, and the parity-suite harness landed
+  together with the Phase-47 migration (see 3.52.0 above for the unified
+  description — the two phases ship as one release train).
+
 ## [3.50.0] — 2026-09-12
 
 ### Added

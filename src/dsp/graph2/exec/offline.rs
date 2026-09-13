@@ -447,3 +447,18 @@ impl OfflineExecutor {
         }
     }
 }
+
+/// A `NodeKind::Prod` step inside the generic offline executor: the
+/// production stage's DSP does not live in the graph2 kernels — it executes
+/// through the shared production arena (`crate::dsp::graph`) in the `prod`
+/// shell. Inside the generic executor the node contributes **structure
+/// only**: it passes its input plane through so pure-topology analysis and
+/// latency walks behave (the prod shell overrides this dispatch with the
+/// real arena execution).
+pub(crate) fn pass_through_prod(exec: &mut OfflineExecutor, node_id: NodeId) {
+    let in_plane = match exec.read_input(node_id, PortId::IN) {
+        Some(p) => p.to_vec(),
+        None => return,
+    };
+    exec.broadcast(node_id, PortId::OUT, &in_plane);
+}

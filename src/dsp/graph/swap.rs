@@ -188,17 +188,17 @@ impl NodeId {
 pub struct GraphGeneration {
     /// Node arena. The canonical 17-slot layout from Phase 1, but the swap
     /// machinery does not assume a fixed length.
-    pub(super) nodes: Vec<GraphNode>,
+    pub(crate) nodes: Vec<GraphNode>,
     /// Compiled plans referencing this generation's arena slots.
-    pub(super) plans: PlanSet,
+    pub(crate) plans: PlanSet,
     /// Stable identity per node, parallel to `nodes` (queue addressing).
-    pub(super) node_ids: Vec<NodeId>,
+    pub(crate) node_ids: Vec<NodeId>,
 }
 
 impl GraphGeneration {
     /// The default Phase-2 layout: canonical node order, `NodeId(i)` for
     /// arena slot `i` (matching the `node_id` table).
-    pub(super) fn canonical_ids(node_count: usize) -> Vec<NodeId> {
+    pub(crate) fn canonical_ids(node_count: usize) -> Vec<NodeId> {
         (0..node_count).map(NodeId).collect()
     }
 }

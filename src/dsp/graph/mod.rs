@@ -79,8 +79,14 @@ pub use nodes::*;
 
 pub use swap::GraphGeneration;
 
-pub(super) use controls::{ControlBus, NodeCmd};
+pub(crate) use controls::{ControlBus, NodeCmd};
 pub(super) use swap::{NodeId, SlotAutomationData, UserState};
+
+// Phase 46: the graph2 `prod` shell lowers a Graph2 topology onto the
+// production plan set (the plan source is topology-derived instead of
+// hand-authored), so the plan types + the plans-parameterized generation
+// builder are crate-visible.
+pub(crate) use plan::{PlanSet as ProdPlanSet, PlanStep, StepScope};
 
 // ── Node arena ───────────────────────────────────────────────────────────────
 
@@ -88,7 +94,7 @@ pub(super) use swap::{NodeId, SlotAutomationData, UserState};
 /// instead of by name, so reordering or replacing a node only needs to
 /// rebuild the plan, never the executor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct NodeIdx(usize);
+pub(crate) struct NodeIdx(pub usize);
 
 /// Canonical `NodeId` values (the arena slot table): the per-node control
 /// queues are addressed by [`swap::NodeId`], and in the default layout these
@@ -139,7 +145,7 @@ mod node_id {
 /// boxing would reintroduce per-node indirection and allocation, so the lint
 /// is allowed — same as `PlaybackStream` in the engine.
 #[allow(clippy::large_enum_variant)]
-pub(super) enum GraphNode {
+pub(crate) enum GraphNode {
     Mix(MixBusNode),
     Eq(EqNode),
     Dynamics(DynamicsNode),

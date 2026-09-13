@@ -304,7 +304,7 @@ impl AudioEngine {
 
         let current_volume = self.playback_info.load().volume;
         self.graph.set_volume(current_volume);
-        self.graph.volume_mut().processor.snap();
+        self.graph.with_both(|g| g.volume_mut().processor.snap());
 
         let loudness_meta = if let Some(path) = loudness_path {
             let mut meta = crate::decode::extract_loudness_metadata(path);

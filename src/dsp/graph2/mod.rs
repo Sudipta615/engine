@@ -58,6 +58,7 @@ pub mod edge;
 pub mod exec;
 pub mod latency;
 pub mod node;
+pub mod prod;
 pub mod rt;
 pub mod sort;
 pub mod validate;
@@ -67,7 +68,7 @@ pub use exec::{OfflineExecutor, CONVOLUTION_FFT_THRESHOLD};
 pub use latency::{analyze, compensate, node_latency, LatencyReport};
 pub use node::{
     HrtfSource, NodeCapabilities, NodeDef, NodeId, NodeKind, NodeParams, PortDirection, PortId,
-    PortSpec, SignalType, SourceParams, TestSignal,
+    PortSpec, ProdStage, SignalType, SourceParams, TestSignal,
 };
 pub use rt::{RtExecutor, RtPlan, RtPlanError, RtScenes};
 pub use sort::{topological_order, ExecutionOrder};
@@ -136,6 +137,13 @@ impl Graph2 {
             node::NodeKind::Resampler => (
                 vec![PortSpec::input(SignalType::Audio, 1)],
                 vec![PortSpec::output(SignalType::Audio, 1)],
+            ),
+            // Production stages: the engine chain is a bus-style chain, so
+            // every stage is a 1-in / 1-out audio port (channel count
+            // varies by plan domain; `0` = the "any" wildcard).
+            node::NodeKind::Prod(_) => (
+                vec![PortSpec::input(SignalType::Audio, 0)],
+                vec![PortSpec::output(SignalType::Audio, 0)],
             ),
         };
         let id = NodeId(self.next_node);
@@ -413,6 +421,21 @@ impl Graph2 {
         id
     }
 
+    /// A production engine stage (Phase 46): the node's DSP is the shared
+    /// production arena node at `stage.slot()`; the topology contributes the
+    /// port shape and the execution order. `slot` must match
+    /// `stage.slot()` (the production `node_id` table) or the lowering
+    /// rejects the graph.
+    pub fn add_prod(&mut self, name: &str, stage: node::ProdStage) -> NodeId {
+        self.add_node(
+            name,
+            NodeKind::Prod(stage),
+            node::NodeParams::Prod {
+                slot: stage.slot() as u16,
+            },
+        )
+    }
+
     /// Insert a fully custom [`NodeDef`] (host-defined port shapes — e.g. a
     /// Control-typed input port to exercise typed-bus validation). The id
     /// must be fresh.
@@ -612,6 +635,7 @@ fn node_kind_label(kind: NodeKind) -> &'static str {
         NodeKind::Convolution => "conv",
         NodeKind::HRTF => "hrtf",
         NodeKind::Resampler => "rsmp",
+        NodeKind::Prod(_) => "prod",
     }
 }
 

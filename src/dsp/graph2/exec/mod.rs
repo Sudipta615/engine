@@ -240,6 +240,10 @@ impl OfflineExecutor {
                 NodeKind::Convolution => self.run_convolution(node_id),
                 NodeKind::HRTF => self.run_hrtf(node_id),
                 NodeKind::Resampler => self.run_resampler(node_id),
+                // Production stages execute through the shared arena in the
+                // `prod` shell (one node implementation); the generic offline
+                // executor never lowers them itself.
+                NodeKind::Prod(_) => offline::pass_through_prod(self, node_id),
             }
         }
         self.master_sample = self.master_sample.saturating_add(self.block as u64);

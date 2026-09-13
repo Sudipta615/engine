@@ -28,7 +28,7 @@
 //!
 //! [`SpatialNode`]: crate::dsp::graph::nodes::SpatialNode
 
-use crate::dsp::graph::DspGraph;
+use crate::dsp::graph2::prod::Graph2Engine;
 use config::{SpatialConfig, SpatialRoomConfig};
 use std::path::{Path, PathBuf};
 
@@ -47,7 +47,7 @@ pub fn autosave_path() -> Option<PathBuf> {
 }
 
 /// Read the graph's current spatial state as a [`SpatialConfig`] snapshot.
-fn snapshot(graph: &DspGraph) -> SpatialConfig {
+fn snapshot(graph: &Graph2Engine) -> SpatialConfig {
     let sp = graph.spatial();
     let (center_azimuth_deg, half_width_deg, elevation_deg, gain) = sp.screen();
     let (enabled, width, depth, height, absorption, reflection_order, rt60_ms, late_mix, wet) =
@@ -128,7 +128,7 @@ impl SpatialPersistence {
     /// Called at engine construction (control path, before audio starts).
     /// On success the restored state becomes the save baseline, so the next
     /// tick does not rewrite an unchanged scene.
-    pub fn restore(&mut self, graph: &mut DspGraph, sample_rate: f32) -> bool {
+    pub fn restore(&mut self, graph: &mut Graph2Engine, sample_rate: f32) -> bool {
         let Some(path) = &self.path else {
             return false;
         };
@@ -140,14 +140,14 @@ impl SpatialPersistence {
             Ok(c) => c,
             Err(_) => return false,
         };
-        graph.spatial_mut().apply_config(&cfg, sample_rate.max(1.0));
+        graph.with_both(|g| g.spatial_mut().apply_config(&cfg, sample_rate.max(1.0)));
         self.last_saved = Some(cfg);
         true
     }
 
     /// Write the current spatial state when it differs from the last save.
     /// Runs once per engine tick after queued graph controls are applied.
-    pub fn maybe_save(&mut self, graph: &DspGraph) {
+    pub fn maybe_save(&mut self, graph: &Graph2Engine) {
         let Some(path) = &self.path else {
             return;
         };
@@ -161,7 +161,7 @@ impl SpatialPersistence {
     }
 
     /// Force a final save (engine shutdown).
-    pub fn save_now(&mut self, graph: &DspGraph) {
+    pub fn save_now(&mut self, graph: &Graph2Engine) {
         let Some(path) = &self.path else {
             return;
         };
@@ -176,7 +176,7 @@ impl SpatialPersistence {
 mod tests {
     use super::*;
 
-    fn apply_spatial(graph: &mut DspGraph) {
+    fn apply_spatial(graph: &mut Graph2Engine) {
         graph.control_handle().set_spatial_enabled(true);
         graph
             .control_handle()
@@ -199,7 +199,7 @@ mod tests {
 
         // Build a graph, apply a distinct spatial state, persist it.
         let cfg = crate::EngineConfig::default();
-        let mut graph = DspGraph::from_config(&cfg, 48_000.0);
+        let mut graph = Graph2Engine::from_config(&cfg, 48_000.0);
         apply_spatial(&mut graph);
         let mut persister = SpatialPersistence {
             path: Some(dir.join(AUTOSAVE_FILE_NAME)),
@@ -209,7 +209,7 @@ mod tests {
         assert!(dir.join(AUTOSAVE_FILE_NAME).exists());
 
         // A fresh graph restores the saved state exactly.
-        let mut restored = DspGraph::from_config(&cfg, 48_000.0);
+        let mut restored = Graph2Engine::from_config(&cfg, 48_000.0);
         assert!(!restored.spatial().enabled());
         assert!(persister.restore(&mut restored, 48_000.0));
         assert!(restored.spatial().enabled());
@@ -232,7 +232,7 @@ mod tests {
         let file = dir.join(AUTOSAVE_FILE_NAME);
 
         let cfg = crate::EngineConfig::default();
-        let mut graph = DspGraph::from_config(&cfg, 48_000.0);
+        let mut graph = Graph2Engine::from_config(&cfg, 48_000.0);
         let mut persister = SpatialPersistence {
             path: Some(file.clone()),
             last_saved: None,
@@ -258,7 +258,7 @@ mod tests {
         let stamp2 = std::fs::metadata(&file).unwrap().modified().unwrap();
 
         // And the rewritten state restores back.
-        let mut restored = DspGraph::from_config(&cfg, 48_000.0);
+        let mut restored = Graph2Engine::from_config(&cfg, 48_000.0);
         assert!(persister.restore(&mut restored, 48_000.0));
         assert!(restored.spatial().enabled());
         assert_eq!(restored.spatial().screen(), (12.0, 40.0, 5.0, 0.9));
@@ -282,7 +282,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         let cfg = crate::EngineConfig::default();
-        let mut graph = DspGraph::from_config(&cfg, 48_000.0);
+        let mut graph = Graph2Engine::from_config(&cfg, 48_000.0);
         let mut p = SpatialPersistence {
             path: Some(dir.join(AUTOSAVE_FILE_NAME)),
             last_saved: None,

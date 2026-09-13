@@ -27,6 +27,7 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use engine::dsp::graph::DspGraph;
+use engine::dsp::graph2::prod::Graph2Engine;
 use engine::dsp::loudness::LoudnessMetadata;
 use engine::dsp::pipeline::DspPipeline;
 use engine::spatial::{
@@ -1295,5 +1296,223 @@ fn graph2_rt_executor_does_not_allocate() {
     assert_eq!(
         allocations, 0,
         "steady-state Graph2 RT rendering allocated on the audio path"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 46/47: the Graph2 production engine (`Graph2Engine`) — the lowered
+// plans drive the same arena, so the zero-allocation contract must hold
+// identically. Shadow mode is *diagnostic by design* (it allocates on
+// purpose); these cases measure the flag-off production path.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The Graph2 production engine's stereo hot path (lowered plans → arena
+/// plan execution) must be allocation-free in steady state — identical
+/// machinery to `DspGraph`, identical contract.
+#[test]
+fn realtime_graph2_prod_stereo_does_not_allocate() {
+    let mut cfg = full_chain_config();
+    cfg.precision_mode = config::PrecisionMode::Performance;
+
+    let ir_path = std::env::temp_dir().join(format!(
+        "rt_g2_ir_{}_{}.wav",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    write_impulse_wav(&ir_path, 48_000, 2048);
+    cfg.aux.enabled = true;
+    cfg.aux.return_gain = 0.5;
+    cfg.aux.insert_enabled = true;
+    cfg.aux.insert_wet_mix = 0.3;
+    cfg.aux.insert_ir_path = Some(ir_path.display().to_string());
+
+    let mut g2 = Graph2Engine::from_config(&cfg, 48_000.0);
+
+    let ir: Vec<(f32, f32)> = (0..2048)
+        .map(|i| {
+            let e = (-i as f32 / 512.0).exp() * 0.5;
+            (e, e * 0.9)
+        })
+        .collect();
+    g2.with_both(|g| {
+        g.convolution_mut().engine.set_enabled(true);
+        g.convolution_mut()
+            .engine
+            .load_ir_from_samples(&ir)
+            .expect("synthetic IR must load");
+        g.convolution_mut().engine.set_wet_mix(0.3);
+    });
+    g2.set_slot_send(0, 1.0, 0.5);
+    g2.set_slot_send(1, 1.0, 0.5);
+    g2.set_volume(0.8);
+    g2.set_balance(-0.2);
+    g2.drain_queued_control();
+
+    let mut left = [0.0f32; 128];
+    let mut right = [0.0f32; 128];
+
+    // Warm up all stateful stages before the measurement window.
+    g2.process_block(&mut left, &mut right);
+    g2.process_final_limiter_block(&mut left, &mut right);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for block in 0..10_000 {
+        let value = (block as f32 * 0.01).sin() * 0.3;
+        left.fill(value);
+        right.fill(-value * 0.8);
+        g2.process_block(&mut left, &mut right);
+        g2.process_final_limiter_block(&mut left, &mut right);
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&ir_path);
+    let allocations = THREAD_ALLOCS.with(|c| c.get());
+
+    assert_eq!(
+        allocations, 0,
+        "steady-state Graph2 production stereo execution allocated on the audio path"
+    );
+}
+
+/// The Graph2 production engine's multichannel hot path (the lowered
+/// `NormalMc` plan) must be allocation-free in steady state.
+#[test]
+fn realtime_graph2_prod_multichannel_does_not_allocate() {
+    let mut cfg = full_chain_config();
+    cfg.precision_mode = config::PrecisionMode::Performance;
+    cfg.channel_trim.enabled = true;
+    cfg.channel_trim.entries = vec![config::ChannelTrimEntry {
+        channel: 0,
+        gain_db: -3.0,
+        ..Default::default()
+    }];
+
+    let mut g2 = Graph2Engine::from_config(&cfg, 48_000.0);
+    let layout = engine::decode::ChannelLayout::from_count(6);
+    g2.set_multichannel_layout(&layout);
+    g2.set_volume(0.8);
+
+    let mut interleaved = vec![0.0f32; 128 * 6];
+
+    g2.process_block_multichannel(&mut interleaved, 6);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for block in 0..10_000 {
+        let value = (block as f32 * 0.01).sin() * 0.3;
+        for (i, s) in interleaved.iter_mut().enumerate() {
+            *s = if i % 6 == 0 { value } else { -value * 0.5 };
+        }
+        g2.process_block_multichannel(&mut interleaved, 6);
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocations = THREAD_ALLOCS.with(|c| c.get());
+
+    assert_eq!(
+        allocations, 0,
+        "steady-state Graph2 production multichannel execution allocated on the audio path"
+    );
+}
+
+/// The Graph2 production engine's generation swap (drain-adopt at the block
+/// boundary, lowered-plan generation published from the control thread)
+/// must be allocation-free on the audio thread — the same contract as
+/// `DspGraph`.
+#[test]
+fn realtime_graph2_prod_swap_does_not_allocate_on_audio_thread() {
+    let mut cfg = full_chain_config();
+    cfg.precision_mode = config::PrecisionMode::Performance;
+
+    let mut g2 = Graph2Engine::from_config(&cfg, 48_000.0);
+    let handle = g2.control_handle();
+    g2.set_volume(0.8);
+
+    let mut left = [0.0f32; 128];
+    let mut right = [0.0f32; 128];
+
+    g2.process_block(&mut left, &mut right);
+    g2.process_final_limiter_block(&mut left, &mut right);
+
+    // Pre-build + pre-send the swap batch during warm-up (control-side
+    // allocations are unmeasured). The control thread publishes during the
+    // measured window; the audio thread only adopts.
+    const N_SWAPS: usize = 40;
+    let (tx, rx) = std::sync::mpsc::channel::<Box<engine::dsp::graph::GraphGeneration>>();
+    for i in 0..N_SWAPS {
+        let mut c2 = full_chain_config();
+        c2.eq.bands[2].gain_db = i as f32 * 0.25;
+        tx.send(engine::dsp::graph::GraphGeneration::from_config(
+            &c2,
+            48_000.0,
+            &g2.multichannel_layout,
+        ))
+        .expect("pre-warm channel send");
+    }
+    drop(tx);
+
+    let ctl_handle = g2.inner().control_handle();
+    let ctl = std::thread::spawn(move || {
+        while let Ok(gen) = rx.recv() {
+            ctl_handle.publish_generation(gen);
+        }
+    });
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for block in 0..10_000 {
+        let value = (block as f32 * 0.01).sin() * 0.3;
+        left.fill(value);
+        right.fill(-value * 0.8);
+        g2.process_block(&mut left, &mut right);
+        g2.process_final_limiter_block(&mut left, &mut right);
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocations = THREAD_ALLOCS.with(|c| c.get());
+    ctl.join().expect("control thread");
+
+    assert!(handle.generation() >= 1, "swaps must have occurred");
+    assert_eq!(
+        allocations, 0,
+        "Graph2 production generation swap on the audio thread allocated"
+    );
+}
+
+/// Shadow mode is diagnostic **by design**: it allocates per block (the
+/// copies it bit-compares). This case pins that expectation so nobody
+/// turns it on expecting a free lunch — the flag must stay default-off on
+/// the realtime path.
+#[test]
+fn realtime_graph2_shadow_mode_is_diagnostic_not_realtime() {
+    let cfg = full_chain_config();
+    let mut g2 = Graph2Engine::from_config(&cfg, 48_000.0);
+    assert!(!g2.shadow_enabled(), "shadow must be default-off");
+
+    let mut left = [0.0f32; 128];
+    let mut right = [0.0f32; 128];
+    g2.process_block(&mut left, &mut right);
+
+    // Flag-off: the plain forward path never allocates in steady state.
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+    for block in 0..1_000 {
+        let value = (block as f32 * 0.01).sin() * 0.3;
+        left.fill(value);
+        right.fill(-value * 0.8);
+        g2.process_block(&mut left, &mut right);
+    }
+    ARMED.store(false, Ordering::Relaxed);
+    assert_eq!(
+        THREAD_ALLOCS.with(|c| c.get()),
+        0,
+        "flag-off graph2 must be allocation-free"
     );
 }

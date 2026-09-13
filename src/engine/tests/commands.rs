@@ -61,23 +61,21 @@ fn test_graph_latency_is_authoritative_sum() {
     assert_eq!(empty.output_device_latency_ms, 0.0);
 
     engine.pipeline_mut().set_limiter_enabled(true);
-    engine
-        .pipeline_mut()
-        .convolution_mut()
-        .engine
-        .set_enabled(true);
+    engine.pipeline_mut().with_both(|g| {
+        g.convolution_mut().engine.set_enabled(true);
+    });
     let ir: Vec<(f32, f32)> = (0..2048)
         .map(|i| {
             let e = (-i as f32 / 512.0).exp() * 0.5;
             (e, e * 0.9)
         })
         .collect();
-    engine
-        .pipeline_mut()
-        .convolution_mut()
-        .engine
-        .load_ir_from_samples(&ir)
-        .unwrap();
+    engine.pipeline_mut().with_both(|g| {
+        g.convolution_mut()
+            .engine
+            .load_ir_from_samples(&ir)
+            .unwrap();
+    });
 
     let report = engine.graph_latency();
     let limiter_ms = engine.pipeline().limiter().limiter.lookahead_ms();

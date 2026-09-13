@@ -50,7 +50,7 @@ use crate::output::DeviceMonitor;
 use crate::{
     buffer::{EngineCommand, FixedFrameBuffer, PlaybackInfo},
     dsp::analyzer::AudioAnalyzer,
-    dsp::DspGraph,
+    dsp::graph2::prod::Graph2Engine,
     events::{EngineEvent, OutputEvent},
     output::Output,
     playlist::Playlist,
@@ -75,10 +75,13 @@ pub struct AudioEngine {
     /// The active output transport (cpal, or the native WASAPI exclusive
     /// backend on Windows with `wasapi-native`).
     audio_output: Option<Box<dyn Output>>,
-    /// The production DSP signal path (Phase 3 S4): the graph owns the
-    /// signal chain end-to-end; the pipeline remains only as the frozen
-    /// equivalence-test oracle.
-    graph: DspGraph,
+    /// The production DSP signal path (Phase 47): the Graph2 engine owns
+    /// the signal chain end-to-end — its generations carry plans **lowered
+    /// from the Graph2 production topology** while the node arena, control
+    /// surface, and swap machinery stay the single `dsp::graph`
+    /// implementation. With `graph2_shadow_verify` the legacy-plan
+    /// `DspGraph` runs as a bit-compared shadow twin.
+    graph: Graph2Engine,
     /// Graphic EQ model (§9.1) — the slider state compiled into
     /// `graph.eq()`. Always present; only authoritative while enabled.
     graphic_eq: crate::dsp::GraphicEq,

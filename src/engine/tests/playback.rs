@@ -283,16 +283,12 @@ fn test_incoming_metadata_applied_to_pipeline() {
     let mut engine = AudioEngine::new_default().unwrap();
     // Enable EBU R128 normalization on the incoming chain so the metadata
     // produces a real gain target.
-    engine
-        .pipeline_mut()
-        .in_loudness_mut()
-        .normalizer
-        .set_mode(crate::dsp::LoudnessMode::EbuR128);
-    engine
-        .pipeline_mut()
-        .in_loudness_mut()
-        .normalizer
-        .set_target_lufs(-23.0);
+    engine.pipeline_mut().with_both(|g| {
+        g.in_loudness_mut()
+            .normalizer
+            .set_mode(crate::dsp::LoudnessMode::EbuR128);
+        g.in_loudness_mut().normalizer.set_target_lufs(-23.0);
+    });
     engine
         .prepare_next_track(&path)
         .expect("prepare should succeed");

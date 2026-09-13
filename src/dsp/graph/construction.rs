@@ -32,7 +32,7 @@ impl GraphGeneration {
     /// user state (volume target / balance / speed / fade ramp) so a reconfig
     /// does not snap the listener's settings. The state is an immutable
     /// snapshot — the builder does not need (or touch) a live control bus.
-    pub(super) fn build_with_state(
+    pub(crate) fn build_with_state(
         config: &EngineConfig,
         sample_rate: f32,
         layout: &ChannelLayout,
@@ -125,13 +125,28 @@ impl GraphGeneration {
             nodes,
         };
         gen.apply_config(config, sample_rate, layout);
+        gen.finish_build(config, sample_rate, user);
+        Box::new(gen)
+    }
 
+    /// The config/user-state replay shared by the canonical and the
+    /// Graph2-lowered build paths: mix trims/sends, aux, correction,
+    /// spatial, and the sticky user-state replay. Factored out of
+    /// `build_with_state` (Phase 46) so `graph2::prod` can build a
+    /// generation with a **topology-derived plan set** and run the exact
+    /// same node configuration + replay sequence on it.
+    pub(crate) fn finish_build(
+        &mut self,
+        config: &EngineConfig,
+        sample_rate: f32,
+        user: UserState,
+    ) {
         // Phase 5 config replay: generation-level trim, send, and aux
         // settings are applied before sticky user-state replay. User state
         // remains authoritative for values changed through the live control
         // surface.
         {
-            let mix = gen_node!(gen, node_id::MIX, Mix);
+            let mix = gen_node!(self, node_id::MIX, Mix);
             for trim in &config.mix_trims {
                 if let Some(input) = mix.inputs.get_mut(trim.slot) {
                     input
@@ -153,27 +168,28 @@ impl GraphGeneration {
             }
             // Phase 6: the aux config now applies to the aux bus node (the
             // mix node's taps are gated on the shared bus's `enabled`).
-            gen_node!(gen, node_id::AUX, Aux).apply_aux(config.aux.enabled, config.aux.return_gain);
+            gen_node!(self, node_id::AUX, Aux)
+                .apply_aux(config.aux.enabled, config.aux.return_gain);
         }
 
         // Phase 7 S5: the correction config (enabled / depth / measured IR
         // paths → S2–S4 derive) applies to the correction node.
-        gen_node!(gen, node_id::CORRECTION, Correction)
+        gen_node!(self, node_id::CORRECTION, Correction)
             .apply_config(&config.correction, sample_rate);
 
         // Phase 17: the spatial config (enabled / screen / room / listener)
         // applies to the spatial master node.
-        gen_node!(gen, node_id::SPATIAL, Spatial).apply_config(&config.spatial, sample_rate);
+        gen_node!(self, node_id::SPATIAL, Spatial).apply_config(&config.spatial, sample_rate);
 
         // User-state replay: a fresh generation inherits the listener's
         // volume / balance / speed from the control bus (seeded with defaults
         // at construction, mirroring the Phase-1 semantics where volume is
         // user state that survives track changes).
-        gen_node!(gen, node_id::VOLUME, Volume)
+        gen_node!(self, node_id::VOLUME, Volume)
             .processor
             .set_gain(user.volume);
-        gen_node!(gen, node_id::BALANCE, Balance).set_balance(user.balance);
-        gen_node!(gen, node_id::TIMESTRETCH, TimeStretch)
+        gen_node!(self, node_id::BALANCE, Balance).set_balance(user.balance);
+        gen_node!(self, node_id::TIMESTRETCH, TimeStretch)
             .stretcher
             .set_speed(user.speed);
 
@@ -184,9 +200,9 @@ impl GraphGeneration {
         // the volume replay); balance / mute / active are immediate. Slot 0's
         // detachment is never replayed (it is the caller's in-place planes).
         {
-            let mix_slots = gen_node!(gen, node_id::MIX, Mix).inputs.len();
+            let mix_slots = gen_node!(self, node_id::MIX, Mix).inputs.len();
             for (i, slot) in user.slots.iter().take(mix_slots).enumerate() {
-                let input = &mut gen_node!(gen, node_id::MIX, Mix).inputs[i];
+                let input = &mut gen_node!(self, node_id::MIX, Mix).inputs[i];
                 input.gain.set_gain(slot.gain.clamp(0.0, 1.0));
                 input.balance = slot.balance.clamp(-1.0, 1.0);
                 input.pan = slot.pan.clamp(-1.0, 1.0);
@@ -210,7 +226,7 @@ impl GraphGeneration {
                     input.trim.invert.copy_from_slice(&slot.trim_invert[..]);
                     // Phase 6: sync the per-slot send target onto the shared
                     // bus (same mirror as `MixInputCmd::SetSend`).
-                    let mix = gen_node!(gen, node_id::MIX, Mix);
+                    let mix = gen_node!(self, node_id::MIX, Mix);
                     let sb = mix.send_bus.data_mut();
                     sb.send_targets[i] = aux;
                     sb.send_active[i] = aux != 0.0;
@@ -220,27 +236,28 @@ impl GraphGeneration {
             // only; construction keeps the config-applied aux config). The
             // aux node owns the bus now (Phase 6).
             if user.has_live_bus_state {
-                gen_node!(gen, node_id::AUX, Aux).apply_aux(user.aux_enabled, user.aux_return_gain);
+                gen_node!(self, node_id::AUX, Aux)
+                    .apply_aux(user.aux_enabled, user.aux_return_gain);
                 // Phase 6: a live runtime toggle of the aux insert survives
                 // the swap too (the config-applied IR stays loaded).
-                gen_node!(gen, node_id::AUX, Aux)
+                gen_node!(self, node_id::AUX, Aux)
                     .set_aux_insert(user.aux_insert_enabled, user.aux_insert_wet_mix);
             }
             // Phase 7 S5: a live correction toggle, depth, and the rendered
             // IR set survive a swap (live snapshots only; construction
             // keeps the config-applied correction).
             if user.has_live_bus_state {
-                gen_node!(gen, node_id::CORRECTION, Correction)
+                gen_node!(self, node_id::CORRECTION, Correction)
                     .set_runtime(user.correction_enabled, user.correction_depth);
                 if let Some(ref set) = user.correction_ir {
                     let _ =
-                        gen_node!(gen, node_id::CORRECTION, Correction).load_set(set, sample_rate);
+                        gen_node!(self, node_id::CORRECTION, Correction).load_set(set, sample_rate);
                 }
             }
             // Phase 17: a live spatial enable toggle survives a swap (live
             // snapshots only; construction keeps the config-applied state).
             if user.has_live_bus_state {
-                gen_node!(gen, node_id::SPATIAL, Spatial).set_enabled(user.spatial_enabled);
+                gen_node!(self, node_id::SPATIAL, Spatial).set_enabled(user.spatial_enabled);
             }
         }
 
@@ -248,7 +265,7 @@ impl GraphGeneration {
         // `DspGraph::reconfigure` from the live generation; `from_config`
         // passes `None`/empty).
         {
-            let mix = gen_node!(gen, node_id::MIX, Mix);
+            let mix = gen_node!(self, node_id::MIX, Mix);
             if let Some(duck) = user.duck {
                 mix.apply_duck(Some(duck));
             }
@@ -264,7 +281,96 @@ impl GraphGeneration {
                 }
             }
         }
+    }
 
+    /// Build a generation whose execution plans are **Graph2-derived**
+    /// (Phase 46): the plan set comes from lowering the production topology
+    /// (see `crate::dsp::graph2::prod`) instead of the hand-authored
+    /// `PlanSet::compile()`. The arena, config application, and user-state
+    /// replay are the exact same code path as the canonical build — the
+    /// only difference is the plan source — so the two builds are
+    /// bit-equivalent by construction.
+    #[allow(dead_code)] // first consumer: `graph2::prod` (Phase 47 shadow A/B)
+    pub(crate) fn build_with_plans(
+        config: &EngineConfig,
+        sample_rate: f32,
+        layout: &ChannelLayout,
+        user: UserState,
+        plans: PlanSet,
+    ) -> Box<GraphGeneration> {
+        let num_bands = config.eq.bands.len().max(10);
+        let mut timestretch = TimeStretchNode::new(sample_rate);
+        timestretch
+            .stretcher
+            .set_quality(config.timestretch_quality);
+
+        let send_bus = AuxSendBus::new();
+        let nodes = vec![
+            GraphNode::Mix(MixBusNode::with_slots(
+                config.mix_slots,
+                sample_rate,
+                config.crossfade.duration_ms,
+                config.crossfade.enabled,
+                config.crossfade.curve,
+                PREAMP_RAMP_DURATION_MS,
+                send_bus.clone(),
+            )),
+            GraphNode::Eq(EqNode::new(num_bands, sample_rate)),
+            GraphNode::Dynamics(DynamicsNode::new(sample_rate)),
+            GraphNode::Convolution(ConvolutionNode::new(sample_rate, 8192)),
+            GraphNode::Balance(BalanceNode::new()),
+            GraphNode::Crossfeed(CrossfeedNode::new(sample_rate)),
+            GraphNode::Stereo(StereoNode::new()),
+            GraphNode::TimeStretch(timestretch),
+            GraphNode::Volume(GainNode::new(
+                "volume",
+                "post-mix",
+                user.volume_fade_ms,
+                sample_rate,
+            )),
+            GraphNode::SeekFade(SeekFadeNode::new(config.seek_fade_ms as f32, sample_rate)),
+            GraphNode::Routing(RoutingNode::new(sample_rate)),
+            GraphNode::Resampler(ResamplerNode::new(sample_rate, sample_rate)),
+            GraphNode::Limiter(LimiterNode::new(sample_rate)),
+            GraphNode::Dither(DitherNode::new(sample_rate)),
+            GraphNode::Aux(AuxBusNode::new(send_bus, sample_rate)),
+            GraphNode::Correction(CorrectionNode::new(sample_rate)),
+            GraphNode::Spatial(SpatialNode::new(sample_rate)),
+        ];
+        debug_assert!(matches!(nodes[node_id::MIX], GraphNode::Mix(_)));
+        debug_assert!(matches!(nodes[node_id::EQ], GraphNode::Eq(_)));
+        debug_assert!(matches!(nodes[node_id::DYNAMICS], GraphNode::Dynamics(_)));
+        debug_assert!(matches!(
+            nodes[node_id::CONVOLUTION],
+            GraphNode::Convolution(_)
+        ));
+        debug_assert!(matches!(nodes[node_id::BALANCE], GraphNode::Balance(_)));
+        debug_assert!(matches!(nodes[node_id::CROSSFEED], GraphNode::Crossfeed(_)));
+        debug_assert!(matches!(nodes[node_id::STEREO], GraphNode::Stereo(_)));
+        debug_assert!(matches!(
+            nodes[node_id::TIMESTRETCH],
+            GraphNode::TimeStretch(_)
+        ));
+        debug_assert!(matches!(nodes[node_id::VOLUME], GraphNode::Volume(_)));
+        debug_assert!(matches!(nodes[node_id::SEEK_FADE], GraphNode::SeekFade(_)));
+        debug_assert!(matches!(nodes[node_id::ROUTING], GraphNode::Routing(_)));
+        debug_assert!(matches!(nodes[node_id::RESAMPLER], GraphNode::Resampler(_)));
+        debug_assert!(matches!(nodes[node_id::LIMITER], GraphNode::Limiter(_)));
+        debug_assert!(matches!(nodes[node_id::DITHER], GraphNode::Dither(_)));
+        debug_assert!(matches!(nodes[node_id::AUX], GraphNode::Aux(_)));
+        debug_assert!(matches!(
+            nodes[node_id::CORRECTION],
+            GraphNode::Correction(_)
+        ));
+        debug_assert!(matches!(nodes[node_id::SPATIAL], GraphNode::Spatial(_)));
+
+        let mut gen = GraphGeneration {
+            node_ids: GraphGeneration::canonical_ids(nodes.len()),
+            plans,
+            nodes,
+        };
+        gen.apply_config(config, sample_rate, layout);
+        gen.finish_build(config, sample_rate, user);
         Box::new(gen)
     }
 
@@ -545,8 +651,21 @@ impl GraphGeneration {
 impl DspGraph {
     /// Construct a new DSP Graph from an [`EngineConfig`] and sample rate.
     pub fn from_config(config: &EngineConfig, sample_rate: f32) -> Self {
+        Self::from_config_with_plans(config, sample_rate, PlanSet::compile())
+    }
+
+    /// The Graph2 `prod` construction seam (Phase 46): build the graph
+    /// with a **lowered** plan set (see `crate::dsp::graph2::prod`) —
+    /// the arena, config application, and user-state replay are the exact
+    /// same code path as [`Self::from_config`]; only the plan source
+    /// differs.
+    pub(crate) fn from_config_with_plans(
+        config: &EngineConfig,
+        sample_rate: f32,
+        plans: PlanSet,
+    ) -> Self {
         let bus = Arc::new(ControlBus::new(config.volume_fade_ms as f32));
-        let active = GraphGeneration::build_with_state(
+        let active = GraphGeneration::build_with_plans(
             config,
             sample_rate,
             &ChannelLayout::Stereo,
@@ -554,6 +673,7 @@ impl DspGraph {
                 volume_fade_ms: config.volume_fade_ms as f32,
                 ..UserState::default()
             },
+            plans,
         );
 
         Self {
@@ -599,6 +719,13 @@ impl DspGraph {
     /// [`GraphControlHandle::publish_generation`]; here it also syncs the
     /// shell-level mode fields.
     pub fn reconfigure(&mut self, config: &EngineConfig) {
+        self.reconfigure_with_plans(config, PlanSet::compile());
+    }
+
+    /// The Graph2 `prod` reconfiguration seam (Phase 46): the same live
+    /// reconfiguration, but the fresh generation carries **lowered**
+    /// plans (see `crate::dsp::graph2::prod`).
+    pub(crate) fn reconfigure_with_plans(&mut self, config: &EngineConfig, plans: PlanSet) {
         // Flush queued control commands into the ACTIVE generation first so
         // their effects are mirrored onto the sticky user state BEFORE the
         // snapshot below is taken: a command enqueued before this call (e.g.
@@ -628,7 +755,7 @@ impl DspGraph {
                 })
                 .collect();
         }
-        let gen = GraphGeneration::build_with_state(config, sample_rate, &layout, user);
+        let gen = GraphGeneration::build_with_plans(config, sample_rate, &layout, user, plans);
         self.precision_mode = config.precision_mode;
         self.performance_mode = config.performance_mode;
         self.volume_fade_ms = config.volume_fade_ms as f32;

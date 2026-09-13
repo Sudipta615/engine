@@ -16,8 +16,8 @@ use config;
 
 use crate::{
     buffer::{PlaybackInfo, PlaybackState},
+    dsp::graph2::prod::Graph2Engine,
     dsp::pipeline::{LatencyReport, OutputSampleFormat, VolumePath},
-    dsp::DspGraph,
     events::OutputEvent,
     source::AudioSource,
 };
@@ -543,10 +543,10 @@ impl AudioEngine {
         Arc::clone(&self.playback_info)
     }
 
-    pub fn pipeline_mut(&mut self) -> &mut DspGraph {
+    pub fn pipeline_mut(&mut self) -> &mut Graph2Engine {
         &mut self.graph
     }
-    pub fn pipeline(&self) -> &DspGraph {
+    pub fn pipeline(&self) -> &Graph2Engine {
         &self.graph
     }
 
@@ -578,15 +578,16 @@ impl AudioEngine {
             self.sync_graphic_eq();
         }
 
+        let speed = self.speed;
         if config.speed_mode == config::SpeedMode::TimeStretch {
-            self.graph.timestretch_mut().stretcher.set_speed(self.speed);
+            self.graph
+                .with_both(|g| g.timestretch_mut().stretcher.set_speed(speed));
         } else if config.speed_mode == config::SpeedMode::PitchShift {
             self.graph
-                .timestretch_mut()
-                .stretcher
-                .set_pitch_ratio(self.speed);
+                .with_both(|g| g.timestretch_mut().stretcher.set_pitch_ratio(speed));
         } else {
-            self.graph.timestretch_mut().stretcher.set_speed(1.0);
+            self.graph
+                .with_both(|g| g.timestretch_mut().stretcher.set_speed(1.0));
         }
         if config.volume_mode == config::VolumeMode::HardwarePreferred
             || config.volume_mode == config::VolumeMode::HardwareOnly
@@ -613,6 +614,14 @@ impl AudioEngine {
             }
         }
 
+        // Phase 47: keep the shadow twin attached/detached per the new
+        // config's verify flag (the reconfigure above already fanned out
+        // to an attached twin, so only the on/off edge needs handling).
+        if config.graph2_shadow_verify && !self.graph.shadow_enabled() {
+            self.graph.enable_shadow(&config);
+        } else if !config.graph2_shadow_verify && self.graph.shadow_enabled() {
+            self.graph.disable_shadow();
+        }
         self.config = config;
 
         if backend_changed {

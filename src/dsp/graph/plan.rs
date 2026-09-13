@@ -20,7 +20,7 @@ use super::*;
 /// chain. The stereo plan is reused by the ≤2-channel multichannel path
 /// (which delegates to [`DspGraph::process_block`](crate::dsp::graph::DspGraph)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum PlanId {
+pub(crate) enum PlanId {
     /// Stereo pre/post-mix chain (no routing stage).
     Normal,
     /// Multichannel chain: routing on every channel, then pre/post-mix.
@@ -29,7 +29,7 @@ pub(super) enum PlanId {
 
 /// Channel scope of one plan step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum StepScope {
+pub(crate) enum StepScope {
     /// Run on every plane of the block (preamp, loudness, volume, seek_fade, routing).
     AllChannels,
     /// Run on the front L/R pair only (stereo-linked stages: eq … timestretch).
@@ -38,10 +38,10 @@ pub(super) enum StepScope {
 
 /// One ordered execution step: which node, on which channels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct PlanStep {
+pub(crate) struct PlanStep {
     /// Arena slot (see [`super::node_id`]).
-    pub(super) node: NodeIdx,
-    pub(super) scope: StepScope,
+    pub(crate) node: NodeIdx,
+    pub(crate) scope: StepScope,
 }
 
 impl PlanStep {
@@ -51,13 +51,22 @@ impl PlanStep {
             scope,
         }
     }
+
+    /// Build a step from `(arena slot, scope)` — the lowering seam used by
+    /// `graph2::prod` (control path only).
+    pub(crate) fn from_parts(slot: usize, scope: StepScope) -> Self {
+        Self {
+            node: NodeIdx(slot),
+            scope,
+        }
+    }
 }
 
 /// An ordered list of steps executed per block for one plan.
-#[derive(Debug, Default)]
-pub(super) struct ExecutionPlan {
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ExecutionPlan {
     /// Fixed canonical order — never mutated on the audio path.
-    pub(super) steps: Vec<PlanStep>,
+    pub(crate) steps: Vec<PlanStep>,
 }
 
 impl ExecutionPlan {
@@ -73,10 +82,10 @@ impl ExecutionPlan {
 }
 
 /// The compiled plan set for every processing mode.
-#[derive(Debug, Default)]
-pub(super) struct PlanSet {
-    pub(super) normal: ExecutionPlan,
-    pub(super) normal_mc: ExecutionPlan,
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PlanSet {
+    pub(crate) normal: ExecutionPlan,
+    pub(crate) normal_mc: ExecutionPlan,
 }
 
 impl PlanSet {
@@ -96,7 +105,7 @@ impl PlanSet {
     /// Bit-perfect / DoP bypass is not compiled — the entry points return
     /// before any stage runs (pure passthrough, even on the multichannel
     /// path, matching the pipeline's transport contract).
-    pub(super) fn compile() -> Self {
+    pub(crate) fn compile() -> Self {
         use node_id::*;
         let stereo_chain = [
             (MIX, StepScope::AllChannels),
@@ -138,10 +147,20 @@ impl PlanSet {
         }
     }
 
-    pub(super) fn plan(&self, id: PlanId) -> &ExecutionPlan {
+    pub(crate) fn plan(&self, id: PlanId) -> &ExecutionPlan {
         match id {
             PlanId::Normal => &self.normal,
             PlanId::NormalMc => &self.normal_mc,
+        }
+    }
+
+    /// Build a plan set from lowered step lists (the `graph2::prod`
+    /// seam): `normal` = the stereo chain, `normal_mc` = routing first.
+    /// Control path only.
+    pub(crate) fn from_steps(normal: Vec<PlanStep>, normal_mc: Vec<PlanStep>) -> Self {
+        Self {
+            normal: ExecutionPlan { steps: normal },
+            normal_mc: ExecutionPlan { steps: normal_mc },
         }
     }
 }

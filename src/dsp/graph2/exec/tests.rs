@@ -251,8 +251,7 @@ fn a_tempo_change_shifts_where_automation_landmarks_land() {
     // Before the tempo-up, at 120 BPM the midpoint (beat 1 = sample 24000)
     // is 0.5.
     assert!(
-        (map.beat_at_sample(24_000.0, SR) - 1.0).abs() < 1e-9
-            && (cap[24_000] - 0.5).abs() < 5e-4,
+        (map.beat_at_sample(24_000.0, SR) - 1.0).abs() < 1e-9 && (cap[24_000] - 0.5).abs() < 5e-4,
         "beat 1 (sample 24000) still 0.5"
     );
 }
@@ -278,10 +277,7 @@ fn acoustic_node_reproduces_baked_room_response() {
         speed_of_sound: 343.0,
     };
     let world = AcousticWorld::new(
-        AcousticRoom::from_render_room(
-            &room,
-            MaterialSpectrum::flat_reflective(room.absorption),
-        ),
+        AcousticRoom::from_render_room(&room, MaterialSpectrum::flat_reflective(room.absorption)),
         SR,
     );
     let pos = Vec3::new(1.0, 5.0, 1.5);
@@ -351,10 +347,7 @@ fn acoustic_node_honours_the_scene_air_absorption_model() {
         speed_of_sound: 343.0,
     };
     let world = AcousticWorld::new(
-        AcousticRoom::from_render_room(
-            &room,
-            MaterialSpectrum::flat_reflective(room.absorption),
-        ),
+        AcousticRoom::from_render_room(&room, MaterialSpectrum::flat_reflective(room.absorption)),
         SR,
     );
     let pos = Vec3::new(1.0, 5.0, 1.5);
@@ -434,10 +427,8 @@ fn swap_baked_scene_switches_taps_without_cutting_the_tail() {
     let world_b = AcousticWorld::new(room_b, SR);
     let pos = Vec3::new(1.0, 5.0, 1.5);
     let lst = Vec3::new(6.0, 5.0, 1.5);
-    let scene_a =
-        AcousticBaker::new(world_a, 0.5).bake_single(pos, lst, SR, BakePolicy::default());
-    let scene_b =
-        AcousticBaker::new(world_b, 0.5).bake_single(pos, lst, SR, BakePolicy::default());
+    let scene_a = AcousticBaker::new(world_a, 0.5).bake_single(pos, lst, SR, BakePolicy::default());
+    let scene_b = AcousticBaker::new(world_b, 0.5).bake_single(pos, lst, SR, BakePolicy::default());
 
     // Oracle taps per scene: per-path spectral filter kernels (excess,
     // kernel). Scene A is flat (single-tap gain kernels, matching the
@@ -573,10 +564,7 @@ fn listener_position_drives_the_acoustic_lookup() {
         speed_of_sound: 343.0,
     };
     let world = AcousticWorld::new(
-        AcousticRoom::from_render_room(
-            &room,
-            MaterialSpectrum::flat_reflective(room.absorption),
-        ),
+        AcousticRoom::from_render_room(&room, MaterialSpectrum::flat_reflective(room.absorption)),
         SR,
     );
     let baker = AcousticBaker::new(world, 0.5);
@@ -710,10 +698,7 @@ fn named_scenes_render_per_listener_responses() {
         speed_of_sound: 343.0,
     };
     let world = AcousticWorld::new(
-        AcousticRoom::from_render_room(
-            &room,
-            MaterialSpectrum::flat_reflective(room.absorption),
-        ),
+        AcousticRoom::from_render_room(&room, MaterialSpectrum::flat_reflective(room.absorption)),
         SR,
     );
     let baker = AcousticBaker::new(world, 0.5);
@@ -1274,4 +1259,3 @@ fn hrtf_dataset_renders_measured_per_ear_irs() {
     );
     assert!(ex.hrtf_dataset().is_some(), "dataset attached");
 }
-

@@ -2340,3 +2340,83 @@ fmt + clippy clean; `engine`/`config` both at 3.50.0.
 kernel seam so there is exactly one implementation, with per-node SPSC
 control queues + sticky-atomic mirrors replayed on generation swap — the
 `Graph2ControlHandle` mirroring `GraphControlHandle`.
+
+## Phase 46 — Node parity: the production set on Graph 2.0 (v3.51.0) — **Implemented**
+
+**Goal.** Every node the engine's hot path depends on exists as a Graph2
+`NodeKind` with identical math — through the "one implementation" seam: the
+`Prod` kinds contribute *topology* (ports, edges, compiled order,
+capabilities, latency descriptors); the DSP stays the production arena's.
+
+**Implementation.** `NodeKind::Prod(ProdStage)` — the 17 production stages
+(mix, aux, correction, EQ, dynamics, convolution, balance, crossfeed,
+stereo, timestretch, volume, seek-fade, routing, resampler, limiter, dither,
+spatial) with `ProdStage::slot()` pinning the arena `node_id` table,
+`stage_name()` matching `graph_nodes()` reports, `all_channels()` carrying
+the `StepScope`, and per-stage `NodeCapabilities` (stateful / realtime-safe /
+taps) mirroring the engine's capability table. The executors treat `Prod`
+nodes as structure (the generic offline executor passes planes through; the
+RT plan never carries them — they execute through the arena).
+
+The chain becomes a **real Graph2**: `dsp::graph2::prod::topology` builds
+`routing → mix → aux → correction → eq → dynamics → convolution → balance →
+crossfeed → stereo → timestretch → volume → seek_fade → spatial` head-to-tail
+(with the output-domain limiter/resampler/dither present but unwired, exactly
+as `PlanSet::compile()` drops them from the mix plans), validates it, and
+topologically compiles it. `prod::lowering` then lowers the compiled order
+onto the production `PlanSet` — the stereo plan is the chain minus the
+routing head; the MC plan is routing first — **pinned bit-identical to the
+hand-authored compile** by the `lowered_plans_match_handauthored` unit test:
+the plan source changed, the plans themselves did not.
+
+**Acceptance.** `tests/fidelity/graph2_graph_equivalence.rs` — 47 tests: the
+27 `graph_pipeline_equivalence` scenarios plus the 14 Phase-46
+control-surface extensions (aux bus + sends, aux insert, program-gated
+ducking, slot automation set/clear, correction depth, spatial master, lane
+activate/deactivate, seek fades, midstream speed, bass management on 5.1,
+precision-mode switch, generation-swap continuity, queue backpressure
+accounting), each bit-comparing a `Graph2Engine` (lowered plans) against a
+`DspGraph` (hand-authored plans) sample-for-sample (`f32::to_bits`), with
+structural parity (latency, node set, mixer state) asserted alongside.
+
+## Phase 47 — Engine migration + shadow equivalence (v3.52.0) — **Implemented**
+
+**Goal.** The engine runs Graph 2.0 end-to-end; `dsp::graph` runs in shadow
+mode for one release.
+
+**Implementation.** `AudioEngine.graph` is a `Graph2Engine`
+(`dsp::graph2::prod::mod`) — a drop-in replacement owning one `DspGraph`
+(the single node implementation) whose every generation carries the
+Graph2-lowered plans: `from_config_with_plans` /
+`reconfigure_with_plans` build through the exact same
+arena/config/user-state path (the builder was factored so the plan source is
+the *only* difference). The full `DspGraph` surface is mirrored: the 9 block
+entries (`process.rs`), the complete queued-control mutator set
+(`controls.rs`, each fanning out to the shadow), the cloneable
+`Graph2ControlHandle` (`control.rs`), lifecycle with fan-out, and read-only
+getters through `Deref` (mutations deliberately *not* — they would bypass
+the shadow; accessor-style mutations go through `with_both`). The decode
+loops, tick thread, command handlers, and spatial persistence drive it
+unchanged in behavior: same `EngineCommand`s, same `PlaybackInfo`, same FFI.
+
+**Shadow mode.** The `graph2_shadow_verify` config flag (default **off**)
+attaches a legacy `DspGraph` twin built from the same config with
+hand-authored plans. Every control mutator fans out to it; every processed
+block is bit-compared (`f32::to_bits`, NaN payloads included) — the A/B that
+proves the lowered plans drive the same nodes in the same order. A mismatch
+is a diagnostic (counter + first difference), never an output change: the
+active engine's output always stands. The comparison deliberately allocates
+(a diagnostic instrument, not a realtime stage) — pinned by a dedicated
+realtime test proving flag-off is allocation-free and flag-on is not.
+
+**Acceptance.** Full workspace green (850 lib tests + all 60+ fidelity
+suites); `realtime_allocation.rs` gains four cases — the Graph2 production
+stereo path, the multichannel path (lowered `NormalMc` plan), the
+generation-swap adopt on the audio thread, and the shadow default-off pin —
+all zero-allocation on the audio path. fmt + clippy `-D warnings` clean;
+`engine`/`config` both at 3.52.0.
+
+**Unlocks (Phase 48).** Legacy `dsp::graph` removal at v4.0.0: the arena
+nodes move under `graph2::prod`, `graph_pipeline_equivalence` re-points at
+Graph2-vs-pipeline, and the `dsp::graph` god files (controls.rs 1,906 lines)
+disappear with the crate.
