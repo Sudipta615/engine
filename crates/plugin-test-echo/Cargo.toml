@@ -1,0 +1,23 @@
+[package]
+name = "plugin-test-echo"
+version = "4.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/Sudipta615/engine"
+description = "Reference plugin for the Shadow Desktop plugin ABI: delay+gain, C-ABI vtable, no-panic audio path"
+
+[dependencies]
+plugin-abi = { path = "../plugin-abi", default-features = false }
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+default = []
+# The worst-case allocation-noise plugin used by the realtime fidelity
+# suite: `process` internally allocates so the host's zero-allocation
+# assertion can prove it CATCHES offenders.
+worst-case = []
+# Enable serde state save/restore (mirrors plugin-abi's serde-types).
+serde-types = ["dep:serde", "plugin-abi/serde-types"]
+
+[lib]
+crate-type = ["rlib", "cdylib"]

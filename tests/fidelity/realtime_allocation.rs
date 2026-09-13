@@ -1485,3 +1485,52 @@ fn realtime_graph2_prod_swap_does_not_allocate_on_audio_thread() {
         "Graph2 production generation swap on the audio thread allocated"
     );
 }
+
+// ── Phase 49: plugin host insert ──────────────────────────────────────────
+
+/// The plugin host's plan step (a statically-registered reference echo
+/// plugin processing every block) must uphold the same zero-allocation
+/// contract as every other node: the plugin's `process` runs inside the
+/// plan, so an allocating plugin would fail here. The plan-window counter
+/// is armed only for the steady-state loop (buffers + graph construction
+/// happen before).
+#[test]
+fn realtime_plugin_host_step_does_not_allocate() {
+    // Register the reference plugin (idempotent, process-wide).
+    let host = unsafe { plugin_abi::PluginHost::from_vtable(plugin_test_echo::ECHO_VTABLE) }
+        .expect("reference plugin validates");
+    let _ = engine::dsp::graph2::prod::register_static_host(std::sync::Arc::new(host));
+    let uid = plugin_test_echo::ECHO_UID;
+    let mut source = String::with_capacity(38);
+    source.push_str("static:");
+    for byte in uid {
+        source.push(char::from_digit((byte >> 4) as u32, 16).expect("hex"));
+        source.push(char::from_digit((byte & 0xf) as u32, 16).expect("hex"));
+    }
+
+    let mut cfg = full_chain_config();
+    cfg.plugins.slots.push(config::PluginSlotConfig {
+        source,
+        enabled: true,
+        params: vec![(0, 1.0), (1, 250.0), (3, 0.5)],
+        state: None,
+    });
+
+    let mut graph = engine::dsp::graph2::prod::DspGraph::from_config(&cfg, 48_000.0);
+    // Warm-up: instantiation + prepare allocate on the control path.
+    let mut l = vec![0.5f32; 512];
+    let mut r = vec![0.5f32; 512];
+    graph.process_block(&mut l, &mut r);
+
+    THREAD_ALLOCS.with(|c| c.set(0));
+    ARMED.store(true, Ordering::SeqCst);
+    for _ in 0..16 {
+        graph.process_block(&mut l, &mut r);
+    }
+    ARMED.store(false, Ordering::SeqCst);
+    let allocs = THREAD_ALLOCS.with(|c| c.get());
+    assert_eq!(
+        allocs, 0,
+        "the plugin host plan step must not allocate (got {allocs})"
+    );
+}

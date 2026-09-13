@@ -9,6 +9,7 @@ pub mod gain_node;
 pub mod limiter_node;
 pub mod loudness_node;
 pub mod mix;
+pub mod plugin_host_node;
 pub mod resampler_node;
 pub mod routing_node;
 pub mod spatial_node;
@@ -29,6 +30,7 @@ pub use mix::{
     AutomationPoint, AutomationTarget, DuckState, MixBusNode, MixInput, MixInputCmd,
     MixTransitionCmd, PanLaw, MAX_AUTOMATION_POINTS, MAX_DUCK_TARGETS, MAX_MIX_SLOTS,
 };
+pub use plugin_host_node::{PluginHostNode, MAX_PLUGIN_SLOTS};
 pub use resampler_node::ResamplerNode;
 pub use routing_node::RoutingNode;
 pub use spatial_node::SpatialNode;
@@ -58,6 +60,7 @@ impl DspNode for GraphNode {
             GraphNode::Aux(n) => n.capability(),
             GraphNode::Correction(n) => n.capability(),
             GraphNode::Spatial(n) => n.capability(),
+            GraphNode::PluginHost(n) => n.capability(),
         }
     }
 
@@ -80,6 +83,7 @@ impl DspNode for GraphNode {
             GraphNode::Aux(n) => n.is_active(),
             GraphNode::Correction(n) => n.is_active(),
             GraphNode::Spatial(n) => n.is_active(),
+            GraphNode::PluginHost(n) => n.is_active(),
         }
     }
 
@@ -102,6 +106,7 @@ impl DspNode for GraphNode {
             GraphNode::Aux(n) => n.latency_samples(),
             GraphNode::Correction(n) => n.latency_samples(),
             GraphNode::Spatial(n) => n.latency_samples(),
+            GraphNode::PluginHost(n) => n.latency_samples(),
         }
     }
 
@@ -124,6 +129,7 @@ impl DspNode for GraphNode {
             GraphNode::Aux(n) => n.tail_samples(),
             GraphNode::Correction(n) => n.tail_samples(),
             GraphNode::Spatial(n) => n.tail_samples(),
+            GraphNode::PluginHost(n) => n.tail_samples(),
         }
     }
 
@@ -146,6 +152,7 @@ impl DspNode for GraphNode {
             GraphNode::Aux(n) => n.reset(),
             GraphNode::Correction(n) => n.reset(),
             GraphNode::Spatial(n) => n.reset(),
+            GraphNode::PluginHost(n) => n.reset(),
         }
     }
 
@@ -168,6 +175,7 @@ impl DspNode for GraphNode {
             GraphNode::Aux(n) => n.prepare(sample_rate, max_channels),
             GraphNode::Correction(n) => n.prepare(sample_rate, max_channels),
             GraphNode::Spatial(n) => n.prepare(sample_rate, max_channels),
+            GraphNode::PluginHost(n) => n.prepare(sample_rate, max_channels),
         }
     }
 
@@ -190,6 +198,7 @@ impl DspNode for GraphNode {
             GraphNode::Aux(n) => n.process_block_f32(planes),
             GraphNode::Correction(n) => n.process_block_f32(planes),
             GraphNode::Spatial(n) => n.process_block_f32(planes),
+            GraphNode::PluginHost(n) => n.process_block_f32(planes),
         }
     }
 
@@ -212,6 +221,7 @@ impl DspNode for GraphNode {
             GraphNode::Aux(n) => n.process_block_f64(planes),
             GraphNode::Correction(n) => n.process_block_f64(planes),
             GraphNode::Spatial(n) => n.process_block_f64(planes),
+            GraphNode::PluginHost(n) => n.process_block_f64(planes),
         }
     }
 }

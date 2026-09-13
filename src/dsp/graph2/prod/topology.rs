@@ -83,6 +83,7 @@ const MC_CHAIN: &[(ProdStage, bool)] = &[
     (ProdStage::Timestretch, false),
     (ProdStage::Volume, true),
     (ProdStage::SeekFade, true),
+    (ProdStage::PluginHost, true),
     (ProdStage::Spatial, true),
 ];
 
@@ -92,7 +93,7 @@ const OUTPUT_DOMAIN_STAGES: &[ProdStage] =
     &[ProdStage::Limiter, ProdStage::Resampler, ProdStage::Dither];
 
 /// Build the production topology as a Graph2, validate it, and compile
-/// the execution order. Cheap (17 nodes, 14 edges); called at every
+/// the execution order. Cheap (18 nodes, 15 edges); called at every
 /// generation build.
 pub fn build_topology() -> ProdTopology {
     let mut g = Graph2::new();

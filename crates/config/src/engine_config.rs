@@ -81,6 +81,10 @@ pub struct EngineConfig {
     pub spatial_autosave_path: Option<std::path::PathBuf>,
     #[serde(default)]
     pub endpoints: Vec<EndpointConfig>,
+    /// Phase 49: the plugin host insert (Rust-native effect plugins at
+    /// the master insert seam). Disabled by default = bit-exact.
+    #[serde(default)]
+    pub plugins: PluginHostConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -130,6 +134,129 @@ fn default_endpoint_enabled() -> bool {
 }
 fn default_drift_correction() -> bool {
     true
+}
+
+/// Phase 49: one plugin slot in the master insert chain.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PluginSlotConfig {
+    /// How to locate the plugin: either a library path (`/path/libecho.so`)
+    /// or a static-registry reference (`static:<32 hex chars of the UID>`).
+    /// The empty string is invalid (see `validate`).
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub enabled: bool,
+    /// Initial parameter values as raw `(index, value)` pairs; the
+    /// host clamps through the plugin's declared ranges.
+    #[serde(default)]
+    pub params: Vec<(u32, f32)>,
+    /// Opaque saved plugin state (from a previous `save_state`), applied
+    /// after `params` when present.
+    #[serde(default, with = "serde_bytes_base64")]
+    pub state: Option<Vec<u8>>,
+}
+
+/// Phase 49: the plugin host insert section.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PluginHostConfig {
+    /// Master-chain inserts, in application order. The plugin host node
+    /// runs right before the limiter (post-EQ, post-volume), so disabled
+    /// or empty = bit-exact.
+    #[serde(default)]
+    pub slots: Vec<PluginSlotConfig>,
+}
+
+/// Base64 (de)serialization for raw plugin state bytes without pulling a
+/// base64 dependency: `data:`-free plain base64 implemented locally.
+mod serde_bytes_base64 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            None => s.serialize_none(),
+            Some(bytes) => {
+                let b64 = super::encode_base64(bytes);
+                s.serialize_some(&b64)
+            }
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<u8>>, D::Error> {
+        let opt: Option<String> = Option::deserialize(d)?;
+        match opt {
+            None => Ok(None),
+            Some(s) => super::decode_base64(&s)
+                .map(Some)
+                .ok_or_else(|| serde::de::Error::custom("invalid base64 plugin state")),
+        }
+    }
+}
+
+/// Minimal standard base64 (with padding) — enough for config state
+/// blobs; not constant-time, not canonical (whitespace rejected).
+fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+fn decode_base64(s: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some((c - b'A') as u32),
+            b'a'..=b'z' => Some((c - b'a' + 26) as u32),
+            b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let bytes = s.as_bytes();
+    if bytes.is_empty() {
+        return Some(Vec::new());
+    }
+    if !bytes.len().is_multiple_of(4) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    for chunk in bytes.chunks(4) {
+        let pad = chunk.iter().filter(|&&c| c == b'=').count();
+        if pad > 2 || chunk[..4 - pad].contains(&b'=') {
+            return None;
+        }
+        let mut n: u32 = 0;
+        for &c in &chunk[..4] {
+            n = (n << 6) | if c == b'=' { 0 } else { val(c)? };
+        }
+        out.push((n >> 16) as u8);
+        if chunk[1] != b'=' {
+            out.push((n >> 8) as u8);
+        }
+        if chunk[2] != b'=' {
+            out.push(n as u8);
+        }
+    }
+    Some(out)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -392,6 +519,7 @@ impl Default for EngineConfig {
             spatial: SpatialConfig::default(),
             spatial_autosave_path: None,
             endpoints: Vec::new(),
+            plugins: PluginHostConfig::default(),
         }
     }
 }
@@ -432,6 +560,8 @@ pub enum ConfigIssueKind {
     Endpoint,
     /// Output backend availability.
     Backend,
+    /// Plugin host insert (source path / params / state).
+    Plugin,
 }
 
 impl ConfigIssueKind {
@@ -445,6 +575,7 @@ impl ConfigIssueKind {
             ConfigIssueKind::Spatial => "spatial",
             ConfigIssueKind::Endpoint => "endpoint",
             ConfigIssueKind::Backend => "backend",
+            ConfigIssueKind::Plugin => "plugin",
         }
     }
 }
@@ -685,6 +816,46 @@ impl EngineConfig {
                 severity: ConfigSeverity::Warning,
                 message: v.warnings.last().unwrap().clone(),
             });
+        }
+        // Phase 49: plugin host insert validation. Enabled slots must
+        // name a plugin source; params must be finite. Loading the
+        // library / resolving the UID happens in the engine (which owns
+        // the host), not here.
+        for (i, slot) in self.plugins.slots.iter().enumerate() {
+            if slot.enabled && slot.source.trim().is_empty() {
+                let msg = format!("plugins.slots[{i}]: enabled slot has no plugin source");
+                v.errors.push(msg);
+                v.issues.push(ConfigIssue {
+                    kind: ConfigIssueKind::Plugin,
+                    severity: ConfigSeverity::Error,
+                    message: v.errors.last().unwrap().clone(),
+                });
+            }
+            for &(index, value) in &slot.params {
+                if !value.is_finite() {
+                    let msg = format!("plugins.slots[{i}]: param {index} value is not finite");
+                    v.errors.push(msg);
+                    v.issues.push(ConfigIssue {
+                        kind: ConfigIssueKind::Plugin,
+                        severity: ConfigSeverity::Error,
+                        message: v.errors.last().unwrap().clone(),
+                    });
+                }
+            }
+            if let Some(state) = &slot.state {
+                if state.len() > 262_144 {
+                    let msg = format!(
+                        "plugins.slots[{i}]: state is {} bytes, over the 256 KiB cap",
+                        state.len()
+                    );
+                    v.errors.push(msg);
+                    v.issues.push(ConfigIssue {
+                        kind: ConfigIssueKind::Plugin,
+                        severity: ConfigSeverity::Error,
+                        message: v.errors.last().unwrap().clone(),
+                    });
+                }
+            }
         }
         v
     }

@@ -2,6 +2,62 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.1.0] — 2026-09-13
+
+### Added
+
+- **Rust-native plugin ABI (Phase 49).** A versioned, `#[repr(C)]`
+  C-ABI plugin specification for pure-Rust effect plugins, hosted in the
+  production graph at the master insert seam (post-volume / seek-fade,
+  pre-limiter). New workspace crates ship the whole surface:
+  - `plugin-abi` — the spec crate: the `PluginVTable` vtable
+    (descriptor / instantiate / prepare / set_param / process /
+    save_state / load_state / reset / drop_instance), the
+    `plugin_abi_v1()` handshake symbol gated by `PLUGIN_ABI_VERSION`,
+    plain-data crossing types (`PluginDescriptor`, `AudioBlockMut`,
+    bounded `PluginParams`, `StateBuffer`), a safe host facade
+    (`PluginHost` / `PluginInstance`), a bounded static-plugin
+    registry, and (behind the `host` feature) the `dlopen` /
+    `LoadLibrary` loader.
+  - `plugin-test-echo` — the reference plugin (delay + gain + wet/dry,
+    `cdylib` + `rlib`): demonstrates every ABI obligation including a
+    realtime-safe `process`; its `worst-case` feature deliberately
+    allocates in `process` so the realtime suite can prove it catches
+    offenders.
+- **Plugin host insert in the production graph.** A new arena slot
+  (`node_id::PLUGIN`, `ProdStage::PluginHost`) lowers into the MC chain
+  between seek-fade and spatial. With no plugins configured the step is
+  a bit-exact pass-through (pinned by the `graph_pipeline_equivalence`
+  matrix). Plugins are attached per configured slot (library path or
+  `static:<uid>` registry source) at generation build; a slot that fails
+  to load is skipped — a broken plugin never interrupts playback.
+  Live control (`SetPluginEnabled` / `SetPluginParams` commands,
+  `EngineHandle::set_plugin_enabled` / `set_plugin_params`) travels as
+  plain data over the per-node SPSC queue and survives generation swaps
+  via sticky mirrors.
+- **Engine feature `plugin-dylib`** for dynamic library loading; the
+  static-registry path works without it.
+- **Config: `EngineConfig.plugins` (`PluginHostConfig` /
+  `PluginSlotConfig`)** with per-slot source / enabled / params / base64
+  state, validated into the new typed `ConfigIssueKind::Plugin`
+  ("plugin") issue kind.
+- **Fidelity suite `tests/fidelity/plugin_host.rs`** (10 tests): ABI
+  conformance, exact-sample delay semantics, in-graph processing with
+  runtime bit-exact toggle + swap survival, live params over the queue,
+  broken-source tolerance, zero-allocation plan step, worst-case
+  offender detection, config validation, f64-domain demote/promote, and
+  quality-precision processing. Plus a plugin case in
+  `tests/fidelity/realtime_allocation.rs`.
+
+### Fixed
+
+- None (additive release; the default chain remains bit-exact).
+
+### Changed
+
+- `engine` + `config` bumped to 4.1.0 in lockstep (SemVer minor: purely
+  additive). The production topology is now 18 nodes / 15 edges.
+
 ## [4.0.0] — 2026-09-13
 
 ### Changed / Breaking

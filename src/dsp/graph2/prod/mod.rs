@@ -53,6 +53,7 @@ mod arena;
 mod control;
 mod controls;
 mod lowering;
+mod plugins;
 mod process;
 mod topology;
 
@@ -60,11 +61,12 @@ pub use arena::nodes::{
     AutomationPoint, AutomationTarget, AuxBusNode, BalanceNode, ConvolutionNode, CorrectionNode,
     CorrectionNodeInfo, CrossfeedNode, DitherNode, DuckState, DynamicsNode, EqNode, GainNode,
     LimiterNode, LoudnessNode, MixBusNode, MixInput, MixInputCmd, MixTransitionCmd, PanLaw,
-    ResamplerNode, RoutingNode, SeekFadeNode, SpatialNode, StereoNode, TimeStretchNode,
-    MAX_AUTOMATION_POINTS, MAX_DUCK_TARGETS, MAX_MIX_SLOTS,
+    PluginHostNode, ResamplerNode, RoutingNode, SeekFadeNode, SpatialNode, StereoNode,
+    TimeStretchNode, MAX_AUTOMATION_POINTS, MAX_DUCK_TARGETS, MAX_MIX_SLOTS, MAX_PLUGIN_SLOTS,
 };
 pub use arena::{DspGraph, DspNode, GraphControlHandle, GraphGeneration, GraphScratch};
 pub use control::Graph2ControlHandle;
+pub use plugins::{register_static_host, resolve_host};
 
 /// The production engine on Graph 2.0.
 ///

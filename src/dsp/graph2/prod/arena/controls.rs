@@ -166,6 +166,13 @@ pub(crate) enum NodeCmd {
         detector: config::CompressorDetector,
         stereo_link: bool,
     },
+
+    // ── Plugin host (Phase 49) ────────────────────────────────────────────
+    /// Live plugin host enable toggle (all slots).
+    SetPluginEnabled(bool),
+    /// Live plugin parameter batch (plain data — allocation-free over
+    /// the SPSC queue).
+    SetPluginParams(plugin_abi::PluginParams),
 }
 
 impl Default for NodeCmd {
@@ -251,6 +258,12 @@ pub(crate) struct ControlBus {
     /// Phase 17: spatial master enabled flag, mirrored like the aux state so
     /// a live runtime toggle survives a generation swap.
     user_spatial_enabled: AtomicU8,
+    /// Phase 49: plugin host enabled flag + the last live parameter
+    /// batch (plain data in a mutex written control-side only; never
+    /// contended on the audio path — same contract as
+    /// `user_correction_ir`).
+    user_plugin_enabled: AtomicU8,
+    user_plugin_params: Mutex<plugin_abi::PluginParams>,
 }
 
 impl ControlBus {
@@ -306,6 +319,8 @@ impl ControlBus {
             user_correction_depth: AtomicU32::new(1.0f32.to_bits()),
             user_correction_ir: Mutex::new(None),
             user_spatial_enabled: AtomicU8::new(0),
+            user_plugin_enabled: AtomicU8::new(1),
+            user_plugin_params: Mutex::new(plugin_abi::PluginParams::empty()),
         }
     }
 
@@ -468,6 +483,40 @@ impl ControlBus {
         self.user_spatial_enabled.load(Ordering::Relaxed) != 0
     }
 
+    /// Mirror the Phase-49 plugin host enable flag, audio side at drain.
+    pub(super) fn set_plugin_user_state(&self, enabled: bool) {
+        self.user_plugin_enabled
+            .store(enabled as u8, Ordering::Relaxed);
+    }
+
+    /// Control-side read of the mirrored plugin host enable flag.
+    pub(super) fn user_plugin(&self) -> bool {
+        self.user_plugin_enabled.load(Ordering::Relaxed) != 0
+    }
+
+    /// Mirror the Phase-49 live plugin parameter batch, audio side at
+    /// drain (a plain-data copy — allocation-free).
+    pub(super) fn set_plugin_params_user_state(&self, batch: plugin_abi::PluginParams) {
+        let mut guard = self
+            .user_plugin_params
+            .lock()
+            .expect("plugin params mutex poisoned");
+        *guard = batch;
+    }
+
+    /// Control-side read of the mirrored live parameter batch.
+    pub(super) fn user_plugin_params(&self) -> Option<plugin_abi::PluginParams> {
+        let guard = self
+            .user_plugin_params
+            .lock()
+            .expect("plugin params mutex poisoned");
+        if guard.is_empty() {
+            None
+        } else {
+            Some(*guard)
+        }
+    }
+
     /// Store the rendered correction IR set (control side: `LoadCorrectionIr`
     /// / `MeasureRoom` land, and generation seeding reads it back). The
     /// audio thread never reads this — see the field's docs.
@@ -537,6 +586,8 @@ impl ControlBus {
             correction_depth: f32::from_bits(self.user_correction_depth.load(Ordering::Relaxed)),
             correction_ir: self.user_correction_ir(),
             spatial_enabled: self.user_spatial_enabled.load(Ordering::Relaxed) != 0,
+            plugin_enabled: self.user_plugin_enabled.load(Ordering::Relaxed) != 0,
+            plugin_params: self.user_plugin_params(),
             // Ducking + automation are NOT mirrored onto the bus atomics:
             // `DspGraph::reconfigure` reads them from the live generation
             // instead (single-threaded control access), so snapshots keep
@@ -985,6 +1036,18 @@ impl GraphControlHandle {
         self.enqueue(node_id::SPATIAL, NodeCmd::SetSpatialEnabled(enabled));
     }
 
+    /// Live toggle of the plugin host insert (Phase 49). Disabled = the
+    /// plan step is skipped, bit-exact (attached instances stay).
+    pub fn set_plugin_enabled(&self, enabled: bool) {
+        self.enqueue(node_id::PLUGIN, NodeCmd::SetPluginEnabled(enabled));
+    }
+
+    /// Live plugin parameter batch (Phase 49): plain data over the SPSC
+    /// queue, applied at the next block boundary.
+    pub fn set_plugin_params(&self, batch: plugin_abi::PluginParams) {
+        self.enqueue(node_id::PLUGIN, NodeCmd::SetPluginParams(batch));
+    }
+
     /// Set the virtual screen: `center_azimuth_deg` (screen center),
     /// `half_width_deg` (L/R spread, clamped to 90°), `elevation_deg`
     /// (clamped to ±90°), `gain` (linear, clamped to 4).
@@ -1054,6 +1117,12 @@ impl GraphControlHandle {
     /// Control-side read of the mirrored spatial enable flag.
     pub fn spatial_enabled(&self) -> bool {
         self.bus.user_spatial()
+    }
+
+    /// Control-side read of the mirrored plugin host enable flag
+    /// (Phase 49).
+    pub fn plugin_enabled(&self) -> bool {
+        self.bus.user_plugin()
     }
 
     /// Control-side read of the aux meters (peak_db, rms_db), published once
@@ -1328,6 +1397,16 @@ impl DspGraph {
                         self.bus.set_spatial_user_state(s.enabled());
                     }
                 }
+                // Phase 49: mirror the plugin host enable + params
+                // post-apply so live runtime changes survive swaps.
+                if matches!(cmd, NodeCmd::SetPluginEnabled(_)) {
+                    if let GraphNode::PluginHost(p) = &self.active.nodes[i] {
+                        self.bus.set_plugin_user_state(p.runtime_enabled());
+                    }
+                }
+                if let NodeCmd::SetPluginParams(batch) = cmd {
+                    self.bus.set_plugin_params_user_state(*batch);
+                }
             }
         }
     }
@@ -1377,6 +1456,10 @@ fn apply_node_cmd(node: &mut GraphNode, cmd: &NodeCmd) {
             n.set_runtime(n.enabled(), *depth)
         }
         (GraphNode::Spatial(n), NodeCmd::SetSpatialEnabled(enabled)) => n.set_enabled(*enabled),
+        (GraphNode::PluginHost(n), NodeCmd::SetPluginEnabled(enabled)) => {
+            n.set_runtime_enabled(*enabled)
+        }
+        (GraphNode::PluginHost(n), NodeCmd::SetPluginParams(batch)) => n.apply_params(batch),
         (
             GraphNode::Spatial(n),
             NodeCmd::SetSpatialScreen {
@@ -1826,6 +1909,25 @@ impl DspGraph {
     /// The spatial master's enable flag (mirrored at drain).
     pub fn spatial_enabled(&self) -> bool {
         self.control_handle().spatial_enabled()
+    }
+
+    // ── Plugin host (Phase 49) ────────────────────────────────────────
+
+    /// Live toggle of the plugin host insert (all slots). Disabled = the
+    /// plan step is skipped, bit-exact.
+    pub fn set_plugin_enabled(&self, enabled: bool) {
+        self.control_handle().set_plugin_enabled(enabled);
+    }
+
+    /// Live plugin parameter batch: plain data over the per-node SPSC
+    /// queue, applied at the next block boundary.
+    pub fn set_plugin_params(&self, batch: plugin_abi::PluginParams) {
+        self.control_handle().set_plugin_params(batch);
+    }
+
+    /// The plugin host's enable flag (mirrored at drain).
+    pub fn plugin_enabled(&self) -> bool {
+        self.control_handle().plugin_enabled()
     }
 
     /// Load a rendered correction IR set into the ACTIVE node and mirror it

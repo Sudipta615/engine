@@ -386,6 +386,22 @@ impl EngineHandle {
         let _ = self.send_command(EngineCommand::SetAuxInsert { enabled, wet_mix });
     }
 
+    // ── Plugin host (Phase 49) ──────────────────────────────────────
+
+    /// Runtime toggle of the plugin host insert (all configured plugin
+    /// slots). Disabled = the plan step is skipped, bit-exact; the
+    /// attached plugin instances stay loaded.
+    pub fn set_plugin_enabled(&self, enabled: bool) {
+        let _ = self.send_command(EngineCommand::SetPluginEnabled(enabled));
+    }
+
+    /// Runtime plugin parameter batch: `(index, value)` pairs applied
+    /// atomically at the next block boundary. Indices are the plugin's
+    /// declared parameter indices.
+    pub fn set_plugin_params(&self, pairs: &[(u32, f32)]) {
+        let _ = self.send_command(EngineCommand::SetPluginParams(pairs.to_vec()));
+    }
+
     // ── Room & headphone correction (Phase 7 S5) ─────────────────────────
 
     /// Live toggle of the correction stage (enabled only; the loaded IR

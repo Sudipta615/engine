@@ -21,7 +21,8 @@ pub use dsp_config::{
 };
 pub use engine_config::{
     AuxBusConfig, ConfigIssue, ConfigIssueKind, ConfigSeverity, ConfigValidation, EndpointConfig,
-    EngineConfig, EnginePreset, SlotSendConfig, SlotTrimEntry, SpatialConfig, SpatialRoomConfig,
+    EngineConfig, EnginePreset, PluginHostConfig, PluginSlotConfig, SlotSendConfig, SlotTrimEntry,
+    SpatialConfig, SpatialRoomConfig,
 };
 pub use enums::{
     AudioBackend, ChannelPolicy, CompressorDetector, CrossfadeCurve, CrossfeedProfile,

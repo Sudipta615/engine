@@ -126,8 +126,11 @@ mod node_id {
     /// through the binaural head model with the room), placed at the very
     /// end of the post-mix chain.
     pub const SPATIAL: usize = 16;
+    /// Phase 49: the plugin host insert — Rust-native effect plugins
+    /// (post-volume, pre-limiter). Disabled / empty = bit-exact.
+    pub const PLUGIN: usize = 17;
     /// Number of canonical node slots (also the first non-node `NodeId`).
-    pub const NODE_COUNT: usize = 17;
+    pub const NODE_COUNT: usize = 18;
 }
 
 /// Uniform node storage for the arena. The enum enables monomorphized (match)
@@ -158,6 +161,7 @@ pub(crate) enum GraphNode {
     Aux(AuxBusNode),
     Correction(CorrectionNode),
     Spatial(SpatialNode),
+    PluginHost(PluginHostNode),
 }
 
 const VOLUME_RAMP_DURATION_MS: f32 = 10.0;

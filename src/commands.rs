@@ -97,6 +97,14 @@ pub enum EngineCommand {
         enabled: bool,
         wet_mix: f32,
     },
+    /// Phase-49 plugin host: live enable toggle for the whole plugin
+    /// insert (all slots). Disabled = the plan step is skipped,
+    /// bit-exact; attached plugin instances stay loaded.
+    SetPluginEnabled(bool),
+    /// Phase-49 plugin host: live parameter batch. Indices are the
+    /// plugin's declared parameter indices; the batch is plain data and
+    /// is applied atomically at the next block boundary.
+    SetPluginParams(Vec<(u32, f32)>),
     /// Phase-17 spatial master: renderer quality tier (spec §86).
     SetSpatialQuality(config::SpatialQuality),
     /// Phase-17 spatial master: voice budget (spec §76). `enabled == false`

@@ -100,7 +100,7 @@ mod tests {
         let steps = lowered_plan_steps();
         let mut slots: Vec<usize> = steps.iter().map(|&(s, _)| s).collect();
         slots.sort_unstable();
-        let expected: Vec<usize> = (0..17usize)
+        let expected: Vec<usize> = (0..18usize)
             .filter(|&s| s != 11 && s != 12 && s != 13)
             .collect();
         assert_eq!(slots, expected, "chain slots must appear exactly once");

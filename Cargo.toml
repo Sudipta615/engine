@@ -1,9 +1,9 @@
 [workspace]
-members = [".", "crates/config"]
+members = [".", "crates/config", "crates/plugin-abi", "crates/plugin-test-echo"]
 
 [package]
 name = "engine"
-version = "4.0.0"
+version = "4.1.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"
@@ -11,6 +11,10 @@ repository = "https://github.com/Sudipta615/engine"
 [features]
 default = ["audio-output", "resample", "all-codecs"]
 audio-output = ["cpal", "thread-priority"]
+# Phase 49: dynamic plugin library loading (dlopen / LoadLibrary). The
+# static-registry path (`static:<uid>` sources) works without this
+# feature; enabling it adds the libloading-based loader.
+plugin-dylib = ["plugin-abi/host"]
 asio = ["cpal/asio"]
 # Native Steinberg ASIO backend in pure Rust (no C++ SDK). Bypasses cpal
 # entirely: COM vtable, IASIO interface, bufferSwitch callback, native DSD.
@@ -121,6 +125,9 @@ realfft = "3.5"
 # on, so this adds no new compiled code.
 rustfft = "6.2"
 config = { path = "crates/config" }
+# Phase 49: the Rust-native plugin ABI + host. Default features off —
+# the `plugin-dylib` engine feature pulls in the loader.
+plugin-abi = { path = "crates/plugin-abi", default-features = false }
 thread-priority = { version = "3.1", optional = true }
 # Pure-Rust Monkey's Audio (APE) decoder, enabled by the `codec-ape` feature.
 ape-decoder = { version = "0.3.2", optional = true }
@@ -220,6 +227,9 @@ rusty-opus = "0.9.1"
 # wavicle's `encode` feature, used ONLY by tests to generate deterministic
 # `.wv` fixtures at test time (no committed binary assets).
 wavicle = { version = "0.1", features = ["encode"] }
+# Phase 49: the reference plugin (in-process, via the static registry).
+plugin-abi = { path = "crates/plugin-abi", default-features = false }
+plugin-test-echo = { path = "crates/plugin-test-echo", default-features = false }
 
 [[bin]]
 name = "audio-engine-cli"
@@ -471,3 +481,7 @@ path = "tests/fidelity/aelog_cache.rs"
 [[test]]
 name = "convolver_taps"
 path = "tests/fidelity/convolver_taps.rs"
+
+[[test]]
+name = "plugin_host"
+path = "tests/fidelity/plugin_host.rs"

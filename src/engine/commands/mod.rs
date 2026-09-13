@@ -432,6 +432,18 @@ impl AudioEngine {
                 self.graph.set_aux_insert(enabled, wet_mix);
             }
 
+            // ── Plugin host (Phase 49) ──
+            EngineCommand::SetPluginEnabled(enabled) => {
+                self.graph.set_plugin_enabled(enabled);
+            }
+            EngineCommand::SetPluginParams(pairs) => {
+                let mut batch = plugin_abi::PluginParams::empty();
+                for &(index, value) in pairs.iter() {
+                    batch.push(index, value);
+                }
+                self.graph.set_plugin_params(batch);
+            }
+
             // ── Spatial master (Phase 17) ──
             EngineCommand::SetSpatialQuality(q) => {
                 use crate::spatial::SpatialQuality as Sq;

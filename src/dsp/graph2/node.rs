@@ -178,6 +178,9 @@ pub enum ProdStage {
     Dither,
     /// The spatial master output stage (all channels, chain tail).
     Spatial,
+    /// Phase 49: the plugin host insert — Rust-native effect plugins at
+    /// the master insert seam (post-volume / seek-fade, pre-limiter).
+    PluginHost,
 }
 
 impl ProdStage {
@@ -201,6 +204,7 @@ impl ProdStage {
             ProdStage::AuxBus => 14,
             ProdStage::Correction => 15,
             ProdStage::Spatial => 16,
+            ProdStage::PluginHost => 17,
         }
     }
 
@@ -225,6 +229,7 @@ impl ProdStage {
             ProdStage::Limiter => "limiter",
             ProdStage::Dither => "dither",
             ProdStage::Spatial => "spatial",
+            ProdStage::PluginHost => "plugin_host",
         }
     }
 
@@ -239,6 +244,7 @@ impl ProdStage {
                 | ProdStage::SeekFade
                 | ProdStage::Routing
                 | ProdStage::Spatial
+                | ProdStage::PluginHost
         )
     }
 }

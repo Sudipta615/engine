@@ -2454,3 +2454,61 @@ cases). fmt + clippy `-D warnings` clean; `engine`/`config` both at 4.0.0.
 **Unlocks.** Track B (Phase 49, the Rust-native plugin ABI) and the Track-C
 spatial horizons (Phases 50–53) now build against a single topology-owned
 plan source.
+
+## Phase 49 — Rust-native plugin ABI (v4.1.0) — **Implemented**
+
+**Goal.** A versioned plugin specification for pure-Rust effect plugins:
+`#[repr(C)]` C-ABI vtables, plain-data crossing types, realtime-safe
+processing, and a host seat in the production graph at the master insert
+seam — without giving up the engine's no-allocation / no-locks audio
+contract or bit-exactness when unused.
+
+**Implementation.** Three layers, one contract:
+
+- **The spec crate (`crates/plugin-abi`).** `PluginVTable` is the
+  ten-entry `#[repr(C)]` vtable (descriptor / instantiate / prepare /
+  set_param / process / save_state / load_state / reset /
+  drop_instance), exported from a plugin library through the single
+  `plugin_abi_v1()` symbol returning a versioned `PluginAbiV1`
+  (`abi_version` + size + vtable). Everything crossing the boundary is
+  plain data: `PluginDescriptor` (UID, name, version, param count,
+  latency, tail, multichannel flag), `AudioBlockMut` (planar pointers),
+  a fixed-capacity `PluginParams` batch, and caller-owned state
+  buffers capped at 256 KiB. `AbiStatus` codes refuse with structure
+  instead of UB; unknown codes decode defensively.
+- **The host.** `PluginHost` wraps a loaded vtable (verified handshake +
+  descriptor) and `PluginInstance` owns one raw instance with the
+  facade enforcing the call contract (prepare before process, drop
+  exactly once, no cross-thread concurrent calls). Two loading paths:
+  the `dlopen`/`LoadLibrary` loader behind the crate's `host` feature
+  (engine feature `plugin-dylib`), and a process-wide static registry
+  for statically-linked plugins — config sources are library paths or
+  `static:<32-hex-uid>` references, memoized per source on the control
+  path.
+- **The graph seat.** `ProdStage::PluginHost` / `node_id::PLUGIN` is the
+  18th arena slot, lowered into the MC chain after seek-fade (before
+  spatial). `PluginHostNode` hosts up to 4 configured slots; each is
+  instantiated + prepared at generation build, with a failed slot
+  skipped (broken plugin ≠ broken playback). `process` runs inside the
+  plan step — f64 domains demote the front pair through fixed stack
+  buffers, no allocation. Live control is plain data over the per-node
+  SPSC queue (`NodeCmd::SetPluginEnabled` / `SetPluginParams`,
+  `EngineCommand`s, `EngineHandle` methods) with sticky mirror replay
+  across generation swaps, exactly like the aux / correction / spatial
+  toggles. With no plugins configured the step is a pass-through and
+  the whole chain remains bit-exact — the re-pinned
+  `graph_pipeline_equivalence` matrix proves it unchanged.
+
+**Acceptance.** New `plugin_host` fidelity suite (10 tests) green: ABI
+conformance, exact-sample delay semantics, in-graph processing with
+runtime bit-exact toggle + swap survival, live params over the queue,
+broken-source tolerance, **zero-allocation plan step** (thread-local
+counter), worst-case offender detection (the `worst-case` reference
+plugin is caught), config validation into `ConfigIssueKind::Plugin`,
+f64 demote/promote, and quality-precision processing. The realtime
+suite gains the plugin case; graph2 + RT/offline equivalence suites
+green; fmt + clippy `-D warnings` clean; `engine`/`config` at 4.1.0.
+
+**Unlocks.** Third-party pure-Rust effect ecosystems compiled as
+`cdylib`s or statically-linked registry entries, and a template for
+future instrument/synth plugins at the mix-bus seam.

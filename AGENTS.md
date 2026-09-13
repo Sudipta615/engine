@@ -22,6 +22,12 @@ lets non-Rust hosts drive the whole surface.
 ```
 ├── Cargo.toml                  # workspace + `engine` crate (the library/bins)
 ├── crates/config/              # `config` crate — Serde-serializable engine & DSP config models
+├── crates/plugin-abi/          # `plugin-abi` crate — Phase 49: the Rust-native
+│                               #   plugin spec (C-ABI vtables, safe host facade,
+│                               #   dlopen loader, static registry)
+├── crates/plugin-test-echo/    # `plugin-test-echo` crate — the reference
+│                               #   delay+gain plugin (cdylib + rlib; the
+│                               #   `worst-case` feature allocates on purpose)
 ├── src/                        # `engine` crate
 │   ├── lib.rs                  # crate root + prelude re-exports
 │   ├── commands.rs             # `EngineCommand` — the full host-control surface

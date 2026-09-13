@@ -63,6 +63,22 @@ impl DspGraph {
         }
     }
 
+    /// The plugin host insert node (Phase 49).
+    pub fn plugin(&self) -> &PluginHostNode {
+        match &self.active.nodes[node_id::PLUGIN] {
+            GraphNode::PluginHost(n) => n,
+            _ => unreachable!("arena slot PLUGIN holds a PluginHostNode"),
+        }
+    }
+
+    /// The plugin host insert node, mutable (control path).
+    pub fn plugin_mut(&mut self) -> &mut PluginHostNode {
+        match &mut self.active.nodes[node_id::PLUGIN] {
+            GraphNode::PluginHost(n) => n,
+            _ => unreachable!("arena slot PLUGIN holds a PluginHostNode"),
+        }
+    }
+
     pub fn spatial_mut(&mut self) -> &mut SpatialNode {
         match &mut self.active.nodes[node_id::SPATIAL] {
             GraphNode::Spatial(n) => n,

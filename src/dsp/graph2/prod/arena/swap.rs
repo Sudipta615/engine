@@ -121,6 +121,13 @@ pub struct UserState {
     /// Phase 17: the spatial master enable flag, mirrored like the aux
     /// state so a live runtime toggle survives a generation swap.
     pub spatial_enabled: bool,
+    /// Phase 49: the plugin host runtime enable flag, mirrored so a live
+    /// toggle survives a generation swap.
+    pub plugin_enabled: bool,
+    /// Phase 49: the last live plugin parameter batch, mirrored so a
+    /// runtime param change survives a generation swap. `None` = no live
+    /// batch (config params are authoritative).
+    pub plugin_params: Option<plugin_abi::PluginParams>,
     /// Program-gated ducking config (Phase 4 S4), carried across a rebuild
     /// so a reconfig never drops a configured duck. `None` = disabled.
     pub duck: Option<DuckState>,
@@ -147,6 +154,8 @@ impl Default for UserState {
             correction_depth: 1.0,
             correction_ir: None,
             spatial_enabled: false,
+            plugin_enabled: true,
+            plugin_params: None,
             duck: None,
             slot_automation: Vec::new(),
         }

@@ -103,6 +103,28 @@ impl GraphGeneration {
         // applies to the spatial master node.
         gen_node!(self, node_id::SPATIAL, Spatial).apply_config(&config.spatial, sample_rate);
 
+        // Phase 49: the plugin host insert. Each configured slot is
+        // resolved (library path or `static:<uid>`), instantiated, and
+        // attached; a slot that fails to load is skipped (a broken
+        // plugin never interrupts playback — the node stays
+        // pass-through for that slot).
+        {
+            let plugin = gen_node!(self, node_id::PLUGIN, PluginHost);
+            for slot in &config.plugins.slots {
+                let host = crate::dsp::graph2::prod::plugins::resolve_host(&slot.source);
+                let Some(host) = host else {
+                    continue;
+                };
+                let _ = plugin.attach(
+                    &host,
+                    &slot.source,
+                    slot.enabled,
+                    &slot.params,
+                    slot.state.as_deref(),
+                );
+            }
+        }
+
         // User-state replay: a fresh generation inherits the listener's
         // volume / balance / speed from the control bus (seeded with defaults
         // at construction, mirroring the Phase-1 semantics where volume is
@@ -181,6 +203,15 @@ impl GraphGeneration {
             if user.has_live_bus_state {
                 gen_node!(self, node_id::SPATIAL, Spatial).set_enabled(user.spatial_enabled);
             }
+            // Phase 49: a live plugin host enable toggle + the last
+            // parameter batch survive a swap (live snapshots only).
+            if user.has_live_bus_state {
+                gen_node!(self, node_id::PLUGIN, PluginHost)
+                    .set_runtime_enabled(user.plugin_enabled);
+                if let Some(batch) = &user.plugin_params {
+                    gen_node!(self, node_id::PLUGIN, PluginHost).apply_params(batch);
+                }
+            }
         }
 
         // Phase 5 S4: duck + automation tracks survive a rebuild (seeded by
@@ -258,6 +289,7 @@ impl GraphGeneration {
             GraphNode::Aux(AuxBusNode::new(send_bus, sample_rate)),
             GraphNode::Correction(CorrectionNode::new(sample_rate)),
             GraphNode::Spatial(SpatialNode::new(sample_rate)),
+            GraphNode::PluginHost(PluginHostNode::new(sample_rate)),
         ];
         debug_assert!(matches!(nodes[node_id::MIX], GraphNode::Mix(_)));
         debug_assert!(matches!(nodes[node_id::EQ], GraphNode::Eq(_)));
@@ -285,6 +317,7 @@ impl GraphGeneration {
             GraphNode::Correction(_)
         ));
         debug_assert!(matches!(nodes[node_id::SPATIAL], GraphNode::Spatial(_)));
+        debug_assert!(matches!(nodes[node_id::PLUGIN], GraphNode::PluginHost(_)));
 
         let mut gen = GraphGeneration {
             node_ids: GraphGeneration::canonical_ids(nodes.len()),
