@@ -13,8 +13,10 @@ bus node provides per-send automation and an insert seam, and a multi-endpoint
 output matrix fans the master out to several devices, each with its own realtime
 thread and clock-drift-corrected resampler. Since v3.52 the engine's graph is a
 `Graph2Engine` (Graph 2.0): its execution plans are *lowered* from a Graph2
-topology while the node arena stays the single `dsp::graph` implementation, and an
-optional shadow mode bit-compares a legacy-plan twin per block. A stable C FFI
+topology. Since v4.0.0 (Phase 48) the legacy `dsp::graph` module is gone —
+the node arena lives as the crate-private `dsp::graph2::prod::arena`, the
+Graph2 lowering is the only plan source, and the former public surface is
+re-exported from `dsp::graph2::prod`. A stable C FFI
 lets non-Rust hosts drive the whole surface.
 
 ```
@@ -38,26 +40,21 @@ lets non-Rust hosts drive the whole surface.
 │   ├── decode/                 # decoders + channel layout/mix + tags + fingerprint
 │   ├── dsp/                    # DSP primitives + `resampler/` (Rubato)
 │   │   ├── pipeline/           #   reference chain (the bit-exact oracle)
-│   │   ├── graph/              #   production arena (the single node
-│   │                           #   implementation): compiled plan sets split
-│   │                           #   by concern (construction/plan/swap/
-│   │                           #   access/controls/lifecycle/process/
-│   │                           #   limiter/report + nodes/: mix/{mod,envelope,
-│   │                           #   sum}, aux_node, …)
 │   │   ├── graph2/             #   Graph 2.0: typed-port topology —
 │   │                           #   node/edge/validate/sort + exec/ (offline
 │   │                           #   executor; ops.rs the shared node kernels)
 │   │                           #   + rt/ (realtime executor: immutable
 │   │                           #   preallocated RtPlan, atomic publish/
 │   │                           #   swap/retire, zero-alloc enum dispatch)
-│   │                           #   + prod/ (Phases 46–47, v3.51–v3.52: the
-│   │                           #   production engine ON Graph 2.0 —
+│   │                           #   + prod/ (Phases 46–48, v3.51–v4.0.0:
+│   │                           #   the production engine ON Graph 2.0 —
 │   │                           #   NodeKind::Prod stage kinds, the chain as
 │   │                           #   a real Graph2 topology, plan LOWERING
-│   │                           #   onto the arena PlanSet, Graph2Engine
-│   │                           #   (drop-in DspGraph replacement; shadow
-│   │                           #   mode bit-compares a legacy-plan twin
-│   │                           #   per block), Graph2ControlHandle)
+│   │                           #   onto the arena PlanSet (the ONLY plan
+│   │                           #   source since Phase 48), Graph2Engine +
+│   │                           #   Graph2ControlHandle, and arena/ — the
+│   │                           #   former `dsp::graph` module as a
+│   │                           #   crate-private node-arena internal)
 │   ├── spatial/                # speaker-independent spatial layer (Phases 8–19):
 │   │                           #   math/ (Vec3+Quat+one coordinate system),
 │   │                           #   scene/object/speaker/level/render + panner/
@@ -151,9 +148,9 @@ self-contained OS backend (`output/*_output/`), or a test file packed with cases
 The canonical precedent is **`src/dsp/pipeline/`**: the `DspPipeline` struct and
 its wiring live in `mod.rs`, while its behavior is split across concern-scoped
 impl-block files that each declare `mod x;` in `mod.rs` and open with
-`impl DspPipeline { … }`. **`src/dsp/graph/`** follows the same layout
+`impl DspPipeline { … }`. **`src/dsp/graph2/prod/arena/`** follows the same layout
 (`construction.rs`, `plan.rs`, `swap.rs`, `access.rs`, `controls.rs`,
-`lifecycle.rs`, `process.rs`, `limiter.rs`, `report.rs`), and **`src/dsp/graph/nodes/mix/`**
+`lifecycle.rs`, `process.rs`, `limiter.rs`, `report.rs`), and **`arena/nodes/mix/`**
 splits the `MixBusNode` into `mod.rs` / `envelope.rs` / `sum.rs`, with the aux bus
 in its own plan node (`nodes/aux_node.rs`). `src/engine/commands/` splits command
 handlers by domain (playback / dsp / eq / lanes / output / playlist / …).
@@ -174,7 +171,7 @@ blocks**, never the data definitions, unless the split is purely additive.
 - When adding a method to an already-large type, place it in the concern file that
   matches its job rather than growing a different concern file.
 - A reviewer MUST check for the signals above on every PR touching `src/`, and
-  run the affected module's tests (e.g. `cargo test --lib dsp::graph`).
+  run the affected module's tests (e.g. `cargo test --lib dsp::graph2`).
 
 ## Realtime & concurrency rules
 
@@ -234,7 +231,7 @@ Before considering a change "complete", verify:
 
 ## Testing
 
-- Run unit + headless tests with `cargo test` (or `cargo test --lib dsp::graph`
+- Run unit + headless tests with `cargo test` (or `cargo test --lib dsp::graph2`
   for a module slice).
 - DSP fidelity/measurement suites live under `tests/fidelity/` and are named in
   `Cargo.toml` `[[test]]` entries (e.g. `--test limiter_correctness`,
@@ -242,4 +239,4 @@ Before considering a change "complete", verify:
 - Realtime zero-allocation: `cargo test --test realtime_allocation`.
 - Decoder robustness/fuzzing: `cargo test --test fuzz_mutation --test decoder_robustness`.
 - Always re-run the relevant module tests after a modularization/split change
-  (e.g. `cargo test --lib dsp::graph`).
+  (e.g. `cargo test --lib dsp::graph2`).

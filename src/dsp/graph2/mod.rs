@@ -1,10 +1,12 @@
 //! # Graph 2.0 — a general-purpose audio graph topology (v3.27)
 //!
-//! The guide's v3.27 milestone: **make the graph the true center of the
-//! rendering engine** by turning the fixed track/bus chain of
-//! [`crate::dsp::graph::DspGraph`] into an *arbitrary topology* runtime.
-//! Where `dsp::graph` is a canonical arena of stages whose order is data but
-//! whose chain is implicit, [`Graph2`] is a model of **explicit structure**:
+//! The v3.27 milestone — **the graph as the true center of the rendering
+//! engine** — realized: the production chain
+//! ([`crate::dsp::graph2::prod::DspGraph`], since Phase 48 the crate-private
+//! descendant of the former public `dsp::graph`) is built from an *arbitrary
+//! topology* runtime. Where the arena is a canonical set of stages whose
+//! order is data but whose chain is implicit, [`Graph2`] is a model of
+//! **explicit structure**:
 //!
 //! ```text
 //!  input ──┬─▶ Gain ─────────────────┐
@@ -50,9 +52,10 @@
 //! Like the acoustic layer, Graph 2.0 is **offline-first by design**: the
 //! topology, validation and executor are control/offline path and heap-happy
 //! (building and compiling are exactly the expensive work an offline engine
-//! can afford). The realtime `dsp::graph` hot path is untouched; a future
-//! milestone lowers a compiled [`ExecutionOrder`] onto a realtime plan.
-//! No allocation or lock is added to any audio thread.
+//! can afford). The realtime hot path runs preallocated immutable plans
+//! (see `rt/`); the production engine consumes compiled topologies through
+//! the `prod` lowering. No allocation or lock is added to any audio
+//! thread.
 
 pub mod edge;
 pub mod exec;

@@ -23,7 +23,7 @@ use crate::dsp::{
     correction::{
         derive_correction_ir, derive_params_from_config, CorrectionIrSet, IrConditioner, PhaseMode,
     },
-    graph::node::DspNode,
+    graph2::prod::arena::node::DspNode,
     pipeline::{DspStageCapability, StageChannelSupport, StagePrecision},
 };
 

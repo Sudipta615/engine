@@ -26,7 +26,7 @@
 //! All of this runs on the control path (engine thread / construction /
 //! drop); the audio thread never touches this module.
 //!
-//! [`SpatialNode`]: crate::dsp::graph::nodes::SpatialNode
+//! [`SpatialNode`]: crate::dsp::graph2::prod::SpatialNode
 
 use crate::dsp::graph2::prod::Graph2Engine;
 use config::{SpatialConfig, SpatialRoomConfig};
@@ -140,7 +140,7 @@ impl SpatialPersistence {
             Ok(c) => c,
             Err(_) => return false,
         };
-        graph.with_both(|g| g.spatial_mut().apply_config(&cfg, sample_rate.max(1.0)));
+        graph.with_graph(|g| g.spatial_mut().apply_config(&cfg, sample_rate.max(1.0)));
         self.last_saved = Some(cfg);
         true
     }

@@ -139,7 +139,7 @@ impl AudioEngine {
         };
         if dsp.eq_enabled {
             let sr = self.output_sample_rate as f32;
-            self.graph.with_both(|g| {
+            self.graph.with_graph(|g| {
                 g.eq_mut().eq = crate::dsp::equalizer::ParametricEq::from_preset(sr, &preset)
             });
         } else {
@@ -241,7 +241,7 @@ impl AudioEngine {
         if let Some(ref routing) = profile.channel_routing {
             let routing = routing.clone();
             self.graph
-                .with_both(|g| g.routing_mut().trimmer.set_routing(&routing));
+                .with_graph(|g| g.routing_mut().trimmer.set_routing(&routing));
         }
 
         let device = self
@@ -269,10 +269,10 @@ impl AudioEngine {
         if self.graph.eq_num_bands() < n {
             let sr = self.output_sample_rate as f32;
             self.graph
-                .with_both(|g| g.eq_mut().eq = crate::dsp::equalizer::ParametricEq::new(n, sr));
+                .with_graph(|g| g.eq_mut().eq = crate::dsp::equalizer::ParametricEq::new(n, sr));
         }
         self.graph
-            .with_both(|g| self.graphic_eq.sync_into(&mut g.eq_mut().eq));
+            .with_graph(|g| self.graphic_eq.sync_into(&mut g.eq_mut().eq));
     }
 
     #[cfg(feature = "resample")]
@@ -441,7 +441,7 @@ impl AudioEngine {
                     config::SpatialQuality::High => Sq::High,
                     config::SpatialQuality::Ultra => Sq::Ultra,
                 };
-                self.graph.with_both(|g| g.spatial_mut().set_quality(q));
+                self.graph.with_graph(|g| g.spatial_mut().set_quality(q));
             }
             EngineCommand::SetSpatialVoice {
                 enabled,
@@ -456,7 +456,7 @@ impl AudioEngine {
                     config::VoicePriority::GainWeighted => Vp::GainWeighted,
                     config::VoicePriority::UserDefined => Vp::UserDefined,
                 };
-                self.graph.with_both(|g| {
+                self.graph.with_graph(|g| {
                     g.spatial_mut()
                         .set_voice(enabled, capacity, full_quality_capacity, policy)
                 });
@@ -468,7 +468,7 @@ impl AudioEngine {
                 time_secs,
             } => {
                 let obj = object as usize;
-                self.graph.with_both(|g| {
+                self.graph.with_graph(|g| {
                     let n = g.spatial_mut();
                     n.set_program_automation(obj, kind, curve.clone());
                     n.set_automation_time(time_secs);
@@ -476,7 +476,7 @@ impl AudioEngine {
             }
             EngineCommand::SetSpatialAutomationTime(seconds) => {
                 self.graph
-                    .with_both(|g| g.spatial_mut().set_automation_time(seconds));
+                    .with_graph(|g| g.spatial_mut().set_automation_time(seconds));
             }
 
             // ── Correction (Phase 7 S5) ──

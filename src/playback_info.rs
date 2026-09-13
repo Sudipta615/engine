@@ -144,7 +144,7 @@ pub struct PlaybackInfo {
 }
 
 /// Spatial master output telemetry (Phase 17). Mirrored from the
-/// [`crate::dsp::graph::nodes::SpatialNode`] on the telemetry cadence: the
+/// [`crate::dsp::graph2::prod::SpatialNode`] on the telemetry cadence: the
 /// binaural output's left/right-ear peak & RMS (dBFS) and the per-block
 /// voice-budget admission counts (spec §76). Hosts read this from the
 /// lock-free [`PlaybackInfo`] snapshot.

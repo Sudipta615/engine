@@ -20,7 +20,7 @@ use engine::dsp::correction::{
     convolve, derive_correction_ir, minimum_phase_ir, ConditionedIr, CorrectionIrSet, DeriveParams,
     PhaseMode, Spectrum, TargetCurve,
 };
-use engine::dsp::{DspGraph, DspNode};
+use engine::dsp::graph2::prod::{DspGraph, DspNode};
 use engine::EngineConfig;
 
 const FS: f64 = 48_000.0;

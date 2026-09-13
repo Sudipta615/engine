@@ -15,7 +15,7 @@
 //! - **Enum-dispatch per block, never trait objects**: the audio thread
 //!   walks the compiled steps and matches on [`NodeKind`] — a closed set
 //!   the compiler can devirtualize, unlike dynamic dispatch (the
-//!   production `dsp::graph` plan discipline).
+//!   production plan discipline).
 //! - **Immutable [`RtPlan`] behind an atomic pointer publish**: building
 //!   the plan and pools is control-thread work. The audio thread receives
 //!   the finished plan via the Phase-2 generation-swap discipline

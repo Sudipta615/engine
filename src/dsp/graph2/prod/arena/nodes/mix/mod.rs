@@ -32,7 +32,7 @@ use crate::buffer::{MAX_AUDIO_BLOCK_FRAMES, MAX_CHANNELS};
 use crate::dsp::{
     crossfade::{CrossfadeCurve, MixerState},
     gain::GainProcessor,
-    graph::node::DspNode,
+    graph2::prod::arena::node::DspNode,
     loudness::{LoudnessMetadata, LoudnessMode},
     pipeline::{DspStageCapability, StageChannelSupport, StagePrecision},
 };

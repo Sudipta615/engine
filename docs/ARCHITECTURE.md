@@ -207,45 +207,7 @@ src/
 │   ├── device_profile.rs     # Per-device DSP defaults
 │   ├── analyzer.rs           # Real-time peak/RMS/spectrum analyzer
 │   ├── float.rs              # AudioFloat numeric helpers
-│   └── graph/                # Node-based DSP graph (DspNode trait); the
-│                             #   production hot path since Phase 3 — split
-│                             #   by concern into construction / access /
-│                             #   controls / lifecycle / process / limiter /
-│                             #   report / plan / swap; nodes/ holds one file
-│                             #   per stage (aux, correction, eq, dynamics,
-│                             #   convolution, crossfeed, stereo, timestretch,
-│                             #   gain/volume, spatial, routing, limiter,
-│                             #   dither, resampler, loudness + mix/)
-│                             #   — nodes/mix/ (MixBusNode split into
-│                             #   mod/envelope/sum: N-slot + N-channel bus
-│                             #   with post-fader lane sends), and
-│                             #   nodes/aux_node.rs (AuxBusNode + shared
-│                             #   AuxSendBus: per-send
-│                             #   automation + accumulator + insert + return;
-│                             #   Phase 2: per-node
-│                             #   SPSC control queues + publish/swap/retire
-│                             #   live generation swap; Phase 3: engine
-│                             #   drives the graph end-to-end; Phase 4 S1+S2:
-│                             #   mix_slots generation parameter + N-channel
-│                             #   secondary planes with channel-wise MC sum;
-│                             #   S3: pan laws + slot level meters; S4:
-│                             #   program-gated ducking; S5: automation
-│                             #   tracks; S6: engine lane registry feeding
-│                             #   slots ≥ 2 via process_block_lanes;
-│                             #   Phase 5: per-slot PerChannelTrim banks
-│                             #   and post-fader SlotSend taps; Phase 6:
-│                             #   aux promoted to its own AUX plan step with
-│                             #   per-send automation + independent
-│                             #   metering; Phase 7: nodes/correction_node.rs
-│                             #   (CorrectionNode — per-channel partitioned
-│                             #   convolution bank, post-aux/pre-EQ);
-│                             #   Phase 11: nodes/spatial_node.rs
-│                             #   (SpatialNode — binaural master spatial-
-│                             #   ization on the front pair, per-node
-│                             #   atomic control mirror, live-enable replay
-│                             #   on generation swap; MC masters pass
-│                             #   through untouched)
-│   ├── graph2/               # Graph 2.0 (Phase 25, v3.27): general-purpose
+│   └── graph2/               # Graph 2.0 (Phase 25, v3.27): general-purpose
 │   │                         #   audio graph topology — nodes with explicit
 │   │                         #   typed ports (node.rs: PortSpec/SignalType/
 │   │                         #   NodeKind/NodeCapabilities), first-class
@@ -350,29 +312,40 @@ src/
 │   │                         #   publish/swap/retire (Phase-2 discipline);
 │   │                         #   sort.rs multi-edge fix. The
 │   │                         #   topology, not an authored chain, defines
-│   │                         #   the signal flow — realtime dsp::graph is
-│   │                         #   untouched. Phase 46 (v3.51.0):
+│   │                         #   the signal flow. Phase 46 (v3.51.0):
 │   │                         #   NodeKind::Prod(ProdStage) — the 17
 │   │                         #   production stages as topology kinds with
 │   │                         #   per-stage capabilities + arena-slot
-│   │                         #   mapping. Phase 47 (v3.52.0): prod/ — the
-│   │                         #   production engine ON Graph 2.0:
-│   │                         #   topology.rs (the canonical chain as a
-│   │                         #   real Graph2, validated + topologically
-│   │                         #   compiled), lowering.rs (compiled order →
-│   │                         #   the production PlanSet — plans are
-│   │                         #   topology-derived, pinned identical to
-│   │                         #   the hand-authored compile by test),
-│   │                         #   mod.rs (Graph2Engine — a drop-in DspGraph
-│   │                         #   replacement: one node implementation,
-│   │                         #   lowered plan source; with_both fan-out
-│   │                         #   seam; graph2_shadow_verify keeps a
-│   │                         #   legacy-plan DspGraph twin bit-compared
-│   │                         #   every block), controls.rs (the mirrored
-│   │                         #   queued mutators), control.rs
+│   │                         #   mapping. Phase 47 (v3.52.0): prod/ —
+│   │                         #   the production engine ON Graph 2.0.
+│   │                         #   Phase 48 (v4.0.0): the legacy public
+│   │                         #   dsp::graph module is REMOVED — its arena,
+│   │                         #   plans, nodes, and control machinery
+│   │                         #   moved to prod/arena/ (crate-private
+│   │                         #   single node implementation, re-exported
+│   │                         #   through dsp::graph2::prod), the
+│   │                         #   hand-authored PlanSet::compile() is
+│   │                         #   deleted (lowering.rs is the ONLY plan
+│   │                         #   source), and the Phase-47 shadow mode
+│   │                         #   + graph2_shadow_verify flag are gone.
+│   │                         #   prod/ is now: topology.rs (the canonical
+│   │                         #   chain as a real Graph2, validated +
+│   │                         #   topologically compiled), lowering.rs
+│   │                         #   (compiled order → the production
+│   │                         #   PlanSet — the single plan source),
+│   │                         #   mod.rs (Graph2Engine — the production
+│   │                         #   engine shell: one node implementation,
+│   │                         #   lowered plan source; with_graph accessor
+│   │                         #   seam), controls.rs (the mirrored queued
+│   │                         #   mutators), control.rs
 │   │                         #   (Graph2ControlHandle), process.rs (the 9
-│   │                         #   block entries + shadow A/B). AudioEngine
-│   │                         #   runs Graph2Engine end-to-end
+│   │                         #   block entries), arena/ (the former
+│   │                         #   dsp::graph: DspGraph arena split by
+│   │                         #   concern — construction/access/controls/
+│   │                         #   lifecycle/process/limiter/report/plan/
+│   │                         #   swap + nodes/ one file per stage).
+│   │                         #   AudioEngine runs Graph2Engine
+│   │                         #   end-to-end
 │   ├── timeline/              # Timeline & scheduler (Phase 26, v3.28):
 │   │                         #   clock.rs (AudioClock — playhead + monotonic
 │   │                         #   master, transport state, loop region, tempo

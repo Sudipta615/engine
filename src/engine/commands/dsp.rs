@@ -73,7 +73,7 @@ impl AudioEngine {
         self.graph.set_bit_perfect(enabled);
         if enabled {
             self.graph.set_volume(1.0);
-            self.graph.with_both(|g| g.seek_fade_mut().fade.reset());
+            self.graph.with_graph(|g| g.seek_fade_mut().fade.reset());
             let uses_hardware = self.volume_uses_hardware();
             self.write_playback_info(|pb| {
                 pb.volume_path = if uses_hardware {

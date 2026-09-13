@@ -1,25 +1,22 @@
-//! # Experimental Node-Based DSP Graph
+//! The production node arena — the single `DspGraph` implementation the
+//! engine runs (Phase 48: formerly the public `dsp::graph` module, now a
+//! crate-private internal of [`crate::dsp::graph2::prod`]).
 //!
-//! This module provides an alternative, node-based DSP architecture through
-//! the [`DspNode`] trait. Unlike the production [`crate::dsp::pipeline::DspPipeline`]
-//! (which runs a fixed linear sequence of stages per stereo frame), `DspGraph`
-//! composes nodes that each describe their capabilities, process planar audio
-//! blocks in f32 or f64, and can be rearranged or selectively activated.
-//!
-//! ## Current status
-//!
-//! Since Phase 3 the engine routes through `DspGraph` as its production hot
-//! path (the graph executes the full chain: mix bus, EQ, dynamics,
-//! convolution, balance, crossfeed, stereo, timestretch, volume, seek fade,
-//! routing, resampler, limiter, dither). `DspPipeline` remains as the
-//! reference implementation and the bit-exact oracle for the equivalence
-//! suite.
+//! This module provides the node-based DSP architecture through the
+//! [`DspNode`] trait: [`DspGraph`] composes nodes that each describe their
+//! capabilities, process planar audio blocks in f32 or f64, and can be
+//! rearranged or selectively activated. The frozen
+//! [`crate::dsp::pipeline::DspPipeline`] remains as the reference
+//! implementation and the bit-exact oracle for the equivalence suite.
 //!
 //! The graph executes **compiled execution plans**:
-//! all nodes live in a fixed [`GraphNode`] arena (indexed by [`node_id`]) and
-//! [`plan::PlanSet::compile`] orders them into per-mode step lists. The hot
-//! path iterates a plan and dispatches through the enum — stage order is data,
-//! not code, which is the prerequisite for live reconfiguration (Phase 2).
+//! all nodes live in a fixed [`GraphNode`] arena (indexed by [`node_id`])
+//! and [`plan::PlanSet`] orders them into per-mode step lists. Since
+//! Phase 48 the **single plan source** is the Graph2 lowering
+//! (`graph2::prod::lowering`) — the hand-authored `PlanSet::compile()` is
+//! gone. The hot path iterates a plan and dispatches through the enum —
+//! stage order is data, not code, which is the prerequisite for live
+//! reconfiguration (Phase 2).
 //!
 //! The static [`DSP_STAGE_CAPABILITIES`] table in the pipeline module is the
 //! single source of truth for stage metadata; node capability implementations
@@ -31,10 +28,11 @@
 //! [`crate::dsp::pipeline`] (struct + wiring in `mod.rs`, behavior in
 //! concern-scoped files):
 //!
-//! - `construction.rs` — [`DspGraph::from_config`], [`DspGraph::reconfigure`],
-//!   and the generation builder (builds the arena + plans)
+//! - `construction.rs` — [`DspGraph::from_config`],
+//!   [`DspGraph::reconfigure`], and the generation builder (builds the
+//!   arena + plans)
 //! - `plan.rs` — the compiled [`PlanSet`] / [`ExecutionPlan`] / [`PlanStep`]
-//!   representation and the canonical stage order
+//!   representation
 //! - `swap.rs` — stable [`NodeId`] identity and the swappable
 //!   [`swap::GraphGeneration`] container
 //! - `access.rs` — typed node accessors over the arena (replaces the former
@@ -64,7 +62,6 @@ mod process;
 mod report;
 mod swap;
 
-use plan::PlanSet;
 use std::sync::Arc;
 
 use crate::buffer::{MAX_AUDIO_BLOCK_FRAMES, MAX_CHANNELS};
@@ -77,16 +74,14 @@ pub use controls::GraphControlHandle;
 pub use node::DspNode;
 pub use nodes::*;
 
-pub use swap::GraphGeneration;
-
 pub(crate) use controls::{ControlBus, NodeCmd};
+pub use swap::GraphGeneration;
 pub(super) use swap::{NodeId, SlotAutomationData, UserState};
 
-// Phase 46: the graph2 `prod` shell lowers a Graph2 topology onto the
-// production plan set (the plan source is topology-derived instead of
-// hand-authored), so the plan types + the plans-parameterized generation
-// builder are crate-visible.
-pub(crate) use plan::{PlanSet as ProdPlanSet, PlanStep, StepScope};
+// Phase 48: the plan types + the plans-parameterized generation builder are
+// crate-visible for the `graph2::prod` lowering seam (the single plan
+// source is the Graph2 topology lowering).
+pub(crate) use plan::{PlanSet, PlanStep, StepScope};
 
 // ── Node arena ───────────────────────────────────────────────────────────────
 

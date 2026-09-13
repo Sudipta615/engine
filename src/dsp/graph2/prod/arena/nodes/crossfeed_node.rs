@@ -1,6 +1,6 @@
 use crate::dsp::{
     crossfeed::Crossfeed,
-    graph::node::DspNode,
+    graph2::prod::arena::node::DspNode,
     pipeline::{DspStageCapability, StageChannelSupport, StagePrecision},
 };
 

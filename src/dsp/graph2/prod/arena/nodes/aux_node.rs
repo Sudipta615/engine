@@ -24,7 +24,7 @@ use crate::buffer::MAX_AUDIO_BLOCK_FRAMES;
 use crate::dsp::{
     convolution::ConvolutionEngine,
     gain::GainProcessor,
-    graph::node::DspNode,
+    graph2::prod::arena::node::DspNode,
     pipeline::{DspStageCapability, StageChannelSupport, StagePrecision},
 };
 use crate::dsp_utils::accumulate_scaled;

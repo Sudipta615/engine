@@ -6,19 +6,19 @@
 //! fixed, linear sequence with pre-allocated scratch state — no dynamic
 //! allocation on the hot path.
 //!
-//! ## Relationship to `crate::dsp::graph`
+//! ## Relationship to the production graph (Graph 2.0)
 //!
-//! The [`crate::dsp::graph::DspGraph`] is a **work-in-progress** node-based
-//! architecture that generalizes the pipeline through the [`DspNode`] trait:
-//! planar audio, explicit capability introspection per node (`name,
-//! channel_support, precision, stateful, realtime_safe, bit_perfect_compatible,
-//! sample_rate_sensitive`), and block-level processing. It currently exists
-//! alongside the pipeline for capability introspection and future migration —
-//! the engine's hot path does NOT route through `DspGraph`.
+//! The node-based arena (`DspGraph`, since Phase 48 a crate-internal of
+//! `dsp::graph2::prod`, previously the public `dsp::graph`) generalized the
+//! pipeline through the [`DspNode`] trait: planar audio, explicit capability
+//! introspection per node (`name, channel_support, precision, stateful,
+//! realtime_safe, bit_perfect_compatible, sample_rate_sensitive`), and
+//! block-level processing. The engine's hot path routes through it via the
+//! Graph2-lowered execution plans; this pipeline remains the frozen
+//! reference implementation and the bit-exactness oracle.
 //!
 //! The static [`DSP_STAGE_CAPABILITIES`] table describes every stage in both
-//! the pipeline and the graph. When the graph matures and matches the
-//! pipeline's performance, the engine can switch to it behind a feature flag.
+//! the pipeline and the graph arena.
 
 use crate::buffer::{MAX_AUDIO_BLOCK_FRAMES, MAX_CHANNELS};
 use crate::decode::ChannelLayout;

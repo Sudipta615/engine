@@ -652,7 +652,7 @@ fn mix_slot_count_is_clamped_to_the_bus_bound() {
     let g = DspGraph::from_config(&cfg, sr);
     assert_eq!(
         g.mix().inputs.len(),
-        crate::dsp::graph::nodes::mix::MAX_MIX_SLOTS,
+        super::nodes::mix::MAX_MIX_SLOTS,
         "mix_slots=99 must clamp down to MAX_MIX_SLOTS"
     );
 

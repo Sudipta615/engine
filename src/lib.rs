@@ -55,7 +55,11 @@ pub mod prelude {
             replay_render, Aelog, AelogCache, AelogError, AelogRecorder, RecordedCommand,
             ReplayError, ReplayOutcome, SessionHeader, AELOG_VERSION,
         },
-        dsp::graph2::prod::{Graph2ControlHandle, Graph2Engine},
+        dsp::graph2::prod::{
+            AutomationPoint, AutomationTarget, DspGraph, DspNode, DuckState, Graph2ControlHandle,
+            Graph2Engine, GraphControlHandle, GraphGeneration, PanLaw, MAX_DUCK_TARGETS,
+            MAX_MIX_SLOTS,
+        },
         dsp::graph2::{
             analyze, compensate, node_latency, rt, ExecutionOrder, Graph2, Graph2Error, HrtfSource,
             LatencyReport, NodeCapabilities, NodeDef, NodeId, NodeKind, NodeParams,

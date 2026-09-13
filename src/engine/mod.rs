@@ -75,12 +75,10 @@ pub struct AudioEngine {
     /// The active output transport (cpal, or the native WASAPI exclusive
     /// backend on Windows with `wasapi-native`).
     audio_output: Option<Box<dyn Output>>,
-    /// The production DSP signal path (Phase 47): the Graph2 engine owns
+    /// The production DSP signal path (Phase 48): the Graph2 engine owns
     /// the signal chain end-to-end — its generations carry plans **lowered
-    /// from the Graph2 production topology** while the node arena, control
-    /// surface, and swap machinery stay the single `dsp::graph`
-    /// implementation. With `graph2_shadow_verify` the legacy-plan
-    /// `DspGraph` runs as a bit-compared shadow twin.
+    /// from the Graph2 production topology** over the single arena node
+    /// implementation (`graph2::prod::arena`).
     graph: Graph2Engine,
     /// Graphic EQ model (§9.1) — the slider state compiled into
     /// `graph.eq()`. Always present; only authoritative while enabled.

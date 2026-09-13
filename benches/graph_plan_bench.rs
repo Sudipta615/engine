@@ -1,6 +1,6 @@
 use config::EngineConfig;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use engine::dsp::graph::DspGraph;
+use engine::dsp::graph2::prod::DspGraph;
 use engine::dsp::pipeline::DspPipeline;
 use std::hint::black_box;
 
@@ -168,7 +168,7 @@ fn bench_graph_live_reconfig(c: &mut Criterion) {
             for k in 0..64 {
                 if k % 64 == 0 {
                     cfg_b.eq.bands[2].gain_db += 0.25;
-                    let gen = engine::dsp::graph::GraphGeneration::from_config(
+                    let gen = engine::dsp::graph2::prod::GraphGeneration::from_config(
                         &cfg_b,
                         44100.0,
                         &engine::decode::ChannelLayout::Stereo,

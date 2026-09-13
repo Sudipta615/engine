@@ -581,13 +581,13 @@ impl AudioEngine {
         let speed = self.speed;
         if config.speed_mode == config::SpeedMode::TimeStretch {
             self.graph
-                .with_both(|g| g.timestretch_mut().stretcher.set_speed(speed));
+                .with_graph(|g| g.timestretch_mut().stretcher.set_speed(speed));
         } else if config.speed_mode == config::SpeedMode::PitchShift {
             self.graph
-                .with_both(|g| g.timestretch_mut().stretcher.set_pitch_ratio(speed));
+                .with_graph(|g| g.timestretch_mut().stretcher.set_pitch_ratio(speed));
         } else {
             self.graph
-                .with_both(|g| g.timestretch_mut().stretcher.set_speed(1.0));
+                .with_graph(|g| g.timestretch_mut().stretcher.set_speed(1.0));
         }
         if config.volume_mode == config::VolumeMode::HardwarePreferred
             || config.volume_mode == config::VolumeMode::HardwareOnly
@@ -614,14 +614,6 @@ impl AudioEngine {
             }
         }
 
-        // Phase 47: keep the shadow twin attached/detached per the new
-        // config's verify flag (the reconfigure above already fanned out
-        // to an attached twin, so only the on/off edge needs handling).
-        if config.graph2_shadow_verify && !self.graph.shadow_enabled() {
-            self.graph.enable_shadow(&config);
-        } else if !config.graph2_shadow_verify && self.graph.shadow_enabled() {
-            self.graph.disable_shadow();
-        }
         self.config = config;
 
         if backend_changed {

@@ -1,24 +1,21 @@
 //! Plan lowering: the compiled Graph2 production topology → the arena
-//! [`PlanSet`] (Phase 46).
+//! [`PlanSet`] (Phase 46; since Phase 48 the **single plan source**).
 //!
 //! [`lowered_plans`] walks the topologically compiled MC-chain order and
 //! emits one [`PlanStep`] per chain node (skipping the output-domain
-//! stages, exactly like the hand-authored `PlanSet::compile()`):
+//! stages):
 //!
 //! - the **stereo plan** = the chain minus the routing head
 //! - the **MC plan** = routing first, then the same chain
 //!
 //! Because the topological sort is deterministic (tie-breaks on ascending
-//! node id, and the chain is linear), the lowered steps are identical to
-//! `PlanSet::compile()`'s hand-authored order — pinned by the
-//! `lowered_plans_match_handauthored` unit test — so a
-//! `Graph2Engine` generation is bit-equivalent to a `DspGraph` generation
-//! by construction: same arena, same config application, same user-state
-//! replay, same step order.
+//! node id, and the chain is linear), the lowered steps form the canonical
+//! production stage order, pinned against the frozen `DspPipeline` oracle
+//! by the `tests/fidelity/graph_pipeline_equivalence.rs` suite.
 
 use super::super::ProdStage;
 use super::topology::{build_topology, ProdTopology};
-use crate::dsp::graph::{PlanStep, ProdPlanSet as PlanSet, StepScope};
+use crate::dsp::graph2::prod::arena::{PlanSet, PlanStep, StepScope};
 
 /// The lowered steps as `(arena slot, scope)` pairs, for introspection
 /// and tests. `None` when the topology fails to compile (a programming
@@ -73,45 +70,6 @@ pub(crate) fn topology() -> ProdTopology {
 mod tests {
     use super::*;
 
-    /// The pinned invariant of Phase 46: the Graph2-lowered plan set must
-    /// be **identical** to the hand-authored `PlanSet::compile()` — the
-    /// lowered plans replace the authored ones as the plan source, and any
-    /// divergence is a bit-exactness break.
-    #[test]
-    fn lowered_plans_match_handauthored() {
-        let authored = PlanSet::compile();
-        let lowered = lowered_plans();
-        let slot = |s: &crate::dsp::graph::PlanStep| s.node.0;
-        for (a, b) in authored
-            .normal
-            .steps
-            .iter()
-            .zip(lowered.normal.steps.iter())
-        {
-            assert_eq!(slot(a), slot(b), "stereo plan slot mismatch");
-            assert_eq!(a.scope, b.scope, "stereo plan scope mismatch");
-        }
-        assert_eq!(
-            authored.normal.steps.len(),
-            lowered.normal.steps.len(),
-            "stereo plan length mismatch"
-        );
-        for (a, b) in authored
-            .normal_mc
-            .steps
-            .iter()
-            .zip(lowered.normal_mc.steps.iter())
-        {
-            assert_eq!(slot(a), slot(b), "mc plan slot mismatch");
-            assert_eq!(a.scope, b.scope, "mc plan scope mismatch");
-        }
-        assert_eq!(
-            authored.normal_mc.steps.len(),
-            lowered.normal_mc.steps.len(),
-            "mc plan length mismatch"
-        );
-    }
-
     /// The stereo plan must not contain the routing head; the MC plan
     /// must start with it.
     #[test]
@@ -132,5 +90,19 @@ mod tests {
             lowered.normal_mc.steps.len(),
             lowered.normal.steps.len() + 1
         );
+    }
+
+    /// The lowered chain must cover every non-output-domain arena slot
+    /// exactly once (the arena is fixed by construction; the topology must
+    /// not drop or duplicate a stage).
+    #[test]
+    fn lowered_plan_covers_every_arena_slot() {
+        let steps = lowered_plan_steps();
+        let mut slots: Vec<usize> = steps.iter().map(|&(s, _)| s).collect();
+        slots.sort_unstable();
+        let expected: Vec<usize> = (0..17usize)
+            .filter(|&s| s != 11 && s != 12 && s != 13)
+            .collect();
+        assert_eq!(slots, expected, "chain slots must appear exactly once");
     }
 }

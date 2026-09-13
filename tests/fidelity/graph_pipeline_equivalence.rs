@@ -1,10 +1,10 @@
-//! Phase-1 gate: `DspGraph` (plan executor) ≡ `DspPipeline` (frozen oracle).
+//! Phase-1 gate (re-pointed at Graph 2.0 in Phase 48): the Graph2 engine
+//! (plan executor over Graph2-lowered plans) ≡ `DspPipeline` (frozen oracle).
 //!
 //! Drives both engines through an identical, deterministic scenario matrix
 //! and compares their outputs sample-by-sample. The pipeline is the reference
-//! and is never modified by this suite; the graph must reproduce it exactly
-//! ([`Grade::Exact`]) — or within a tight epsilon ([`Grade::Epsilon`]) where
-//! a documented rounding-order difference legitimately exists.
+//! and is never modified by this suite; the Graph2 engine must reproduce it
+//! exactly — including NaN payloads, `to_bits`-compared.
 //!
 //! Every case also asserts structural parity: identical total latency and an
 //! identical node active-set (from `graph_nodes()`), so a plan that changes
@@ -24,8 +24,9 @@
 
 use config::{CompressorDetector, EngineConfig, PrecisionMode};
 use engine::dsp::equalizer::{EqBandParams, EqFilterType};
+use engine::dsp::graph2::prod::Graph2Engine;
 use engine::dsp::loudness::{LoudnessMetadata, LoudnessMode};
-use engine::dsp::{DspGraph, DspPipeline};
+use engine::dsp::DspPipeline;
 
 const SR: f32 = 48_000.0;
 const TAU: f32 = std::f32::consts::TAU;
@@ -187,7 +188,7 @@ fn fill_interleaved(buf: &mut [f32], channels: usize, frame_offset: usize, sr: f
 /// Apply one command to BOTH engines in the same arm — the two sides cannot
 /// drift.
 #[allow(clippy::too_many_arguments)]
-fn apply_cmd(p: &mut DspPipeline, g: &mut DspGraph, cmd: &Cmd) {
+fn apply_cmd(p: &mut DspPipeline, g: &mut Graph2Engine, cmd: &Cmd) {
     match cmd {
         Cmd::Volume(v) => {
             p.set_volume(*v);
@@ -305,7 +306,7 @@ fn apply_cmd(p: &mut DspPipeline, g: &mut DspGraph, cmd: &Cmd) {
         }
         Cmd::Speed(s) => {
             p.timestretcher_mut().set_speed(*s);
-            g.timestretch_mut().stretcher.set_speed(*s);
+            g.with_graph(|gr| gr.timestretch_mut().stretcher.set_speed(*s));
         }
         Cmd::ConvolutionWet(mix) => {
             p.set_convolution_wet_mix(*mix);
@@ -316,11 +317,13 @@ fn apply_cmd(p: &mut DspPipeline, g: &mut DspGraph, cmd: &Cmd) {
             p.convolution
                 .load_ir_from_samples(ir)
                 .expect("pipeline IR load");
-            g.convolution_mut().engine.set_enabled(true);
-            g.convolution_mut()
-                .engine
-                .load_ir_from_samples(ir)
-                .expect("graph IR load");
+            g.with_graph(|gr| {
+                gr.convolution_mut().engine.set_enabled(true);
+                gr.convolution_mut()
+                    .engine
+                    .load_ir_from_samples(ir)
+                    .expect("graph IR load");
+            });
         }
         Cmd::LoudnessMode(mode) => {
             p.set_loudness_mode(*mode);
@@ -376,7 +379,7 @@ fn apply_cmd(p: &mut DspPipeline, g: &mut DspGraph, cmd: &Cmd) {
 /// structural parity verdict.
 fn run_case(case: &Case) -> (Vec<f32>, Vec<f32>) {
     let mut p = DspPipeline::from_config(&case.config, SR);
-    let mut g = DspGraph::from_config(&case.config, SR);
+    let mut g = Graph2Engine::from_config(&case.config, SR);
 
     if case.channels > 2 {
         let layout = engine::decode::ChannelLayout::from_count(case.channels);
@@ -502,7 +505,7 @@ fn compare(case: &Case, ref_out: &[f32], got: &[f32]) {
         assert_eq!(
             a.to_bits(),
             b.to_bits(),
-            "{label}: sample {i} differs exactly: {a} (pipeline) vs {b} (graph)"
+            "{label}: sample {i} differs exactly: {a} (pipeline) vs {b} (graph2)"
         );
     }
 }
@@ -514,7 +517,7 @@ fn check_case(case: &Case) {
 
 /// Drive one block of a 2-input case on both engines.
 ///
-/// Graph side: [`DspGraph::process_block_inputs`] — the full plan (per-input
+/// Graph2 side: [`Graph2Engine::process_block_inputs`] — the full plan (per-input
 /// pre-mix chains, envelope sum, post-mix) in one call.
 ///
 /// Pipeline oracle: the engine's crossfade-path composition — pre-mix each
@@ -526,7 +529,7 @@ fn check_case(case: &Case) {
 #[allow(clippy::too_many_arguments)]
 fn drive_2input(
     p: &mut DspPipeline,
-    g: &mut DspGraph,
+    g: &mut Graph2Engine,
     case: &Case,
     b: usize,
     frames: usize,
@@ -1162,7 +1165,7 @@ fn graph_matches_pipeline_across_scenario_matrix() {
 }
 
 #[test]
-fn graph_plan_block_throughput_within_tolerance_of_pipeline() {
+fn graph2_block_throughput_within_tolerance_of_pipeline() {
     // Fixed-iteration wall-clock gate (generous bound so shared CI runners do
     // not flake): the enum-dispatch plan executor must not be dramatically
     // slower than the direct-call pipeline. Run in one process, alternating,
@@ -1170,7 +1173,7 @@ fn graph_plan_block_throughput_within_tolerance_of_pipeline() {
     // benches/graph_plan_bench.rs for reporting.)
     let cfg = cfg_all_stages();
     let mut p = DspPipeline::from_config(&cfg, SR);
-    let mut g = DspGraph::from_config(&cfg, SR);
+    let mut g = Graph2Engine::from_config(&cfg, SR);
     p.set_volume(0.8);
     g.set_volume(0.8);
 

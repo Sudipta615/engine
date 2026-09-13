@@ -266,7 +266,8 @@ Source ──▶ Split(2) ──▶ Gain(0.5) ──▶ Mix ──▶ Sink
 
 The whole topology serializes to JSON and back to an identical render, and
 exports a Graphviz `digraph` for inspection. Offline-first by design (like
-the acoustic layer); the realtime `dsp::graph` hot path is untouched.
+the acoustic layer); since Phase 48 the production hot path itself runs on
+plans lowered from this topology (see Graph 2.0 `prod`).
 
 ### Timeline & scheduler — time as a render primitive (offline, v3.28.0)
 
@@ -612,8 +613,9 @@ whose IR won't load falls back to direct, never dropping a render.
 Because delay and convolution are both LTI, inserting the partition-
 latency padding *before* emission is sample-exact; the per-node engine is
 built once and kept across blocks so partition overlap-add stays rung.
-The engine is the same one the realtime `dsp::graph` uses, so the graph
-2.0 offline executor and the production hot path agree on long IRs.
+The engine is the same one the production arena
+(`graph2::prod::arena`) uses, so the Graph 2.0 offline executor and the
+production hot path agree on long IRs.
 
 ### Spatial rendering (opt-in, v3.11.0 → v3.19.0)
 

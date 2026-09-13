@@ -178,19 +178,19 @@ impl AudioEngine {
         match self.config.speed_mode {
             config::SpeedMode::TimeStretch => {
                 self.graph
-                    .with_both(|g| g.timestretch_mut().stretcher.set_speed(clamped));
+                    .with_graph(|g| g.timestretch_mut().stretcher.set_speed(clamped));
                 #[cfg(feature = "resample")]
                 self.resampler_set_speed_all(1.0);
             }
             config::SpeedMode::PitchShift => {
                 self.graph
-                    .with_both(|g| g.timestretch_mut().stretcher.set_pitch_ratio(clamped));
+                    .with_graph(|g| g.timestretch_mut().stretcher.set_pitch_ratio(clamped));
                 #[cfg(feature = "resample")]
                 self.resampler_set_speed_all(1.0);
             }
             config::SpeedMode::Varispeed => {
                 self.graph
-                    .with_both(|g| g.timestretch_mut().stretcher.set_speed(1.0));
+                    .with_graph(|g| g.timestretch_mut().stretcher.set_speed(1.0));
                 #[cfg(feature = "resample")]
                 self.resampler_set_speed_all(clamped);
             }
@@ -240,7 +240,7 @@ impl AudioEngine {
         let clamped = semitones.clamp(-24.0, 24.0);
         info!("Pitch shift set to {:.2} semitones", clamped);
         self.graph
-            .with_both(|g| g.timestretch_mut().stretcher.set_pitch_semitones(clamped));
+            .with_graph(|g| g.timestretch_mut().stretcher.set_pitch_semitones(clamped));
     }
 
     pub(super) fn handle_shutdown(&mut self) {

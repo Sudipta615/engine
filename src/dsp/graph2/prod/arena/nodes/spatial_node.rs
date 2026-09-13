@@ -37,8 +37,8 @@
 //! construction/reconfig; the live control surface
 //! (`GraphControlHandle::set_spatial_*`) changes it at runtime.
 
+use super::super::node::DspNode;
 use crate::buffer::{MAX_AUDIO_BLOCK_FRAMES, MAX_CHANNELS};
-use crate::dsp::graph::node::DspNode;
 use crate::dsp::pipeline::{DspStageCapability, StageChannelSupport, StagePrecision};
 use crate::spatial::{
     automation::CurveScalar,
@@ -879,8 +879,10 @@ mod tests {
 
     #[test]
     fn control_handle_commands_apply_at_drain_and_survive_reconfig() {
-        let mut graph =
-            crate::dsp::graph::DspGraph::from_config(&EngineConfig::default(), 48_000.0);
+        let mut graph = crate::dsp::graph2::prod::arena::DspGraph::from_config(
+            &EngineConfig::default(),
+            48_000.0,
+        );
         let handle = graph.control_handle();
         handle.set_spatial_enabled(true);
         handle.set_spatial_screen(0.0, 45.0, 5.0, 0.8);

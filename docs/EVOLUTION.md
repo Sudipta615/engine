@@ -2420,3 +2420,37 @@ all zero-allocation on the audio path. fmt + clippy `-D warnings` clean;
 nodes move under `graph2::prod`, `graph_pipeline_equivalence` re-points at
 Graph2-vs-pipeline, and the `dsp::graph` god files (controls.rs 1,906 lines)
 disappear with the crate.
+
+
+## Phase 48 — Legacy `dsp::graph` removal (v4.0.0) — **Implemented**
+
+**Goal.** One graph, one plan source: the Graph2 lowering is the only way
+plans are born, and the former public `dsp::graph` module — a Phase-1-era
+public surface shadowed by two releases of Graph 2.0 — is gone.
+
+**Implementation.** The module tree moved, not the code: `src/dsp/graph/`
+became `src/dsp/graph2/prod/arena/` (a crate-private internal of the
+production Graph 2.0 engine), with the `dsp::graph2::prod` re-exports
+(`DspGraph`, `DspNode`, `GraphControlHandle`, `GraphGeneration`, the node
+types) replacing the old public exports in `lib.rs`/prelude. The
+hand-authored `PlanSet::compile()` is deleted — construction, `reconfigure`,
+and every generation build lower the Graph2 production topology through
+`prod::lowering` — the lowered plan is the *only* plan the engine executes.
+The Phase-47 shadow mode (twin `DspGraph`,
+per-block bit-compare, `graph2_shadow_verify` flag, control fan-out) is
+removed with its config field; the accessor seam is renamed `with_graph`.
+The fidelity gate moved with it: `graph_pipeline_equivalence` now
+bit-compares the **Graph2 engine** against the frozen `DspPipeline` oracle
+(same 27-scenario matrix, `to_bits` compared, structural parity asserted),
+and the Phase-46 `graph2_graph_equivalence` A/B suite is retired with the
+hand-authored plans it pinned. FFI behavior, `EngineCommand`s, events, and
+telemetry are unchanged.
+
+**Acceptance.** Full workspace green; the re-pointed
+`graph_pipeline_equivalence` proves Graph2-lowered plans ≡ pipeline oracle
+bit-exactly across the whole matrix (including the 2-input crossfade
+cases). fmt + clippy `-D warnings` clean; `engine`/`config` both at 4.0.0.
+
+**Unlocks.** Track B (Phase 49, the Rust-native plugin ABI) and the Track-C
+spatial horizons (Phases 50–53) now build against a single topology-owned
+plan source.

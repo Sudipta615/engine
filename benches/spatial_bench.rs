@@ -11,7 +11,7 @@
 
 use config::EngineConfig;
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use engine::dsp::graph::DspGraph;
+use engine::dsp::graph2::prod::DspGraph;
 use engine::spatial::math::Vec3;
 use engine::spatial::render::{HybridBlockInputs, SpatialRenderer};
 use engine::spatial::{

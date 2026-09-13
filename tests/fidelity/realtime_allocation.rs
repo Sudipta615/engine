@@ -26,7 +26,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use engine::dsp::graph::DspGraph;
+use engine::dsp::graph2::prod::DspGraph;
 use engine::dsp::graph2::prod::Graph2Engine;
 use engine::dsp::loudness::LoudnessMetadata;
 use engine::dsp::pipeline::DspPipeline;
@@ -417,11 +417,11 @@ fn realtime_graph_swap_does_not_allocate_on_audio_thread() {
     // allocations are unmeasured. The control thread then publishes them
     // during the measured window (its allocations are unmeasured too).
     const N_SWAPS: usize = 40;
-    let (tx, rx) = std::sync::mpsc::channel::<Box<engine::dsp::graph::GraphGeneration>>();
+    let (tx, rx) = std::sync::mpsc::channel::<Box<engine::dsp::graph2::prod::GraphGeneration>>();
     for i in 0..N_SWAPS {
         let mut c2 = full_chain_config();
         c2.eq.bands[2].gain_db = i as f32 * 0.25;
-        tx.send(engine::dsp::graph::GraphGeneration::from_config(
+        tx.send(engine::dsp::graph2::prod::GraphGeneration::from_config(
             &c2,
             48_000.0,
             &graph.multichannel_layout,
@@ -1337,7 +1337,7 @@ fn realtime_graph2_prod_stereo_does_not_allocate() {
             (e, e * 0.9)
         })
         .collect();
-    g2.with_both(|g| {
+    g2.with_graph(|g| {
         g.convolution_mut().engine.set_enabled(true);
         g.convolution_mut()
             .engine
@@ -1444,11 +1444,11 @@ fn realtime_graph2_prod_swap_does_not_allocate_on_audio_thread() {
     // allocations are unmeasured). The control thread publishes during the
     // measured window; the audio thread only adopts.
     const N_SWAPS: usize = 40;
-    let (tx, rx) = std::sync::mpsc::channel::<Box<engine::dsp::graph::GraphGeneration>>();
+    let (tx, rx) = std::sync::mpsc::channel::<Box<engine::dsp::graph2::prod::GraphGeneration>>();
     for i in 0..N_SWAPS {
         let mut c2 = full_chain_config();
         c2.eq.bands[2].gain_db = i as f32 * 0.25;
-        tx.send(engine::dsp::graph::GraphGeneration::from_config(
+        tx.send(engine::dsp::graph2::prod::GraphGeneration::from_config(
             &c2,
             48_000.0,
             &g2.multichannel_layout,
@@ -1483,36 +1483,5 @@ fn realtime_graph2_prod_swap_does_not_allocate_on_audio_thread() {
     assert_eq!(
         allocations, 0,
         "Graph2 production generation swap on the audio thread allocated"
-    );
-}
-
-/// Shadow mode is diagnostic **by design**: it allocates per block (the
-/// copies it bit-compares). This case pins that expectation so nobody
-/// turns it on expecting a free lunch — the flag must stay default-off on
-/// the realtime path.
-#[test]
-fn realtime_graph2_shadow_mode_is_diagnostic_not_realtime() {
-    let cfg = full_chain_config();
-    let mut g2 = Graph2Engine::from_config(&cfg, 48_000.0);
-    assert!(!g2.shadow_enabled(), "shadow must be default-off");
-
-    let mut left = [0.0f32; 128];
-    let mut right = [0.0f32; 128];
-    g2.process_block(&mut left, &mut right);
-
-    // Flag-off: the plain forward path never allocates in steady state.
-    ARMED.store(true, Ordering::Relaxed);
-    THREAD_ALLOCS.with(|c| c.set(0));
-    for block in 0..1_000 {
-        let value = (block as f32 * 0.01).sin() * 0.3;
-        left.fill(value);
-        right.fill(-value * 0.8);
-        g2.process_block(&mut left, &mut right);
-    }
-    ARMED.store(false, Ordering::Relaxed);
-    assert_eq!(
-        THREAD_ALLOCS.with(|c| c.get()),
-        0,
-        "flag-off graph2 must be allocation-free"
     );
 }

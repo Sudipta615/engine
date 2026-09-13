@@ -7,9 +7,9 @@
 //! one and publishes it for the audio thread to swap in at the next block
 //! boundary — the live-reconfig entry point.
 
+use super::nodes::aux_node::AuxSendBus;
+use super::nodes::mix::SlotAutomation;
 use super::*;
-use crate::dsp::graph::nodes::aux_node::AuxSendBus;
-use crate::dsp::graph::nodes::mix::SlotAutomation;
 use std::sync::Arc;
 
 /// Access a typed node inside a generation being configured.
@@ -28,113 +28,35 @@ macro_rules! gen_node {
 
 impl GraphGeneration {
     /// Construct a fresh generation from config: build the canonical node
-    /// arena, compile the plans, apply the config, and replay the given
-    /// user state (volume target / balance / speed / fade ramp) so a reconfig
-    /// does not snap the listener's settings. The state is an immutable
-    /// snapshot — the builder does not need (or touch) a live control bus.
+    /// arena, lower the Graph2 production topology into the execution
+    /// plans, apply the config, and replay the given user state (volume
+    /// target / balance / speed / fade ramp) so a reconfig does not snap
+    /// the listener's settings. The state is an immutable snapshot — the
+    /// builder does not need (or touch) a live control bus.
+    ///
+    /// Since Phase 48 this is the **only** plan source: the hand-authored
+    /// `PlanSet::compile()` is gone and every generation carries
+    /// Graph2-lowered plans.
     pub(crate) fn build_with_state(
         config: &EngineConfig,
         sample_rate: f32,
         layout: &ChannelLayout,
         user: UserState,
     ) -> Box<GraphGeneration> {
-        let num_bands = config.eq.bands.len().max(10);
-        let mut timestretch = TimeStretchNode::new(sample_rate);
-        timestretch
-            .stretcher
-            .set_quality(config.timestretch_quality);
-
-        // Build the node arena. Order MUST match the `node_id` slot table in
-        // mod.rs — the execution plans reference stages by index. Phase 3 S1:
-        // the four pre-mix slots are absorbed into the mix bus (each bus
-        // input owns its preamp + loudness chain).
-        // Phase 4 S1: the bus carries `config.mix_slots` inputs (clamped by
-        // the node); slots 0/1 are the transition pair, slots >= 2 are
-        // independent lanes. A different slot count is a generation rebuild.
-        // Phase 6: one shared send bus links the mix node (writer of the
-        // per-slot taps) and the aux node (consumer) within the generation.
-        let send_bus = AuxSendBus::new();
-        let nodes = vec![
-            GraphNode::Mix(MixBusNode::with_slots(
-                config.mix_slots,
-                sample_rate,
-                config.crossfade.duration_ms,
-                config.crossfade.enabled,
-                config.crossfade.curve,
-                PREAMP_RAMP_DURATION_MS,
-                send_bus.clone(),
-            )),
-            GraphNode::Eq(EqNode::new(num_bands, sample_rate)),
-            GraphNode::Dynamics(DynamicsNode::new(sample_rate)),
-            GraphNode::Convolution(ConvolutionNode::new(sample_rate, 8192)),
-            GraphNode::Balance(BalanceNode::new()),
-            GraphNode::Crossfeed(CrossfeedNode::new(sample_rate)),
-            GraphNode::Stereo(StereoNode::new()),
-            GraphNode::TimeStretch(timestretch),
-            GraphNode::Volume(GainNode::new(
-                "volume",
-                "post-mix",
-                user.volume_fade_ms,
-                sample_rate,
-            )),
-            GraphNode::SeekFade(SeekFadeNode::new(config.seek_fade_ms as f32, sample_rate)),
-            GraphNode::Routing(RoutingNode::new(sample_rate)),
-            GraphNode::Resampler(ResamplerNode::new(sample_rate, sample_rate)),
-            GraphNode::Limiter(LimiterNode::new(sample_rate)),
-            GraphNode::Dither(DitherNode::new(sample_rate)),
-            GraphNode::Aux(AuxBusNode::new(send_bus, sample_rate)),
-            // Phase 7 S5: the correction node is the last arena slot — it
-            // runs post-aux / pre-EQ in the compiled plan.
-            GraphNode::Correction(CorrectionNode::new(sample_rate)),
-            // Phase 17: the spatial master output stage — the final arena
-            // slot, running at the very end of the compiled plan.
-            GraphNode::Spatial(SpatialNode::new(sample_rate)),
-        ]; // Arena-order contract: every `node_id` slot must hold the node kind
-           // its table entry claims. Debug-only; also keeps the slot constants
-           // referenced so the table cannot silently drift from the arena.
-        debug_assert!(matches!(nodes[node_id::MIX], GraphNode::Mix(_)));
-        debug_assert!(matches!(nodes[node_id::EQ], GraphNode::Eq(_)));
-        debug_assert!(matches!(nodes[node_id::DYNAMICS], GraphNode::Dynamics(_)));
-        debug_assert!(matches!(
-            nodes[node_id::CONVOLUTION],
-            GraphNode::Convolution(_)
-        ));
-        debug_assert!(matches!(nodes[node_id::BALANCE], GraphNode::Balance(_)));
-        debug_assert!(matches!(nodes[node_id::CROSSFEED], GraphNode::Crossfeed(_)));
-        debug_assert!(matches!(nodes[node_id::STEREO], GraphNode::Stereo(_)));
-        debug_assert!(matches!(
-            nodes[node_id::TIMESTRETCH],
-            GraphNode::TimeStretch(_)
-        ));
-        debug_assert!(matches!(nodes[node_id::VOLUME], GraphNode::Volume(_)));
-        debug_assert!(matches!(nodes[node_id::SEEK_FADE], GraphNode::SeekFade(_)));
-        debug_assert!(matches!(nodes[node_id::ROUTING], GraphNode::Routing(_)));
-        debug_assert!(matches!(nodes[node_id::RESAMPLER], GraphNode::Resampler(_)));
-        debug_assert!(matches!(nodes[node_id::LIMITER], GraphNode::Limiter(_)));
-        debug_assert!(matches!(nodes[node_id::DITHER], GraphNode::Dither(_)));
-        debug_assert!(matches!(nodes[node_id::AUX], GraphNode::Aux(_)));
-        debug_assert!(matches!(
-            nodes[node_id::CORRECTION],
-            GraphNode::Correction(_)
-        ));
-        debug_assert!(matches!(nodes[node_id::SPATIAL], GraphNode::Spatial(_)));
-
-        let mut gen = GraphGeneration {
-            node_ids: GraphGeneration::canonical_ids(nodes.len()),
-            plans: PlanSet::compile(),
-            nodes,
-        };
-        gen.apply_config(config, sample_rate, layout);
-        gen.finish_build(config, sample_rate, user);
-        Box::new(gen)
+        Self::build_with_plans(
+            config,
+            sample_rate,
+            layout,
+            user,
+            crate::dsp::graph2::prod::lowering::lowered_plans(),
+        )
     }
 
-    /// The config/user-state replay shared by the canonical and the
-    /// Graph2-lowered build paths: mix trims/sends, aux, correction,
-    /// spatial, and the sticky user-state replay. Factored out of
-    /// `build_with_state` (Phase 46) so `graph2::prod` can build a
-    /// generation with a **topology-derived plan set** and run the exact
-    /// same node configuration + replay sequence on it.
+    /// The config/user-state replay shared by every build path: mix
+    /// trims/sends, aux, correction, spatial, and the sticky user-state
+    /// replay. Factored out of the generation builder (Phase 46) so the
+    /// topology-lowered build runs the exact same node configuration +
+    /// replay sequence on it.
     pub(crate) fn finish_build(
         &mut self,
         config: &EngineConfig,
@@ -650,15 +572,16 @@ impl GraphGeneration {
 
 impl DspGraph {
     /// Construct a new DSP Graph from an [`EngineConfig`] and sample rate.
+    /// The generations carry **Graph2-lowered** plans (the single plan
+    /// source since Phase 48).
     pub fn from_config(config: &EngineConfig, sample_rate: f32) -> Self {
-        Self::from_config_with_plans(config, sample_rate, PlanSet::compile())
+        let plans = crate::dsp::graph2::prod::lowering::lowered_plans();
+        Self::from_config_with_plans(config, sample_rate, plans)
     }
 
-    /// The Graph2 `prod` construction seam (Phase 46): build the graph
-    /// with a **lowered** plan set (see `crate::dsp::graph2::prod`) —
-    /// the arena, config application, and user-state replay are the exact
-    /// same code path as [`Self::from_config`]; only the plan source
-    /// differs.
+    /// Build the graph with an explicit plan set — the `graph2::prod`
+    /// seam (Phase 46). The arena, config application, and user-state
+    /// replay are the exact same code path as [`Self::from_config`].
     pub(crate) fn from_config_with_plans(
         config: &EngineConfig,
         sample_rate: f32,
@@ -719,12 +642,12 @@ impl DspGraph {
     /// [`GraphControlHandle::publish_generation`]; here it also syncs the
     /// shell-level mode fields.
     pub fn reconfigure(&mut self, config: &EngineConfig) {
-        self.reconfigure_with_plans(config, PlanSet::compile());
+        let plans = crate::dsp::graph2::prod::lowering::lowered_plans();
+        self.reconfigure_with_plans(config, plans);
     }
 
-    /// The Graph2 `prod` reconfiguration seam (Phase 46): the same live
-    /// reconfiguration, but the fresh generation carries **lowered**
-    /// plans (see `crate::dsp::graph2::prod`).
+    /// The `graph2::prod` reconfiguration seam (Phase 46): the same live
+    /// reconfiguration with an explicit plan set.
     pub(crate) fn reconfigure_with_plans(&mut self, config: &EngineConfig, plans: PlanSet) {
         // Flush queued control commands into the ACTIVE generation first so
         // their effects are mirrored onto the sticky user state BEFORE the

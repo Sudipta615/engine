@@ -79,14 +79,6 @@ pub struct EngineConfig {
     /// path that is never writable) set this.
     #[serde(default)]
     pub spatial_autosave_path: Option<std::path::PathBuf>,
-    /// Graph 2.0 shadow verification (Phase 47): run the legacy
-    /// `dsp::graph` (hand-authored plans) alongside the Graph2-lowered
-    /// production engine and bit-compare every processed block. A mismatch
-    /// is a diagnostic (counter + first-difference), never an output
-    /// change. Default **off** — the comparison allocates per block and
-    /// belongs in CI fidelity runs, not the realtime path.
-    #[serde(default)]
-    pub graph2_shadow_verify: bool,
     #[serde(default)]
     pub endpoints: Vec<EndpointConfig>,
 }
@@ -399,7 +391,6 @@ impl Default for EngineConfig {
             correction: CorrectionConfig::default(),
             spatial: SpatialConfig::default(),
             spatial_autosave_path: None,
-            graph2_shadow_verify: false,
             endpoints: Vec::new(),
         }
     }

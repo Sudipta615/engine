@@ -36,7 +36,7 @@ pub use stereo_node::StereoNode;
 pub use timestretch_node::TimeStretchNode;
 
 use super::GraphNode;
-use crate::dsp::{graph::node::DspNode, pipeline::DspStageCapability};
+use crate::dsp::{graph2::prod::arena::node::DspNode, pipeline::DspStageCapability};
 
 impl DspNode for GraphNode {
     fn capability(&self) -> DspStageCapability {

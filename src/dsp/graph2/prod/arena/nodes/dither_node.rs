@@ -1,6 +1,6 @@
 use crate::dsp::{
     dither::{Dither, DitherType},
-    graph::node::DspNode,
+    graph2::prod::arena::node::DspNode,
     pipeline::{DspStageCapability, StageChannelSupport, StagePrecision},
 };
 

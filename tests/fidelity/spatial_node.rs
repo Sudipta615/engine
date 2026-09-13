@@ -22,7 +22,7 @@
 
 use config::EngineConfig;
 use engine::decode::ChannelLayout;
-use engine::dsp::graph::{DspGraph, DspNode};
+use engine::dsp::graph2::prod::{DspGraph, DspNode};
 use engine::spatial::math::Vec3;
 use engine::spatial::{Ear, SpeakerLayout, DEFAULT_HEAD_RADIUS, DEFAULT_SPEED_OF_SOUND};
 use std::f32::consts::FRAC_PI_2;

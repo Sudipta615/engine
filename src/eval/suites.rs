@@ -17,7 +17,7 @@ use std::f64::consts::TAU;
 
 use crate::dsp::biquad::{BiquadCoeffsF64, BiquadStateF64};
 use crate::dsp::convolution::ConvolutionEngine;
-use crate::dsp::graph::{DspNode, SpatialNode};
+use crate::dsp::graph2::prod::{DspNode, SpatialNode};
 use crate::dsp::limiter::LookaheadLimiter;
 use crate::dsp::loudness::LoudnessMeter;
 use crate::dsp::pipeline::DspPipeline;

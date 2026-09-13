@@ -14,7 +14,6 @@ pub mod dither;
 pub mod equalizer;
 pub mod float;
 pub mod gain;
-pub mod graph;
 pub mod graph2;
 pub mod graphic_eq;
 pub mod limiter;
@@ -42,7 +41,6 @@ pub use dither::{Dither, DitherType};
 pub use equalizer::{EqBandParams, EqFilterType, ParametricEq, MAX_EQ_BANDS};
 pub use float::AudioFloat;
 pub use gain::{FadeProcessor, FadeState, GainProcessor, GainProcessorF32, GainProcessorF64};
-pub use graph::{DspGraph, DspNode};
 pub use graphic_eq::GraphicEq;
 pub use limiter::{LimiterMode, LookaheadLimiter, TruePeakMode};
 pub use loudness::{

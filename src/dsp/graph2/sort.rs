@@ -4,7 +4,7 @@
 //! [`topological_order`] runs a deterministic Kahn's algorithm over the edge
 //! set and returns the nodes in execution order — every node appears after
 //! all of its producers. The result is the Graph 2.0 analogue of
-//! `dsp::graph::plan::ExecutionPlan`: an ordered step list the executor
+//! the arena's `plan::ExecutionPlan`: an ordered step list the executor
 //! walks per block.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};

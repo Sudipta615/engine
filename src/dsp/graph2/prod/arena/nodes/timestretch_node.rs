@@ -1,46 +1,54 @@
 use crate::dsp::{
-    graph::node::DspNode,
-    multiband_compressor::MultibandCompressor,
+    graph2::prod::arena::node::DspNode,
     pipeline::{DspStageCapability, StageChannelSupport, StagePrecision},
+    timestretch::TimeStretcher,
 };
 
-/// Dynamics node (3-band multiband compressor with soft knee).
-pub struct DynamicsNode {
-    pub compressor: MultibandCompressor,
+/// Time & Pitch stretching node (WSOLA correlation core).
+pub struct TimeStretchNode {
+    pub stretcher: TimeStretcher,
 }
 
-impl DynamicsNode {
+impl TimeStretchNode {
     pub fn new(sample_rate: f32) -> Self {
         Self {
-            compressor: MultibandCompressor::new(sample_rate),
+            stretcher: TimeStretcher::new(sample_rate),
         }
     }
 }
 
-impl DspNode for DynamicsNode {
+impl DspNode for TimeStretchNode {
     fn capability(&self) -> DspStageCapability {
         DspStageCapability {
-            name: "multiband_compressor",
+            name: "timestretch",
             channel_support: StageChannelSupport::StereoOnly,
             position: "post-mix",
             stateful: true,
             realtime_safe: true,
             bit_perfect_compatible: false,
             sample_rate_sensitive: true,
-            precision: StagePrecision::Any,
+            precision: StagePrecision::F32,
         }
     }
 
     fn is_active(&self) -> bool {
-        self.compressor.is_enabled()
+        self.stretcher.is_enabled()
+    }
+
+    fn latency_samples(&self) -> usize {
+        if self.is_active() {
+            (self.stretcher.latency_ms() * 0.001 * self.stretcher.sample_rate()).round() as usize
+        } else {
+            0
+        }
     }
 
     fn reset(&mut self) {
-        self.compressor.reset();
+        self.stretcher.reset();
     }
 
     fn prepare(&mut self, sample_rate: f32, _max_channels: usize) {
-        self.compressor.set_sample_rate(sample_rate);
+        self.stretcher.set_sample_rate(sample_rate);
     }
 
     fn process_block_f32(&mut self, planes: &mut [&mut [f32]]) {
@@ -48,7 +56,7 @@ impl DspNode for DynamicsNode {
             return;
         }
         let (front, rest) = planes.split_at_mut(1);
-        self.compressor.process_block(front[0], rest[0]);
+        self.stretcher.process_block(front[0], rest[0]);
     }
 
     fn process_block_f64(&mut self, planes: &mut [&mut [f64]]) {
@@ -56,6 +64,6 @@ impl DspNode for DynamicsNode {
             return;
         }
         let (front, rest) = planes.split_at_mut(1);
-        self.compressor.process_block_f64(front[0], rest[0]);
+        self.stretcher.process_block_f64(front[0], rest[0]);
     }
 }

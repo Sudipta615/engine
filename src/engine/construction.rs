@@ -69,13 +69,6 @@ impl AudioEngine {
         let output_sample_rate = DEFAULT_SAMPLE_RATE;
         let configured_endpoints = config.endpoints.clone();
         let mut graph = Graph2Engine::from_config(&config, output_sample_rate as f32);
-        // Phase 47 shadow mode: run the legacy-plan `DspGraph` alongside the
-        // Graph2-lowered engine and bit-compare every processed block.
-        // Default-off (a diagnostic for CI fidelity runs; the comparison
-        // allocates per block).
-        if config.graph2_shadow_verify {
-            graph.enable_shadow(&config);
-        }
         // Phase 21: restore the last session's active spatial scene (screen,
         // room, listener, enable) over the configured defaults. Best-effort
         // — a missing/corrupt auto-save simply keeps the config defaults.

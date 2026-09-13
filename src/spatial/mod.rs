@@ -128,8 +128,8 @@
 //! losslessly to a Serde-serializable, renderer-independent model saved via
 //! [`save_scene_json`] / [`load_scene_json`]. And the spatial layer is a
 //! first-class part of the production graph via the `SpatialNode`
-//! (`crate::dsp::graph`), which spatializes the stereo master through the
-//! head model at the block boundary. Measured HRTF corpora load from the
+//! (`crate::dsp::graph2::prod`), which spatializes the stereo master
+//! through the head model at the block boundary. Measured HRTF corpora load from the
 //! JSON interchange or, with the optional `sofa-import` feature, natively
 //! from the NetCDF-classic subset of a `.sofa` file ([`sofa`]). Still
 //! future: order-4+ and spatial recording. **Native NetCDF-4/HDF5 (`nc4`)

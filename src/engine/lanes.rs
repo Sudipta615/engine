@@ -14,7 +14,7 @@
 //! current generation lacks.
 
 use crate::decode::{DecodeError, Decoder};
-use crate::dsp::graph::nodes::MAX_MIX_SLOTS;
+use crate::dsp::graph2::prod::MAX_MIX_SLOTS;
 use crate::source::AudioSource;
 
 /// Maximum number of simultaneous lanes: the bus's spare slots.

@@ -2,7 +2,7 @@
 //!
 //! Edges are **first-class** in Graph 2.0: an [`EdgeDef`] is an explicit,
 //! addressable connection from one typed port to another. Unlike the fixed
-//! arena chain of `dsp::graph` (where stage order is data but the chain
+//! arena chain (where stage order is data but the chain
 //! itself is implicit), the topology is *defined* by its edge set — node
 //! order only exists after compilation.
 

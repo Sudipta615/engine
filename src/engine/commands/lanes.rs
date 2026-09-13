@@ -1,7 +1,7 @@
 //! Engine commands for the multi-track lane registry (Phase 4 S6).
 
 use crate::decode::Decoder;
-use crate::dsp::graph::nodes::{DuckState, MAX_DUCK_TARGETS};
+use crate::dsp::graph2::prod::{DuckState, MAX_DUCK_TARGETS};
 use crate::engine::lanes::LaneTrack;
 use crate::source::AudioSource;
 

@@ -450,7 +450,8 @@ impl OfflineExecutor {
 
 /// A `NodeKind::Prod` step inside the generic offline executor: the
 /// production stage's DSP does not live in the graph2 kernels — it executes
-/// through the shared production arena (`crate::dsp::graph`) in the `prod`
+/// through the shared production arena (`crate::dsp::graph2::prod::arena`)
+/// in the `prod`
 /// shell. Inside the generic executor the node contributes **structure
 /// only**: it passes its input plane through so pure-topology analysis and
 /// latency walks behave (the prod shell overrides this dispatch with the

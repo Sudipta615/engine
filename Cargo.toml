@@ -3,7 +3,7 @@ members = [".", "crates/config"]
 
 [package]
 name = "engine"
-version = "3.52.0"
+version = "4.0.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"
@@ -403,10 +403,6 @@ path = "tests/fidelity/spatial_scene.rs"
 [[test]]
 name = "graph_pipeline_equivalence"
 path = "tests/fidelity/graph_pipeline_equivalence.rs"
-
-[[test]]
-name = "graph2_graph_equivalence"
-path = "tests/fidelity/graph2_graph_equivalence.rs"
 
 [[test]]
 name = "graph2_rt_offline_equivalence"

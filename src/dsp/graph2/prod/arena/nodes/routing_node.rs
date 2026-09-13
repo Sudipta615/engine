@@ -1,7 +1,7 @@
 use crate::buffer::{MAX_AUDIO_BLOCK_FRAMES, MAX_CHANNELS};
 use crate::dsp::{
     channel_trim::ChannelTrimmer,
-    graph::node::DspNode,
+    graph2::prod::arena::node::DspNode,
     pipeline::{DspStageCapability, StageChannelSupport, StagePrecision},
 };
 

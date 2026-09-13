@@ -4,7 +4,7 @@
 //! identity, a built-in [`NodeKind`], a list of **explicit input/output
 //! ports** — each a [`PortSpec`] carrying typed-bus metadata (signal type +
 //! channel count) — and a [`NodeParams`] payload. Ports are the seam the
-//! existing track/bus-centered graph never had: in `dsp::graph` the chain is
+//! existing track/bus-centered graph never had: in the arena the chain is
 //! implicit in the arena order; here a node declares what it consumes and
 //! what it emits, and edges (not ordering) define the signal flow.
 
@@ -126,7 +126,7 @@ pub enum NodeKind {
     Resampler,
     /// A production engine stage (Phase 46): one node of the canonical
     /// engine chain, executing through the shared production arena
-    /// (`dsp::graph`) — the exact node implementation the engine runs, so
+    /// (`graph2::prod::arena`) — the exact node implementation the engine runs, so
     /// offline and realtime renders share one arithmetic path. The topology
     /// (ports/edges/order) is Graph 2.0's; the DSP is the production node's.
     Prod(ProdStage),
@@ -134,7 +134,7 @@ pub enum NodeKind {
 
 /// A production node of the engine's canonical signal chain, as expressed in
 /// the Graph 2.0 topology (Phase 46). Each variant names one arena slot of
-/// the production `dsp::graph` chain — the node *implementation* stays the
+/// the production chain — the node *implementation* stays the
 /// single shared one; this kind exists so the chain can be **described as a
 /// topology** (typed ports, edges, validation, topological compile) and then
 /// *lowered* onto the production plan set.

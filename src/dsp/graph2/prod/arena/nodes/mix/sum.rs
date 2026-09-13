@@ -7,10 +7,10 @@
 //! frame loops (a mid-block phase transition must be handled per frame);
 //! its curve math lives in [`super::envelope`].
 
+use super::super::super::node::DspNode;
 use super::{balance_gains, pan_gains, MixBusNode, MAX_MIX_SLOTS};
 use crate::buffer::{MAX_AUDIO_BLOCK_FRAMES, MAX_CHANNELS};
 use crate::dsp::crossfade::MixerState;
-use crate::dsp::graph::node::DspNode;
 
 impl MixBusNode {
     /// Stereo mix: per-frame envelope + user gains + balance + mute, summing

@@ -74,7 +74,7 @@ impl AudioEngine {
         use crate::dsp::equalizer::ParametricEq;
         let sr = self.output_sample_rate as f32;
         self.graph
-            .with_both(|g| g.eq_mut().eq = ParametricEq::from_preset(sr, &preset));
+            .with_graph(|g| g.eq_mut().eq = ParametricEq::from_preset(sr, &preset));
         info!(
             "EQ preset '{}' applied ({} bands, preamp {:.1} dB)",
             preset.name,
@@ -130,7 +130,7 @@ impl AudioEngine {
         let was_enabled = self.graph.is_midside_eq();
         if was_enabled != enabled {
             self.graph.set_midside_eq(enabled);
-            self.graph.with_both(|g| g.eq_mut().eq.reset());
+            self.graph.with_graph(|g| g.eq_mut().eq.reset());
         }
     }
 }

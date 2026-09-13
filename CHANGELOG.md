@@ -2,6 +2,40 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.0.0] — 2026-09-13
+
+### Changed / Breaking
+
+- **Legacy `dsp::graph` module removed (Phase 48).** The public module
+  `engine::dsp::graph` no longer exists. Its node arena, compiled-plan
+  execution, `GraphGeneration` swaps, per-node SPSC control queues, and node
+  implementations moved to `dsp::graph2::prod::arena` as a crate-private
+  internal of the Graph 2.0 production engine. Hosts reach the surface
+  through the `dsp::graph2::prod` re-exports (previously the `dsp::graph`
+  exports): `DspGraph`, `DspNode`, `GraphControlHandle`, `GraphGeneration`,
+  `GraphScratch`, and the node types (`MixBusNode`, `AuxBusNode`,
+  `SpatialNode`, `DuckState`, `PanLaw`, `AutomationTarget`, …), also
+  re-exported via the crate prelude.
+- **The hand-authored plan source is gone.** `PlanSet::compile()` is
+  removed; the Graph2 topology lowering (`dsp::graph2::prod::lowering`) is
+  the single plan source for every generation (construction, reconfigure,
+  and generation builds all lower).
+- **Phase-47 shadow mode removed** along with the `graph2_shadow_verify`
+  config flag (a breaking `EngineConfig` field removal): the legacy-plan
+  twin, its control fan-out, and the per-block bit-compare are no more.
+  The `Graph2Engine::with_both` accessor seam is renamed `with_graph`.
+- **`graph_pipeline_equivalence` re-pointed**: the fidelity gate now
+  bit-compares the **Graph2 engine** (Graph2-lowered plans over the arena)
+  against the frozen `DspPipeline` oracle — the same 27-scenario matrix,
+  same `to_bits` comparisons, same structural parity assertions
+  (node-set + latency). The Phase-46 `graph2_graph_equivalence` suite
+  (Graph2-vs-legacy `DspGraph` A/B) is deleted with the legacy plan source
+  it pinned.
+- **FFI unchanged in behavior**: the C-FFI surface, `EngineCommand`s,
+  `EngineEvent`s, and `PlaybackInfo` telemetry are byte-identical; only the
+  Rust-internal plan provenance and module paths changed.
+- `DspPipeline` stays as the frozen bit-exact oracle (unchanged).
+
 ## [3.52.0] — 2026-09-13
 
 ### Added

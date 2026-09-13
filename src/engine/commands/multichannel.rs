@@ -28,14 +28,14 @@ impl AudioEngine {
         self.config.channel_trim = cfg.clone();
         let sr = self.graph.sample_rate();
         self.graph
-            .with_both(|g| g.routing_mut().trimmer.set_config(&cfg, sr));
+            .with_graph(|g| g.routing_mut().trimmer.set_config(&cfg, sr));
     }
 
     pub(super) fn handle_set_channel_routing(&mut self, cfg: config::ChannelRoutingConfig) {
         info!("Channel routing config updated: enabled={}", cfg.enabled);
         self.config.channel_routing = cfg.clone();
         self.graph
-            .with_both(|g| g.routing_mut().trimmer.set_routing(&cfg));
+            .with_graph(|g| g.routing_mut().trimmer.set_routing(&cfg));
     }
 
     pub(super) fn handle_set_channel_eq(&mut self, cfg: config::ChannelEqConfig) {
@@ -47,7 +47,7 @@ impl AudioEngine {
         self.config.channel_eq = cfg.clone();
         let sr = self.graph.sample_rate();
         self.graph
-            .with_both(|g| g.routing_mut().trimmer.set_channel_eq(&cfg, sr));
+            .with_graph(|g| g.routing_mut().trimmer.set_channel_eq(&cfg, sr));
     }
 
     pub(super) fn handle_set_lfe_config(&mut self, cfg: config::LfeConfig) {
@@ -61,7 +61,7 @@ impl AudioEngine {
             lfe.crossover_hz = Some(self.config.bass_management.crossover_hz);
         }
         self.graph
-            .with_both(|g| g.routing_mut().trimmer.set_lfe(&lfe));
+            .with_graph(|g| g.routing_mut().trimmer.set_lfe(&lfe));
     }
 
     pub(super) fn handle_set_bass_management(&mut self, cfg: config::BassManagementConfig) {
@@ -72,12 +72,12 @@ impl AudioEngine {
         self.config.bass_management = cfg.clone();
         let sr = self.graph.sample_rate();
         self.graph
-            .with_both(|g| g.routing_mut().trimmer.set_bass_management(&cfg, sr));
+            .with_graph(|g| g.routing_mut().trimmer.set_bass_management(&cfg, sr));
         let mut lfe = self.config.lfe.clone();
         if cfg.enabled && lfe.crossover_hz.is_none() && lfe.enabled {
             lfe.crossover_hz = Some(cfg.crossover_hz);
         }
         self.graph
-            .with_both(|g| g.routing_mut().trimmer.set_lfe(&lfe));
+            .with_graph(|g| g.routing_mut().trimmer.set_lfe(&lfe));
     }
 }

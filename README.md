@@ -21,7 +21,7 @@ from C, C++, Python, C#, Node.js, and any language that can call C.
 | Capability | What it means |
 |---|---|
 | **100% pure Rust** | No C/C++ codec SDKs, no `unsafe` on the DSP hot path, no FFI dependency for decoding. Fully auditable and cross-compilable. |
-| **Graph-runtime DSP core** | A node-based `DspGraph` with **compiled execution plans** is the production hot path: stage order is data, not code, and full reconfigurations are swapped in live at block boundaries — zero allocation, zero locks on the audio thread. |
+| **Graph-runtime DSP core** | A node-based arena graph with **compiled execution plans lowered from a typed-port Graph 2.0 topology** is the production hot path: stage order is data, not code, and full reconfigurations are swapped in live at block boundaries — zero allocation, zero locks on the audio thread. |
 | **N-input mix bus** | The primary stream, the crossfade partner, and **independent lane tracks** each ride their own bus slot with per-slot trim, post-fader sends, pan, mute, program-gated ducking, and sample-accurate automation tracks. |
 | **Aux bus as its own plan node** | Per-slot aux sends are independently automatable (ramped, click-free), metered per send, and returned into the master before the post-mix chain — with an optional convolution **insert** (reverb / cabinet) on the send accumulator. |
 | **Multi-endpoint routing matrix** | Fan the master out to **several output devices at once**, each with its own realtime thread, rate resampler, level, and **per-endpoint clock-drift correction** (a rubato `Slip` trims the stream to the device's actual crystal — independent devices can't drift the ring full or empty). |
@@ -134,7 +134,8 @@ Two **hard bypass modes** bypass the entire graph:
 
 `DspPipeline` (`dsp/pipeline`) remains as the reference implementation and the
 bit-exact oracle for the graph equivalence suite; the production hot path routes
-through `DspGraph`.
+through the Graph 2.0 engine (`dsp::graph2::prod::Graph2Engine`) whose plans are
+lowered from the production topology.
 
 ---
 
