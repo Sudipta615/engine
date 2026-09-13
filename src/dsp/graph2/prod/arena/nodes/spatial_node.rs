@@ -161,8 +161,8 @@ impl SpatialNode {
     }
 
     /// Room params `(enabled, width, depth, height, absorption,
-    /// reflection_order, rt60_ms, late_mix, wet)`.
-    pub fn room(&self) -> (bool, f32, f32, f32, f32, u8, f32, f32, f32) {
+    /// reflection_order, rt60_ms, late_mix, late_distance, wet)`.
+    pub fn room(&self) -> (bool, f32, f32, f32, f32, u8, f32, f32, bool, f32) {
         let r = &self.scene.room;
         let wet = self
             .scene
@@ -178,6 +178,7 @@ impl SpatialNode {
             r.reflection_order,
             r.rt60_ms,
             r.late_mix,
+            r.late_distance,
             wet,
         )
     }
@@ -234,6 +235,7 @@ impl SpatialNode {
             r.reflection_order,
             r.rt60_ms,
             r.late_mix,
+            r.late_distance,
             r.wet,
         );
         self.apply_listener(
@@ -474,8 +476,9 @@ impl SpatialNode {
         }
     }
 
-    /// Configure the room: geometry, reflection order, late field, and the
-    /// program's reflection send (`wet`).
+    /// Configure the room: geometry, reflection order, late field, the
+    /// program's reflection send (`wet`), and the late-field distance
+    /// roll-off (Phase 50).
     #[allow(clippy::too_many_arguments)]
     pub fn apply_room(
         &mut self,
@@ -487,6 +490,7 @@ impl SpatialNode {
         reflection_order: u8,
         rt60_ms: f32,
         late_mix: f32,
+        late_distance: bool,
         wet: f32,
     ) {
         let r = &mut self.scene.room;
@@ -498,10 +502,24 @@ impl SpatialNode {
         r.reflection_order = reflection_order.clamp(1, 2);
         r.rt60_ms = rt60_ms.max(1.0);
         r.late_mix = late_mix.clamp(0.0, 1.0);
+        r.late_distance = late_distance;
         let wet = wet.clamp(0.0, 1.0);
         for id in [self.obj_l, self.obj_r] {
             self.scene.object_mut(id).unwrap().room_send = wet;
         }
+    }
+
+    /// Configure the scene-wide air-absorption model applied to live room
+    /// reflections (Phase 50): each live image's surface corner is composed
+    /// with the model's distance corner so realtime reflections darken
+    /// with travel distance, agreeing with the offline spectral kernels.
+    pub fn set_air_absorption(&mut self, air: crate::spatial::level::AirAbsorption) {
+        self.binaural.set_air_absorption(air);
+    }
+
+    /// The scene-wide air-absorption model (Phase 50).
+    pub fn air_absorption(&self) -> crate::spatial::level::AirAbsorption {
+        self.binaural.air_absorption()
     }
 
     /// Set the listener orientation (yaw/pitch/roll, degrees).
@@ -823,7 +841,7 @@ mod tests {
         on.prepare(48_000.0, 2);
         on.set_enabled(true);
         on.apply_screen(0.0, 30.0, 0.0, 1.0);
-        on.apply_room(true, 12.0, 10.0, 3.0, 0.2, 1, 800.0, 0.5, 0.5);
+        on.apply_room(true, 12.0, 10.0, 3.0, 0.2, 1, 800.0, 0.5, false, 0.5);
         let frames = 4096;
         let run = |node: &mut SpatialNode| -> (f32, f32) {
             let mut l = vec![0.0f32; frames];
@@ -886,7 +904,7 @@ mod tests {
         let handle = graph.control_handle();
         handle.set_spatial_enabled(true);
         handle.set_spatial_screen(0.0, 45.0, 5.0, 0.8);
-        handle.set_spatial_room(true, 10.0, 8.0, 3.0, 0.3, 1, 600.0, 0.4, 0.6);
+        handle.set_spatial_room(true, 10.0, 8.0, 3.0, 0.3, 1, 600.0, 0.4, false, 0.6);
         handle.set_spatial_listener(10.0, 0.0, 0.0);
         graph.drain_queued_control();
         let s = graph.spatial();

@@ -104,7 +104,7 @@ fn room_adds_a_decaying_tail_beyond_the_direct() {
         graph.set_spatial_enabled(true);
         graph.set_spatial_screen(0.0, 30.0, 0.0, 1.0);
         if room_on {
-            graph.set_spatial_room(true, 12.0, 10.0, 3.0, 0.2, 1, 800.0, 0.5, 0.5);
+            graph.set_spatial_room(true, 12.0, 10.0, 3.0, 0.2, 1, 800.0, 0.5, false, 0.5);
         }
         graph.drain_queued_control();
         let frames = 4096;

@@ -50,8 +50,18 @@ pub fn autosave_path() -> Option<PathBuf> {
 fn snapshot(graph: &Graph2Engine) -> SpatialConfig {
     let sp = graph.spatial();
     let (center_azimuth_deg, half_width_deg, elevation_deg, gain) = sp.screen();
-    let (enabled, width, depth, height, absorption, reflection_order, rt60_ms, late_mix, wet) =
-        sp.room();
+    let (
+        enabled,
+        width,
+        depth,
+        height,
+        absorption,
+        reflection_order,
+        rt60_ms,
+        late_mix,
+        late_distance,
+        wet,
+    ) = sp.room();
     let (listener_yaw_deg, listener_pitch_deg, listener_roll_deg) = sp.listener();
     SpatialConfig {
         enabled,
@@ -68,6 +78,7 @@ fn snapshot(graph: &Graph2Engine) -> SpatialConfig {
             reflection_order,
             rt60_ms,
             late_mix,
+            late_distance,
             wet,
             // The node does not expose its room's speed of sound; keep the
             // config default (matching the node's initial Room).
@@ -183,7 +194,7 @@ mod tests {
             .set_spatial_screen(12.0, 40.0, 5.0, 0.9);
         graph
             .control_handle()
-            .set_spatial_room(true, 9.0, 7.0, 3.0, 0.25, 1, 500.0, 0.35, 0.6);
+            .set_spatial_room(true, 9.0, 7.0, 3.0, 0.25, 1, 500.0, 0.35, false, 0.6);
         graph.control_handle().set_spatial_listener(15.0, -3.0, 0.0);
         // The engine's tick drains queued graph controls; replicate that
         // so the node state (and any snapshot) reflects the new values.
@@ -216,7 +227,7 @@ mod tests {
         assert_eq!(restored.spatial().screen(), (12.0, 40.0, 5.0, 0.9));
         assert_eq!(
             restored.spatial().room(),
-            (true, 9.0, 7.0, 3.0, 0.25, 1, 500.0, 0.35, 0.6)
+            (true, 9.0, 7.0, 3.0, 0.25, 1, 500.0, 0.35, false, 0.6)
         );
         assert_eq!(restored.spatial().listener(), (15.0, -3.0, 0.0));
 

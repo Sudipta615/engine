@@ -242,6 +242,7 @@ impl Graph2ControlHandle {
         reflection_order: u8,
         rt60_ms: f32,
         late_mix: f32,
+        late_distance: bool,
         wet: f32,
     ) {
         self.inner.set_spatial_room(
@@ -253,8 +254,15 @@ impl Graph2ControlHandle {
             reflection_order,
             rt60_ms,
             late_mix,
+            late_distance,
             wet,
         );
+    }
+
+    /// Configure the scene-wide air-absorption model (see
+    /// `GraphControlHandle::set_spatial_air`).
+    pub fn set_spatial_air(&self, air: crate::spatial::level::AirAbsorption) {
+        self.inner.set_spatial_air(air);
     }
     pub fn set_spatial_listener(&self, yaw_deg: f32, pitch_deg: f32, roll_deg: f32) {
         self.inner

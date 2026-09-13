@@ -2454,3 +2454,61 @@ cases). fmt + clippy `-D warnings` clean; `engine`/`config` both at 4.0.0.
 **Unlocks.** Track B (Phase 49, the Rust-native plugin ABI) and the Track-C
 spatial horizons (Phases 50–53) now build against a single topology-owned
 plan source.
+
+---
+
+## Phase 50 — Acoustic agreement (v4.2.0) — **Implemented**
+
+**Intent.** Close the documented Phase-44 horizon: make the production
+spatial path and the offline `Acoustic` node agree on **distance colour**,
+richer air-absorption families, and late-field distance roll-off —
+without moving a single sample when the models are off.
+
+**Key mechanisms.**
+
+- **Per-path distance roll-off folded into the realtime reflection
+  low-pass corner.** `AirAbsorption` (v3.48) shaped only the *offline*
+  spectral kernels; the realtime per-image biquad ran the material
+  corner alone. Phase 50 introduces `AirAbsorption::corner_hz` — the
+  family's −3 dB-equivalent one-pole corner — and
+  `AirAbsorption::compose_corner_hz`, the exact closed-form composition
+  of an air corner with a surface corner (the frequency where the
+  product of the two one-pole magnitudes crosses 1/√2; DC-exact,
+  identity when either side is absent). `BakedScene::listener_images`
+  threads the scene's model so every baked tap arrives pre-composed; the
+  three renderers fold their scene-wide model onto **live-solve**
+  images (whose surface corner is ∞) — closing the seam where the
+  `set_air_absorption` controls on `BasicPanner`/`VbapRenderer` sat
+  dormant and `BinauralRenderer` had no model at all.
+- **Richer frequency-dependent attenuation.** New `AirRolloffModel`
+  (`one_pole` default / `two_pole` / `exponential`), each DC-exact and
+  disabled-exact. `spectral_taps_with` samples the family's own
+  magnitude per FFT bin instead of a hardcoded pole pair; the realtime
+  corner mapping resolves each family's exact −3 dB point
+  (`x = √(√2−1)`, `x = ln √2` respectively).
+- **Late-field distance roll-off.** `Room.late_distance` (config +
+  `set_spatial_room` + scene-file/auto-save round-trip,
+  `#[serde(default)]`): the per-object room-send is attenuated by the
+  object's distance model at its direct distance, so the Schroeder
+  tail rolls off with source distance exactly as the direct and
+  early-reflection paths. Default `false` = legacy bit-exact.
+- **Production surface.** `SpatialNode::set_air_absorption` /
+  `air_absorption` + `GraphControlHandle::set_spatial_air`
+  (`NodeCmd::SetSpatialAir`), and the room tuple grows
+  `late_distance` across `set_spatial_room` / `apply_room` / the
+  persistence snapshot.
+
+**Acceptance.** New suite `tests/fidelity/acoustic_agreement.rs`:
+realtime corner ≡ offline kernel −3 dB point per family (DFT-probed
+against the minimum-phase FIR at the render length), monotonic
+darkening with distance, **disabled = bit-exact golden renders**, the
+live-path fold darkening live reflections, and the late-field
+far/near energy ratio dropping with the roll-off on. Full workspace
+green (66 test binaries), `realtime_allocation` clean (the folds are
+branch-only, zero new state), `graph_pipeline_equivalence` bit-exact,
+fmt + clippy `-D warnings` clean; `engine`/`config` both at 4.2.0.
+
+**Unlocks.** The Phase-51 listener-motion seam (re-bakes on a moving
+listener will re-fold the air model automatically through
+`listener_images`) and the Phase-53 diagnostics (per-corner telemetry
+now has a well-defined meaning on both render paths).

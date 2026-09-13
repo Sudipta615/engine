@@ -822,6 +822,7 @@ fn realtime_spatial_room_does_not_allocate() {
         reflection_order: 2, // worst case: 24 image sources per object
         rt60_ms: 800.0,
         late_mix: 0.7,
+        late_distance: false,
         speed_of_sound: 343.0,
     };
     // Several participating objects (one occluded, one directional).
@@ -904,6 +905,7 @@ fn realtime_spatial_binaural_does_not_allocate() {
         reflection_order: 2, // worst case: 24 image sources per object
         rt60_ms: 800.0,
         late_mix: 0.7,
+        late_distance: false,
         speed_of_sound: 343.0,
     };
     // Participating objects exercising every head-model path: cardioid
@@ -1092,7 +1094,7 @@ fn realtime_spatial_node_does_not_allocate() {
     let mut graph = DspGraph::from_config(&config::EngineConfig::default(), 48_000.0);
     graph.set_spatial_enabled(true);
     graph.set_spatial_screen(0.0, 30.0, 0.0, 1.0);
-    graph.set_spatial_room(true, 12.0, 10.0, 3.0, 0.3, 2, 800.0, 0.5, 0.5);
+    graph.set_spatial_room(true, 12.0, 10.0, 3.0, 0.3, 2, 800.0, 0.5, false, 0.5);
     graph.set_spatial_listener(0.0, 0.0, 0.0);
     graph.drain_queued_control();
     assert!(graph.spatial().enabled());
@@ -1149,6 +1151,7 @@ fn realtime_hrtf_dataset_path_does_not_allocate() {
         reflection_order: 2, // worst case: 24 image sources per object
         rt60_ms: 800.0,
         late_mix: 0.7,
+        late_distance: false,
         speed_of_sound: 343.0,
     };
     for pos in [

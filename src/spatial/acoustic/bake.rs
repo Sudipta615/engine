@@ -203,6 +203,8 @@ pub fn path_filter_kernel_with(
     // Air absorption as a per-path HF roll-off from the path's travelled
     // distance. Disabled ⇒ factor 1 (excludes air entirely, bit-exact); a
     // corner at/above Nyquist is also skipped so nothing spurious is added.
+    // Phase 50: the shape is the model's own magnitude family (one-pole /
+    // two-pole / exponential), not a hardcoded pole pair.
     let f_air = if air.enabled {
         air.cutoff_hz(p.distance, sample_rate)
     } else {
@@ -211,7 +213,7 @@ pub fn path_filter_kernel_with(
     let air_on = air.enabled && f_air < nyq * 0.999;
     let air_shape = move |f: f32| -> f32 {
         if air_on {
-            1.0 / (1.0 + (f / f_air).powi(2)).sqrt()
+            air.magnitude(f, p.distance, sample_rate)
         } else {
             1.0
         }
@@ -468,12 +470,21 @@ impl BakedScene {
     /// path is excluded (the renderer renders the direct path through its
     /// normal pair solve). Writes into `out`, returning the count.
     ///
-    /// **Spectral fork (v3.47):** each tap also carries the surface's
+    ///     /// **Spectral fork (v3.47):** each tap also carries the surface's
     /// low-pass corner — from its full per-band material spectrum (via
     /// `surface_lowpass_hz`) when one is present, else its collapsed
     /// diffraction/transmission low-pass corner, else ∞ (flat). The realtime
     /// renderers realise that corner as a one-pole per-image low-pass, the
     /// same spectral model the offline `Acoustic` node applies exactly.
+    ///
+    /// **Distance colour (Phase 50):** when the scene's air-absorption
+    /// model is enabled, the tap's corner is the **composition** of the
+    /// surface corner with the air model's equivalent one-pole corner at
+    /// the path's travelled distance ([`AirAbsorption::compose_corner_hz`])
+    /// — so the realtime per-image biquad darkens a farther reflection
+    /// exactly at the offline kernel's −3 dB point (the acoustic-agreement
+    /// contract). A disabled model keeps every tap's corner bit-identical
+    /// to the v3.47 value.
     pub fn listener_images(
         &self,
         obj: &BakedObject,
@@ -497,11 +508,17 @@ impl BakedScene {
                     f32::INFINITY
                 }
             };
-            let lowpass_hz = if let Some(sp) = &p.spectrum {
+            let surface_hz = if let Some(sp) = &p.spectrum {
                 corner_for(surface_lowpass_hz(sp, obj.sample_rate))
             } else {
                 corner_for(p.lowpass_hz)
             };
+            // Phase 50: fold the scene's distance-dependent air corner
+            // into the realtime corner (agreement with the offline kernel,
+            // which composes the same model onto the FIR magnitude).
+            let lowpass_hz =
+                self.air_absorption
+                    .compose_corner_hz(surface_hz, p.distance, obj.sample_rate);
             out[count] = ListenerImage {
                 dir: p.direction,
                 dist: p.distance,
@@ -894,6 +911,7 @@ mod tests {
             enabled: true,
             per_meter: 0.1,
             base_cutoff_hz: 16_000.0,
+            ..Default::default()
         };
         let mut scene = BakedScene::new(Vec3::ZERO, DEFAULT_BAKE_CELL_M);
         scene.set_air_absorption(air);

@@ -88,7 +88,7 @@ pub(crate) enum NodeCmd {
     },
     /// Phase-17 spatial master: room
     /// `(enabled, width, depth, height, absorption, reflection_order,
-    /// rt60_ms, late_mix, wet)`.
+    /// rt60_ms, late_mix, late_distance, wet)`.
     SetSpatialRoom {
         enabled: bool,
         width: f32,
@@ -98,8 +98,13 @@ pub(crate) enum NodeCmd {
         reflection_order: u8,
         rt60_ms: f32,
         late_mix: f32,
+        late_distance: bool,
         wet: f32,
     },
+    /// Phase-50 acoustic agreement: the scene-wide air-absorption model
+    /// applied to live room reflections (the model object carries
+    /// `enabled`, `per_meter`, `base_cutoff_hz`, `rolloff_model`).
+    SetSpatialAir(crate::spatial::level::AirAbsorption),
     /// Phase-17 spatial master: listener orientation
     /// `(yaw_deg, pitch_deg, roll_deg)`.
     SetSpatialListener {
@@ -1007,8 +1012,8 @@ impl GraphControlHandle {
     }
 
     /// Configure the room: geometry (metres), wall absorption, reflection
-    /// order (1 or 2), late-field RT60 (ms) / late mix, and the program's
-    /// reflection send `wet` (all clamped).
+    /// order (1 or 2), late-field RT60 (ms) / late mix / distance
+    /// roll-off, and the program's reflection send `wet` (all clamped).
     #[allow(clippy::too_many_arguments)]
     pub fn set_spatial_room(
         &self,
@@ -1020,6 +1025,7 @@ impl GraphControlHandle {
         reflection_order: u8,
         rt60_ms: f32,
         late_mix: f32,
+        late_distance: bool,
         wet: f32,
     ) {
         self.enqueue(
@@ -1033,9 +1039,16 @@ impl GraphControlHandle {
                 reflection_order,
                 rt60_ms,
                 late_mix,
+                late_distance,
                 wet,
             },
         );
+    }
+
+    /// Configure the scene-wide air-absorption model applied to live room
+    /// reflections (Phase 50). Mirrors `DspGraph::set_spatial_air`.
+    pub fn set_spatial_air(&self, air: crate::spatial::level::AirAbsorption) {
+        self.enqueue(node_id::SPATIAL, NodeCmd::SetSpatialAir(air));
     }
 
     /// Set the listener orientation (yaw / pitch / roll, degrees) applied
@@ -1397,6 +1410,7 @@ fn apply_node_cmd(node: &mut GraphNode, cmd: &NodeCmd) {
                 reflection_order,
                 rt60_ms,
                 late_mix,
+                late_distance,
                 wet,
             },
         ) => n.apply_room(
@@ -1408,8 +1422,10 @@ fn apply_node_cmd(node: &mut GraphNode, cmd: &NodeCmd) {
             *reflection_order,
             *rt60_ms,
             *late_mix,
+            *late_distance,
             *wet,
         ),
+        (GraphNode::Spatial(n), NodeCmd::SetSpatialAir(air)) => n.set_air_absorption(*air),
         (
             GraphNode::Spatial(n),
             NodeCmd::SetSpatialListener {
@@ -1801,6 +1817,7 @@ impl DspGraph {
         reflection_order: u8,
         rt60_ms: f32,
         late_mix: f32,
+        late_distance: bool,
         wet: f32,
     ) {
         self.control_handle().set_spatial_room(
@@ -1812,8 +1829,15 @@ impl DspGraph {
             reflection_order,
             rt60_ms,
             late_mix,
+            late_distance,
             wet,
         );
+    }
+
+    /// Configure the scene-wide air-absorption model (see
+    /// [`GraphControlHandle::set_spatial_air`]).
+    pub fn set_spatial_air(&self, air: crate::spatial::level::AirAbsorption) {
+        self.control_handle().set_spatial_air(air);
     }
 
     /// Set the listener orientation (see

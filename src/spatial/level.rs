@@ -60,10 +60,22 @@ pub const MAX_GAIN: f32 = 2.0;
 
 /// A bounded, optional high-frequency air-absorption model (spec §39).
 ///
-/// The roll-off is a simple first-order low-pass whose cutoff scales with
-/// distance; it is deliberately gentle and clamped so distant sources
-/// brighten rather than vanish entirely. The exact coefficient is a
-/// perceptual tuning constant (documented, not a hidden magic number).
+/// The roll-off is described by a **magnitude family** — an analytic
+/// `magnitude(f)` over frequency that is **exact 1.0 at DC** (air is
+/// transparent to a static pressure field) and monotonically decreasing
+/// with distance. Two renderings exist of the *same* model and must agree
+/// (the Phase-50 "acoustic agreement" contract):
+///
+/// * **Offline** — `magnitude` is sampled per FFT bin and composed onto
+///   every spectral kernel (`bake::path_filter_kernel_with`).
+/// * **Realtime** — `corner_hz` collapses the family to the equivalent
+///   one-pole corner whose `1/√(1+(f/f_c)²)` magnitude matches the model
+///   at its −3 dB point, realised by the renderers' per-image biquad.
+///
+/// The default `OnePole` family is deliberately gentle and clamped so
+/// distant sources darken rather than vanish entirely. The exact
+/// coefficient is a perceptual tuning constant (documented, not a hidden
+/// magic number).
 ///
 /// Serde: the acoustic baker embeds a scene-scoped model verbatim in its
 /// baked responses (v3.48), so the same model that darkens a realtime
@@ -80,6 +92,33 @@ pub struct AirAbsorption {
     pub per_meter: f32,
     /// Baseline cutoff at zero distance (Hz).
     pub base_cutoff_hz: f32,
+    /// The magnitude family shaping the roll-off (Phase 50). Default
+    /// `OnePole` keeps the v3.48 behaviour bit-exactly.
+    #[serde(default)]
+    pub rolloff_model: AirRolloffModel,
+}
+
+/// Frequency-dependent attenuation families richer than the one-pole
+/// (Phase 50 item 2). Every family is a magnitude approximation: DC-exact
+/// (magnitude 1.0 at f = 0), monotonically non-increasing, and bounded by
+/// the base cutoff — `disabled` (or `enabled` with any family) composes to
+/// exactly ×1.0 when the model is off.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AirRolloffModel {
+    /// First-order magnitude shape `1/√(1+(f/f_air)²)` — the original v3.48
+    /// model. Asymptotically −6 dB/oct above the air corner.
+    #[default]
+    OnePole,
+    /// Second-order `1/(1+(f/f_air)²)` — a steeper −12 dB/oct HF decay for
+    /// humid air / long throw distances; its −3 dB point sits at
+    /// `f_air·√(√2−1)`.
+    TwoPole,
+    /// Exponential `e^(−f/f_air)` — the softest skirt (asymptotically
+    /// −8.7 dB per decade), modelling cool dry air where HF loss
+    /// concentrates far above speech band; crosses −3 dB at
+    /// `f_air·ln(√2)`.
+    Exponential,
 }
 
 impl Default for AirAbsorption {
@@ -88,6 +127,7 @@ impl Default for AirAbsorption {
             enabled: false,
             per_meter: 0.06,
             base_cutoff_hz: 20_000.0,
+            rolloff_model: AirRolloffModel::OnePole,
         }
     }
 }
@@ -103,6 +143,85 @@ impl AirAbsorption {
         let d = distance.max(0.0);
         let falloff = (1.0 / (1.0 + self.per_meter * d)).clamp(0.05, 1.0);
         (self.base_cutoff_hz * falloff).clamp(500.0, sample_rate * 0.45)
+    }
+
+    /// The distance-dependent **magnitude** of the model at frequency `f`
+    /// (Hz) — the offline rendering (Phase 50). DC-exact: `magnitude(0, d)
+    /// == 1.0` for every distance and family; disabled = exactly 1.0 at
+    /// every frequency (bit-exact discipline).
+    #[inline]
+    pub fn magnitude(&self, f: f32, distance: f32, sample_rate: f32) -> f32 {
+        if !self.enabled {
+            return 1.0;
+        }
+        let f_air = self.cutoff_hz(distance, sample_rate);
+        if f <= 0.0 {
+            return 1.0;
+        }
+        let x = f / f_air;
+        match self.rolloff_model {
+            AirRolloffModel::OnePole => 1.0 / (1.0 + x * x).sqrt(),
+            AirRolloffModel::TwoPole => 1.0 / (1.0 + x * x),
+            AirRolloffModel::Exponential => (-x).exp(),
+        }
+    }
+
+    /// The **equivalent one-pole corner** (Hz) realising this model's
+    /// magnitude on the realtime path (Phase 50 item 1): the frequency
+    /// where the family's magnitude crosses `1/√2` (−3 dB), so a biquad
+    /// low-pass at that corner reproduces the model's −3 dB point exactly
+    /// and its DC gain exactly. Disabled → `None` (nothing to fold; the
+    /// realtime filter stays whatever the surface alone set it to).
+    ///
+    /// * `OnePole` — the corner *is* the air cutoff (identity).
+    /// * `TwoPole` — `1/(1+x²)` crosses 1/√2 at `x = √(√2−1)`.
+    /// * `Exponential` — `e^(−x)` crosses 1/√2 at `x = ln(√2)`.
+    pub fn corner_hz(&self, distance: f32, sample_rate: f32) -> Option<f32> {
+        if !self.enabled {
+            return None;
+        }
+        let f_air = self.cutoff_hz(distance, sample_rate);
+        let factor = match self.rolloff_model {
+            AirRolloffModel::OnePole => 1.0,
+            AirRolloffModel::TwoPole => (std::f32::consts::SQRT_2 - 1.0).sqrt(),
+            AirRolloffModel::Exponential => std::f32::consts::LN_2 * 0.5, // ln(√2)
+        };
+        let corner = f_air * factor;
+        let nyq = sample_rate * 0.5;
+        if corner >= nyq * 0.999 {
+            None // spectrally flat at this distance — nothing to fold
+        } else {
+            Some(corner)
+        }
+    }
+
+    /// Compose this model's air corner with a surface low-pass corner
+    /// (both optional) into the single corner the realtime per-image
+    /// filter will run at. Composition is on the **one-pole magnitude
+    /// family**: the composed corner is the frequency where the product
+    /// `1/√(1+(f/f_a)²) · 1/√(1+(f/f_s)²)` crosses `1/√2` — exact at DC,
+    /// exact at the −3 dB point of the composed shape, and reduces to the
+    /// lone corner when only one side is set (bit-exact legacy behaviour).
+    pub fn compose_corner_hz(&self, surface_hz: f32, distance: f32, sample_rate: f32) -> f32 {
+        let air = self.corner_hz(distance, sample_rate);
+        let surface_on =
+            surface_hz.is_finite() && surface_hz > 1.0 && surface_hz < sample_rate * 0.5;
+        match (air, surface_on) {
+            (None, false) => f32::INFINITY,
+            (Some(a), false) => a,
+            (None, true) => surface_hz,
+            (Some(a), true) => {
+                // (1+x/a²)(1+x/s²) = 2 at the composed −3 dB point, with
+                // x = f². Expanded: x²/(a²s²) + x(1/a²+1/s²) − 1 = 0;
+                // multiply through by a²s² and take the positive root.
+                let a2 = a * a;
+                let s2 = surface_hz * surface_hz;
+                let b = 1.0 / a2 + 1.0 / s2;
+                let p = a2 * s2;
+                let x2 = 0.5 * (-b * p + (b * b * p * p + 4.0 * p).sqrt());
+                x2.sqrt()
+            }
+        }
     }
 }
 
@@ -213,5 +332,101 @@ mod tests {
         assert!(far >= 500.0);
         assert!(near <= 48_000.0 * 0.45);
         assert!(near.is_finite() && far.is_finite());
+    }
+
+    #[test]
+    fn air_magnitude_is_dc_exact_and_disabled_is_unity() {
+        const SR: f32 = 48_000.0;
+        let mut a = AirAbsorption::default();
+        // Disabled: exactly 1.0 at every frequency (bit-exact discipline).
+        for f in [0.0, 100.0, 1_000.0, 10_000.0] {
+            assert_eq!(a.magnitude(f, 20.0, SR), 1.0);
+        }
+        a.enabled = true;
+        for model in [
+            AirRolloffModel::OnePole,
+            AirRolloffModel::TwoPole,
+            AirRolloffModel::Exponential,
+        ] {
+            a.rolloff_model = model;
+            // DC-exact for every family and distance.
+            assert_eq!(a.magnitude(0.0, 0.1, SR), 1.0);
+            assert_eq!(a.magnitude(0.0, 50.0, SR), 1.0);
+            // Monotonically decreasing with frequency, and farther ⇒ duller.
+            for f in [125.0, 1_000.0, 4_000.0, 16_000.0] {
+                assert!(
+                    a.magnitude(f, 20.0, SR) <= a.magnitude(f * 0.5, 20.0, SR) + 1e-6,
+                    "{model:?} must be non-increasing at f={f}"
+                );
+            }
+            assert!(a.magnitude(4_000.0, 40.0, SR) < a.magnitude(4_000.0, 4.0, SR));
+            // Bounded in (0, 1].
+            let m = a.magnitude(20_000.0, 100.0, SR);
+            assert!(m > 0.0 && m <= 1.0);
+        }
+    }
+
+    #[test]
+    fn air_corner_matches_the_family_3db_point() {
+        // The realtime corner must sit exactly at the family's −3 dB
+        // magnitude (the Phase-50 agreement invariant between the offline
+        // magnitude sampling and the realtime biquad corner).
+        const SR: f32 = 48_000.0;
+        let mut a = AirAbsorption {
+            enabled: true,
+            per_meter: 0.02,
+            base_cutoff_hz: 12_000.0,
+            rolloff_model: AirRolloffModel::OnePole,
+        };
+        // OnePole: the corner is the cutoff itself, and the magnitude
+        // there is 1/√2.
+        let c = a.corner_hz(30.0, SR).expect("finite corner");
+        assert!((a.cutoff_hz(30.0, SR) - c).abs() < 1e-3);
+        assert!((a.magnitude(c, 30.0, SR) - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-4);
+        // TwoPole / Exponential: corner at the −3 dB crossing.
+        for model in [AirRolloffModel::TwoPole, AirRolloffModel::Exponential] {
+            a.rolloff_model = model;
+            let c = a.corner_hz(30.0, SR).expect("finite corner");
+            let m = a.magnitude(c, 30.0, SR);
+            assert!(
+                (m - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3,
+                "{model:?} corner magnitude {m} must be −3 dB"
+            );
+        }
+        // Disabled ⇒ no corner to fold.
+        a.enabled = false;
+        assert!(a.corner_hz(30.0, SR).is_none());
+    }
+
+    #[test]
+    fn air_compose_corner_reduces_and_darkens() {
+        const SR: f32 = 48_000.0;
+        let a = AirAbsorption {
+            enabled: true,
+            per_meter: 0.02,
+            base_cutoff_hz: 12_000.0,
+            rolloff_model: AirRolloffModel::OnePole,
+        };
+        // No surface corner, no air → ∞ (strict passthrough).
+        let mut off = a;
+        off.enabled = false;
+        assert!(off.compose_corner_hz(f32::INFINITY, 30.0, SR).is_infinite());
+        // Surface alone → identity (bit-exact legacy).
+        assert_eq!(off.compose_corner_hz(2_000.0, 30.0, SR), 2_000.0);
+        // Air alone → the air corner.
+        let air_only = a.compose_corner_hz(f32::INFINITY, 30.0, SR);
+        assert!((air_only - a.corner_hz(30.0, SR).unwrap()).abs() < 1e-3);
+        // Both → strictly darker (lower) than either alone, and exactly the
+        // −3 dB point of the composed one-pole product shape.
+        let both = a.compose_corner_hz(2_000.0, 30.0, SR);
+        assert!(both < 2_000.0 && both < air_only);
+        let f_air = a.corner_hz(30.0, SR).unwrap();
+        let shape = |f: f32| {
+            1.0 / (1.0 + (f / f_air).powi(2)).sqrt() / (1.0 + (f / 2_000.0).powi(2)).sqrt()
+        };
+        assert!((shape(both) - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3);
+        // Both crossing at one point: composed −3 dB = √(f_a·f_s)/… sanity:
+        // the composed corner is between the two contributing corners.
+        assert!(both > 0.0 && both < f_air.min(2_000.0));
     }
 }

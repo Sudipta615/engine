@@ -35,6 +35,7 @@ fn baked_world() -> BakedScene {
         reflection_order: 1,
         rt60_ms: 800.0,
         late_mix: 0.0,
+        late_distance: false,
         speed_of_sound: 343.0,
     };
     let world = AcousticWorld::new(
@@ -234,6 +235,7 @@ fn material_bake_changes_the_node_taps() {
         reflection_order: 1,
         rt60_ms: 800.0,
         late_mix: 0.0,
+        late_distance: false,
         speed_of_sound: 343.0,
     };
     let concrete = AcousticWorld::new(
@@ -297,6 +299,7 @@ fn per_listener_scenes_render_distinct_responses_mixed() {
         reflection_order: 1,
         rt60_ms: 800.0,
         late_mix: 0.0,
+        late_distance: false,
         speed_of_sound: 343.0,
     };
     let world = AcousticWorld::new(

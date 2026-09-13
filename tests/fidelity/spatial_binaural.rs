@@ -274,6 +274,7 @@ fn room_reflection_delays_per_ear_by_woodworth() {
         reflection_order: 1,
         rt60_ms: 800.0,
         late_mix: 0.0, // keep the late field out of the timing window
+        late_distance: false,
         speed_of_sound: 343.0,
     };
     let frames = 512usize;
@@ -398,6 +399,7 @@ fn full_hybrid_scene_is_deterministic_and_finite() {
     scene.room = Room {
         enabled: true,
         late_mix: 0.4,
+        late_distance: false,
         ..Default::default()
     };
     scene.create_bed(ChannelLayout::Stereo).unwrap();

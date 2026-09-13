@@ -269,6 +269,7 @@ impl SpatialScene {
             reflection_order: r.reflection_order,
             rt60_ms: r.rt60_ms,
             late_mix: r.late_mix,
+            late_distance: r.late_distance,
             speed_of_sound: r.speed_of_sound,
         };
         Ok(scene)
@@ -371,6 +372,7 @@ impl SpatialScene {
                 reflection_order: self.room.reflection_order,
                 rt60_ms: self.room.rt60_ms,
                 late_mix: self.room.late_mix,
+                late_distance: self.room.late_distance,
                 wet: self
                     .objects
                     .iter()

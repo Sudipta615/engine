@@ -372,6 +372,7 @@ fn acoustic_room_response_matches_bit_exactly() {
         reflection_order: 1,
         rt60_ms: 800.0,
         late_mix: 0.0,
+        late_distance: false,
         speed_of_sound: 343.0,
     };
     let world = AcousticWorld::new(

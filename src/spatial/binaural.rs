@@ -69,7 +69,7 @@ use super::hrtf::{
     ear_delay_sec, head_shadow_alpha, max_itd_sec, read_delayed, Ear, ElevationNotch, HeadShadow,
     HrtfDataset, DEFAULT_HEAD_RADIUS, DEFAULT_SPEED_OF_SOUND,
 };
-use super::level::AbsorptionState;
+use super::level::{AbsorptionState, AirAbsorption};
 use super::math::Vec3;
 use super::metering::SpatialMeterState;
 use super::nearfield::NearFieldState;
@@ -223,6 +223,11 @@ pub struct BinauralRenderer {
     /// solve every block. `None` (default) keeps the live solve path
     /// bit-identical.
     baked: Option<BakedScene>,
+    /// Scene-wide air-absorption model (Phase 50): applied on the live
+    /// reflection path as a per-image distance corner composed onto each
+    /// image's surface corner (the baked path composes its own). Disabled
+    /// (default) keeps every reflection bit-identical.
+    air_absorption: AirAbsorption,
 }
 
 impl BinauralRenderer {
@@ -272,6 +277,7 @@ impl BinauralRenderer {
             admission: vec![VoiceAdmission::Full; MAX_SPATIAL_OBJECTS],
             automation_time: 0.0,
             baked: None,
+            air_absorption: AirAbsorption::default(),
         }
     }
 
@@ -319,6 +325,21 @@ impl BinauralRenderer {
     pub fn set_baked(&mut self, baked: Option<BakedScene>) -> &mut Self {
         self.baked = baked;
         self
+    }
+
+    /// Configure the scene-wide air-absorption model applied to **live**
+    /// room reflections (Phase 50): each image's surface corner is composed
+    /// with the model's distance corner so realtime reflections darken with
+    /// travel distance, agreeing with the offline spectral kernels. Disabled
+    /// (default) keeps the reflection path bit-identical.
+    pub fn set_air_absorption(&mut self, a: AirAbsorption) -> &mut Self {
+        self.air_absorption = a;
+        self
+    }
+
+    /// The scene-wide air-absorption model (Phase 50).
+    pub fn air_absorption(&self) -> AirAbsorption {
+        self.air_absorption
     }
 
     /// Enable/disable output metering (spec §70). Disabled = dormant meter
@@ -630,9 +651,13 @@ impl BinauralRenderer {
             // image-source solve (bit-identical to no-bake).
             let mut n_img = 0usize;
             if room_on && !degraded && obj.room_send > 0.0 {
+                let mut from_baked = false;
                 n_img = match self.baked.as_ref() {
                     Some(baked) => match baked.get(pos) {
-                        Some(obj_b) => baked.listener_images(obj_b, &mut imgs),
+                        Some(obj_b) => {
+                            from_baked = true;
+                            baked.listener_images(obj_b, &mut imgs)
+                        }
                         None => self.room_er.images_for_object(
                             &scene.room,
                             scene.listener.position,
@@ -653,9 +678,22 @@ impl BinauralRenderer {
                     ref_az[i] = az;
                     // v3.47: colour the reflection with its surface's
                     // spectral low-pass (material spectrum / diffraction
-                    // corner) when the baked path carries one.
-                    self.room_er
-                        .set_reflection_filter(obj_idx, i, imgs[i].lowpass_hz);
+                    // corner) when the baked path carries one. Phase 50:
+                    // on the live path, fold the scene-wide air model's
+                    // distance corner into the image's corner so realtime
+                    // reflections darken with distance exactly as the
+                    // offline kernels do (baked cells arrive pre-composed
+                    // via `BakedScene::listener_images`).
+                    let corner = if from_baked {
+                        imgs[i].lowpass_hz
+                    } else {
+                        self.air_absorption.compose_corner_hz(
+                            imgs[i].lowpass_hz,
+                            imgs[i].dist,
+                            self.sample_rate,
+                        )
+                    };
+                    self.room_er.set_reflection_filter(obj_idx, i, corner);
                     let dg = obj
                         .distance_model
                         .distance_gain(imgs[i].dist, obj.reference_distance);
@@ -818,7 +856,14 @@ impl BinauralRenderer {
                         }
                     }
                     if obj.room_send > 0.0 {
-                        self.room_er.add_send(frame, s * gain * obj.room_send);
+                        // Phase 50 item 3: late-field distance roll-off (see
+                        // the panner's identical branch); off = legacy send.
+                        let send = if scene.room.late_distance {
+                            s * gain * obj.room_send * dist_gain
+                        } else {
+                            s * gain * obj.room_send
+                        };
+                        self.room_er.add_send(frame, send);
                     }
                 }
 
