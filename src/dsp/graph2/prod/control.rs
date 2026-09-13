@@ -268,6 +268,20 @@ impl Graph2ControlHandle {
         self.inner
             .set_spatial_listener(yaw_deg, pitch_deg, roll_deg);
     }
+    /// Phase-51 listener motion: target listener pose (orientation +
+    /// position) the spatial node glides toward per block.
+    pub fn set_spatial_listener_pose(
+        &self,
+        orientation: crate::spatial::math::Quat,
+        position: crate::spatial::math::Vec3,
+    ) {
+        self.inner.set_spatial_listener_pose(orientation, position);
+    }
+    /// Phase-51 listener motion: smoothing policy for the listener glide.
+    pub fn set_spatial_listener_tracking(&self, smoothing_ms: f32, max_rate_deg_s: f32) {
+        self.inner
+            .set_spatial_listener_tracking(smoothing_ms, max_rate_deg_s);
+    }
     pub fn set_input_mute(&self, input: u8, mute: bool) {
         self.inner.set_input_mute(input, mute);
     }

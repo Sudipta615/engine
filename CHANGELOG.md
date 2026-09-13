@@ -2,6 +2,55 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.3.0] — 2026-09-13
+
+### Added
+
+- **Listener motion (Phase 51, v4.3.0).** The spatial master's listener
+  is now **runtime-movable** on the audio path: a new
+  `SetSpatialListenerPose` control command (queued per-node SPSC,
+  block-boundary applied — never locks, never allocates) sets a target
+  pose — world-space orientation (quaternion) + position (metres) — and
+  the node glides toward it every processed block with the head-tracking
+  conventions: shortest-arc **nlerp** on orientation, linear **one-pole**
+  on position, a configurable smoothing time constant (`0 ms` snaps
+  exactly) and an optional angular rate limit (deg/s). The glide runs
+  inside the plan step (allocation-free, verified by a new
+  `realtime_allocation` case) so a world-fixed image sweeps smoothly as
+  the listener rotates/moves — the VR seam, host-driven.
+  - Surface: `EngineHandle::set_spatial_listener_pose` /
+    `set_spatial_listener_tracking`, `EngineCommand::SetSpatialListenerPose` /
+    `SetSpatialListenerTracking`, `GraphControlHandle::set_spatial_listener_pose`
+    (+ `NodeCmd::SetSpatialListenerPose` / `SetSpatialListenerTracking`,
+    `DspGraph`/`Graph2ControlHandle` forwards), and the C FFI pair
+    `engine_set_spatial_listener_pose` /
+    `engine_set_spatial_listener_tracking`.
+  - **Smooth re-bake seam**: `SpatialNode::listener_rebake_due(cell_m,
+    last_baked_at)` — the control thread's decision function; when a
+    moving listener crosses a full bake cell from the position the scene
+    was baked at, the host re-bakes on the control thread and publishes
+    through the generation-swap machinery (audio never interrupted; the
+    tail-reset is the documented generation-rebuild behavior, identical
+    without motion).
+  - **Listener pose telemetry**: `SpatialTelemetry` gains
+    `listener_yaw_deg` / `listener_pitch_deg` / `listener_roll_deg` /
+    `listener_position` (the post-glide live pose), mirrored on the
+    telemetry cadence and readable via the new FFI
+    `engine_spatial_listener_pose`.
+  - **Tracking surface**: `HeadSample` grows a `position` field (with the
+    backward-compatible `new` constructor; `with_position` for full
+    poses) and `HeadTracker` gains `sample_pose` / `apply_pose_to` /
+    `current_position` — the same nlerp + one-pole + rate-limit
+    discipline extended to position (segment-linear interpolation, held
+    past the latest sample, first pose snaps).
+  - **Math**: `Quat::to_euler_rad` — the verified inverse of
+    `from_euler_rad` (ZXY extraction with gimbal-lock fold handling),
+    and `Vec3::lerp`.
+  - Acceptance: `spatial_node` suite motion cases (glide boundedness,
+    zero-smoothing snap, rate-limit cap, generation-swap continuity,
+    re-bake bound), tracking pose tests, FFI round-trip/rejection tests,
+    and a moving-listener zero-allocation proof.
+
 ## [4.2.0] — 2026-09-13
 
 ### Added

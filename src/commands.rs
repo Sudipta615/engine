@@ -127,6 +127,22 @@ pub enum EngineCommand {
     },
     /// Phase-17 spatial master: drive program-object automation at `seconds`.
     SetSpatialAutomationTime(f32),
+    /// Phase-51 listener motion (v4.3.0): set the target listener pose —
+    /// world-space orientation (quaternion) + position (metres). The
+    /// spatial master glides toward it every processed block (shortest-arc
+    /// nlerp on orientation, one-pole on position) per its tracking
+    /// policy, so a moving listener sweeps the world-fixed image smoothly.
+    SetSpatialListenerPose {
+        orientation: crate::spatial::math::Quat,
+        position: crate::spatial::math::Vec3,
+    },
+    /// Phase-51 listener motion: the glide's smoothing policy (one-pole
+    /// time constant in ms — `0` snaps; optional angular rate limit in
+    /// deg/s — `0` unlimited).
+    SetSpatialListenerTracking {
+        smoothing_ms: f32,
+        max_angular_rate_deg_s: f32,
+    },
     /// Phase-7 S5 correction: live enabled toggle (the loaded IR stays;
     /// disabled = the plan step is skipped, bit-exact).
     SetCorrectionEnabled(bool),

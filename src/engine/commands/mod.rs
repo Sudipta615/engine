@@ -490,6 +490,21 @@ impl AudioEngine {
                 self.graph
                     .with_graph(|g| g.spatial_mut().set_automation_time(seconds));
             }
+            // Phase-51 listener motion: target pose + glide policy ride
+            // the graph's queued control surface (block-boundary SPSC).
+            EngineCommand::SetSpatialListenerPose {
+                orientation,
+                position,
+            } => {
+                self.graph.set_spatial_listener_pose(orientation, position);
+            }
+            EngineCommand::SetSpatialListenerTracking {
+                smoothing_ms,
+                max_angular_rate_deg_s,
+            } => {
+                self.graph
+                    .set_spatial_listener_tracking(smoothing_ms, max_angular_rate_deg_s);
+            }
 
             // ── Correction (Phase 7 S5) ──
             EngineCommand::SetCorrectionEnabled(enabled) => {

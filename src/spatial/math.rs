@@ -39,6 +39,12 @@ pub struct Vec3 {
     pub z: f32,
 }
 
+impl Default for Vec3 {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
+
 impl Vec3 {
     pub const ZERO: Vec3 = Vec3::new(0.0, 0.0, 0.0);
     pub const X: Vec3 = Vec3::new(1.0, 0.0, 0.0);
@@ -124,12 +130,24 @@ impl Vec3 {
     }
 
     /// Elevation angle above the horizontal (XY) plane, in `[-π/2, π/2]`
-    /// radians: `0` at the horizon, `+π/2` straight up, `-π/2` straight
+    /// radians: `0` at the horizon, `+π/2` straight up`, `-π/2` straight
     /// down.
     #[inline]
     pub fn elevation_rad(self) -> f32 {
         let horiz = (self.x * self.x + self.y * self.y).sqrt();
         self.z.atan2(horiz)
+    }
+
+    /// Linear interpolation toward `other` at `t ∈ [0, 1]` (Phase 51
+    /// listener-motion position tracking; `t = 0` returns `self`, `t = 1`
+    /// returns `other`).
+    #[inline]
+    pub fn lerp(self, other: Self, t: f32) -> Self {
+        Self::new(
+            self.x + (other.x - self.x) * t,
+            self.y + (other.y - self.y) * t,
+            self.z + (other.z - self.z) * t,
+        )
     }
 }
 
@@ -208,6 +226,40 @@ impl Quat {
         // Apply yaw first, then pitch, then roll (right-most is applied
         // first by `compose`).
         qroll.compose(qpitch.compose(qyaw))
+    }
+
+    /// Extract the `(yaw, pitch, roll)` Euler angles (radians) from a
+    /// quaternion built by [`Quat::from_euler_rad`] — its inverse for the
+    /// composition `R = Ry(roll)·Rx(pitch)·Rz(−yaw)`. The yaw sign matches
+    /// `from_euler_rad`'s convention (positive = right turn). At gimbal
+    /// lock (pitch ±90°, where yaw and roll fold into one angle) roll is
+    /// reported as 0 and the combined angle as yaw. Used by the spatial
+    /// master's listener-motion introspection (Phase 51).
+    pub fn to_euler_rad(self) -> (f32, f32, f32) {
+        let (x, y, z, w) = (self.x, self.y, self.z, self.w);
+        // R[1][2] = 2(yz − wx) = −sin(pitch)
+        let sin_p = 2.0 * (w * x - y * z);
+        if sin_p.abs() >= 1.0 - 1e-4 {
+            // Gimbal lock: cos(pitch) ≈ 0; yaw and roll fold into one
+            // angle. Report roll = 0 and the combined angle as yaw from
+            // the untouched plane: R[0][1] = 2(xy − wz), R[0][0] =
+            // 1 − 2(y² + z²).
+            let yaw = (2.0 * (x * y - w * z)).atan2(1.0 - 2.0 * (y * y + z * z));
+            let pitch = if sin_p > 0.0 {
+                std::f32::consts::FRAC_PI_2
+            } else {
+                -std::f32::consts::FRAC_PI_2
+            };
+            return (yaw, pitch, 0.0);
+        }
+        let pitch = sin_p.clamp(-1.0, 1.0).asin();
+        // R[1][0] = 2(xy + wz) = −cos(pitch)·sin(yaw),
+        // R[1][1] = 1 − 2(x² + z²) = cos(pitch)·cos(yaw).
+        let yaw = -(2.0 * (x * y + w * z)).atan2(1.0 - 2.0 * (x * x + z * z));
+        // R[0][2] = 2(xz + wy) = cos(pitch)·sin(roll),
+        // R[2][2] = 1 − 2(x² + y²) = cos(pitch)·cos(roll).
+        let roll = (2.0 * (x * z + w * y)).atan2(1.0 - 2.0 * (x * x + y * y));
+        (yaw, pitch, roll)
     }
 
     /// The conjugate. For a unit quaternion this is also the rotation
@@ -398,6 +450,63 @@ mod tests {
         // Applying q then its inverse round-trips any vector.
         let v = Vec3::new(1.0, 2.0, 3.0);
         assert!((qinv.rotate_vec3(q.rotate_vec3(v)) - v).length() < 1e-5);
+    }
+
+    #[test]
+    fn euler_round_trips_through_to_euler_rad() {
+        // from_euler_rad → to_euler_rad recovers angles that produce the
+        // identical rotation (values may differ by a 2π wrap or fold, so
+        // the check is on the rotation, not the raw angles — the
+        // property Phase 51 introspection needs).
+        let cases = [
+            (0.0f32, 0.0f32, 0.0f32),
+            (0.3, 0.2, 0.1),
+            (-2.5, 0.4, 1.2),
+            (3.0, -0.9, -0.3),
+            (-0.1, 1.4, 2.8),
+            (std::f32::consts::FRAC_PI_2, 0.0, 0.0),
+        ];
+        for &(y, p, r) in &cases {
+            let q = Quat::from_euler_rad(y, p, r);
+            let (y2, p2, r2) = q.to_euler_rad();
+            let q2 = Quat::from_euler_rad(y2, p2, r2);
+            // Same rotation: q and q2 agree on the rotated basis vectors.
+            for v in [Vec3::X, Vec3::Y, Vec3::Z] {
+                assert!(
+                    (q.rotate_vec3(v) - q2.rotate_vec3(v)).length() < 1e-5,
+                    "case ({y},{p},{r}) disagrees on {v:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn to_euler_rad_handles_gimbal_lock() {
+        // At pitch ±90°, yaw and roll fold into one angle: the extraction
+        // reports roll = 0 and the combined angle as yaw, still the same
+        // rotation.
+        for pitch in [std::f32::consts::FRAC_PI_2, -std::f32::consts::FRAC_PI_2] {
+            let q = Quat::from_euler_rad(0.7, pitch, 1.1);
+            let (y2, p2, r2) = q.to_euler_rad();
+            assert!((p2 - pitch).abs() < 1e-4, "pitch recovered");
+            let q2 = Quat::from_euler_rad(y2, p2, r2);
+            for v in [Vec3::X, Vec3::Y, Vec3::Z] {
+                assert!(
+                    (q.rotate_vec3(v) - q2.rotate_vec3(v)).length() < 1e-5,
+                    "gimbal {v:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn vec3_lerp_endpoints_and_midpoint() {
+        let a = Vec3::new(0.0, 0.0, 0.0);
+        let b = Vec3::new(4.0, -2.0, 6.0);
+        assert_eq!(a.lerp(b, 0.0), a);
+        assert_eq!(a.lerp(b, 1.0), b);
+        let mid = a.lerp(b, 0.5);
+        assert_eq!(mid, Vec3::new(2.0, -1.0, 3.0));
     }
 
     #[test]

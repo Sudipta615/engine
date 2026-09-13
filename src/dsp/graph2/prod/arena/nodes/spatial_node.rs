@@ -36,6 +36,19 @@
 //! front pair. The [`config::SpatialConfig`] section configures it at
 //! construction/reconfig; the live control surface
 //! (`GraphControlHandle::set_spatial_*`) changes it at runtime.
+//!
+//! ## Phase 51 — listener motion (v4.3.0)
+//!
+//! The listener is **runtime-movable** on the audio path: a
+//! `SetSpatialListenerPose` control command sets a target pose
+//! (orientation + position), and the node glides toward it every block
+//! with the head-tracking conventions — shortest-arc nlerp on
+//! orientation, linear one-pole on position, a configurable smoothing
+//! time (0 ms = snap) and optional angular rate limit. The glide is
+//! allocation-free and per-block, so a world-fixed image sweeps smoothly
+//! as the listener rotates/moves (the VR seam, host-driven). The baked
+//! acoustic seam re-bakes on the control thread when the listener
+//! crosses a relevance bound (see [`SpatialNode::listener_rebake_due`]).
 
 use super::super::node::DspNode;
 use crate::buffer::{MAX_AUDIO_BLOCK_FRAMES, MAX_CHANNELS};
@@ -51,6 +64,7 @@ use crate::spatial::{
     render::{HybridBlockInputs, SpatialRenderer},
     scene::SpatialScene,
     speaker::SpeakerLayout,
+    tracking::TrackingConfig,
     voice::{BudgetCandidate, VoiceAdmission, VoiceBudget, VoicePriority},
 };
 use std::sync::Arc;
@@ -93,6 +107,18 @@ pub struct SpatialNode {
     voice_full: usize,
     voice_degraded: usize,
     voice_dropped: usize,
+    // ── Phase 51: runtime listener motion ──
+    /// Smoothing policy for the listener glide (nlerp on orientation,
+    /// one-pole on position). `smoothing_ms = 0` snaps.
+    listener_tracking: TrackingConfig,
+    /// Target listener orientation (world space; the glide goal).
+    listener_target_quat: Quat,
+    /// Target listener position (world space; the glide goal).
+    listener_target_pos: Vec3,
+    /// Whether a runtime motion target is active (the config-applied
+    /// static orientation also seeds the target, so `apply_listener`
+    /// and the glide converge on the same state).
+    listener_motion_active: bool,
     /// Sample rate at last successful `prepare` (re-prepare on change).
     prepared_rate: f32,
     prepared: bool,
@@ -136,6 +162,10 @@ impl SpatialNode {
             voice_full: 0,
             voice_degraded: 0,
             voice_dropped: 0,
+            listener_tracking: TrackingConfig::default(),
+            listener_target_quat: Quat::IDENTITY,
+            listener_target_pos: Vec3::ZERO,
+            listener_motion_active: false,
             prepared_rate: -1.0,
             prepared: false,
         };
@@ -410,6 +440,10 @@ impl SpatialNode {
             peak_db_r: db(peak_r),
             rms_db_l: db(rms_l),
             rms_db_r: db(rms_r),
+            listener_yaw_deg: self.listener_yaw_deg,
+            listener_pitch_deg: self.listener_pitch_deg,
+            listener_roll_deg: self.listener_roll_deg,
+            listener_position: self.scene.listener.position,
         }
     }
 
@@ -522,16 +556,131 @@ impl SpatialNode {
         self.binaural.air_absorption()
     }
 
-    /// Set the listener orientation (yaw/pitch/roll, degrees).
+    /// Set the listener orientation (yaw/pitch/roll, degrees). Snaps the
+    /// listener immediately (the pre-Phase-51 semantic) and seeds the
+    /// motion target so a later glide continues from here.
     pub fn apply_listener(&mut self, yaw_deg: f32, pitch_deg: f32, roll_deg: f32) {
         self.listener_yaw_deg = yaw_deg;
         self.listener_pitch_deg = pitch_deg;
         self.listener_roll_deg = roll_deg;
-        self.scene.listener.set_orientation(Quat::from_euler_rad(
+        let q = Quat::from_euler_rad(
             yaw_deg.to_radians(),
             pitch_deg.to_radians(),
             roll_deg.to_radians(),
-        ));
+        );
+        self.scene.listener.set_orientation(q);
+        self.listener_target_quat = q;
+        self.listener_motion_active = true;
+    }
+
+    // ── Phase 51: runtime listener motion (v4.3.0) ──────────────────────
+
+    /// The listener-motion smoothing policy (nlerp / one-pole time
+    /// constant, optional angular rate limit). Control path — the policy
+    /// is plain data read allocation-free per block.
+    pub fn set_listener_tracking(&mut self, cfg: TrackingConfig) {
+        self.listener_tracking = cfg;
+    }
+
+    /// The active listener-motion smoothing policy.
+    pub fn listener_tracking(&self) -> TrackingConfig {
+        self.listener_tracking
+    }
+
+    /// Set the **target listener pose** (world-space orientation +
+    /// position). The listener glides toward it every processed block
+    /// (shortest-arc nlerp on orientation, one-pole on position) per the
+    /// tracking conventions — the runtime-editable rotation/position
+    /// surface (Phase 51). With `smoothing_ms = 0` the next block snaps.
+    /// The glide itself is allocation-free (audio path).
+    pub fn set_listener_pose_target(&mut self, orientation: Quat, position: Vec3) {
+        self.listener_target_quat = orientation;
+        self.listener_target_pos = position;
+        self.listener_motion_active = true;
+    }
+
+    /// Clear the motion target: the listener holds its current pose
+    /// (no further gliding) until a new target arrives.
+    pub fn clear_listener_motion(&mut self) {
+        self.listener_motion_active = false;
+        self.listener_target_quat = self.scene.listener.orientation;
+        self.listener_target_pos = self.scene.listener.position;
+    }
+
+    /// The live listener pose (the post-glide state the renderers read),
+    /// for telemetry and control-side introspection.
+    pub fn listener_pose(&self) -> (Quat, Vec3) {
+        (
+            self.scene.listener.orientation,
+            self.scene.listener.position,
+        )
+    }
+
+    /// The target pose the listener is gliding toward (held pose when
+    /// motion is inactive).
+    pub fn listener_pose_target(&self) -> (Quat, Vec3) {
+        (self.listener_target_quat, self.listener_target_pos)
+    }
+
+    /// Advance the listener one block-step toward its motion target
+    /// (audio path, per `render_block`): shortest-arc nlerp on orientation
+    /// with the optional rate limit, linear one-pole on position — the
+    /// `HeadTracker` discipline inlined (the node cannot own a tracker
+    /// because the tracker clocks on host timestamps; the node clocks on
+    /// blocks). Allocation-free. No-op when no target is active or
+    /// already converged.
+    fn glide_listener(&mut self, block_secs: f32) {
+        if !self.listener_motion_active {
+            return;
+        }
+        let cfg = self.listener_tracking;
+        let l = &mut self.scene.listener;
+        // Orientation: one-pole nlerp toward the target, then the
+        // optional angular rate clamp.
+        let alpha = if cfg.smoothing_ms <= 0.0 || block_secs <= 0.0 {
+            1.0
+        } else {
+            1.0 - (-block_secs / (cfg.smoothing_ms / 1000.0)).exp()
+        };
+        let mut next_q = l.orientation.nlerp(self.listener_target_quat, alpha);
+        if cfg.max_angular_rate_deg_s > 0.0 && block_secs > 0.0 {
+            let max_step = cfg.max_angular_rate_deg_s.to_radians() * block_secs;
+            let angle = l.orientation.angle_to(next_q);
+            if angle > max_step && angle > 1e-9 {
+                next_q = l.orientation.nlerp(next_q, (max_step / angle).min(1.0));
+            }
+        }
+        l.set_orientation(next_q);
+        // Position: the same one-pole factor on each axis.
+        let next_p = l.position.lerp(self.listener_target_pos, alpha);
+        l.set_position(next_p);
+        // Mirror the introspection degrees from the live quaternion so
+        // `listener()` (and persistence) reflect the gliding pose.
+        let (y, p, r) = next_q.to_euler_rad();
+        self.listener_yaw_deg = y.to_degrees();
+        self.listener_pitch_deg = p.to_degrees();
+        self.listener_roll_deg = r.to_degrees();
+        // Converged: stop gliding (bit-stable when the target is held).
+        if next_q.angle_to(self.listener_target_quat) < 1e-6
+            && (next_p - self.listener_target_pos).length_squared() < 1e-12
+        {
+            self.listener_motion_active = false;
+        }
+    }
+
+    /// Whether a moving listener has crossed the baked-scene relevance
+    /// bound and the control thread should re-bake the acoustic scene
+    /// (Phase 51's smooth re-bake seam). The bound is the bake cell
+    /// size (the resolution a re-bake can meaningfully change); the
+    /// engine calls this on its tick and, when due, rebuilds the baked
+    /// generation on the control thread and publishes it — the audio
+    /// path is never interrupted (the Phase-2 swap machinery).
+    pub fn listener_rebake_due(&self, cell_m: f32, last_baked_at: Vec3) -> bool {
+        let cell = cell_m.max(0.05);
+        let p = self.scene.listener.position;
+        let d = p - last_baked_at;
+        // Crossed a full cell in any axis → the baked response is stale.
+        d.x.abs() >= cell || d.y.abs() >= cell || d.z.abs() >= cell
     }
 
     /// Render the scene into the block planes in place (f32 path).
@@ -542,6 +691,10 @@ impl SpatialNode {
         if planes.len() < 2 {
             return;
         }
+        // Phase 51: glide the listener toward its motion target this
+        // block (allocation-free; no-op when converged / inactive).
+        let block_secs = frames as f32 / self.sample_rate;
+        self.glide_listener(block_secs);
         // Voice budget → admission (spec §76), allocation-free, this block.
         self.apply_voice_budget();
         self.prog_l[..frames].copy_from_slice(&planes[0][..frames]);
@@ -580,6 +733,10 @@ impl SpatialNode {
         if planes.len() < 2 {
             return;
         }
+        // Phase 51: glide the listener toward its motion target this
+        // block (allocation-free; no-op when converged / inactive).
+        let block_secs = frames as f32 / self.sample_rate;
+        self.glide_listener(block_secs);
         // Voice budget → admission (spec §76), allocation-free, this block.
         self.apply_voice_budget();
         for (f, (&l, &r)) in planes[0]
@@ -1130,6 +1287,243 @@ mod tests {
         node.set_enabled(false);
         let h = node.spatial_health();
         assert_eq!(h.status, crate::spatial::health::HealthLevel::Inactive);
+    }
+
+    #[test]
+    fn listener_pose_target_glides_smoothly_across_blocks() {
+        // Phase 51: a runtime pose target (90° yaw + 1 m step) with a 20 ms
+        // one-pole glides block-by-block — bounded steps, convergence —
+        // and the image tracks it (the world-fixed screen sweeps across
+        // the ears as the listener yaws).
+        let mut node = SpatialNode::new(48_000.0);
+        node.prepare(48_000.0, 2);
+        node.set_enabled(true);
+        node.apply_screen(0.0, 30.0, 0.0, 1.0);
+        node.set_listener_tracking(crate::spatial::TrackingConfig {
+            smoothing_ms: 20.0,
+            max_angular_rate_deg_s: 0.0,
+        });
+        let target_q = Quat::from_euler_rad(90f32.to_radians(), 0.0, 0.0);
+        let target_p = Vec3::new(0.0, 1.0, 0.0);
+        node.set_listener_pose_target(target_q, target_p);
+        assert_eq!(node.listener_pose_target().0, target_q);
+
+        let frames = 512;
+        let mut l = vec![0.0f32; frames];
+        l[64] = 1.0;
+        let mut r = vec![0.0f32; frames];
+        let mut prev = node.listener_pose();
+        let mut max_yaw_step = 0.0f32;
+        for _ in 0..40 {
+            let mut planes: Vec<&mut [f32]> = vec![&mut l, &mut r];
+            node.process_block_f32(&mut planes);
+            let (q, p) = node.listener_pose();
+            let step = q.angle_to(prev.0).to_degrees();
+            max_yaw_step = max_yaw_step.max(step);
+            assert!((p - prev.1).length() < 1.0, "position glides, never jumps");
+            prev = (q, p);
+        }
+        assert!(
+            max_yaw_step < 45.0,
+            "no single-block snap ({max_yaw_step}°)"
+        );
+        assert!(
+            prev.0.angle_to(target_q).to_degrees() < 1.0,
+            "converged to the target yaw"
+        );
+        assert!(
+            (prev.1 - target_p).length() < 0.02,
+            "converged to the target position"
+        );
+        // The glided pose is what telemetry reports.
+        let t = node.spatial_telemetry();
+        assert!((t.listener_yaw_deg - 90.0).abs() < 1.0);
+        assert!((t.listener_position.y - 1.0).abs() < 0.02);
+    }
+
+    #[test]
+    fn listener_pose_zero_smoothing_snaps_next_block() {
+        let mut node = SpatialNode::new(48_000.0);
+        node.prepare(48_000.0, 2);
+        node.set_enabled(true);
+        node.set_listener_tracking(crate::spatial::TrackingConfig {
+            smoothing_ms: 0.0,
+            max_angular_rate_deg_s: 0.0,
+        });
+        node.set_listener_pose_target(
+            Quat::from_euler_rad(45f32.to_radians(), 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+        );
+        let frames = 128;
+        let mut l = vec![0.5f32; frames];
+        let mut r = vec![0.5f32; frames];
+        let mut planes: Vec<&mut [f32]> = vec![&mut l, &mut r];
+        node.process_block_f32(&mut planes);
+        let (q, p) = node.listener_pose();
+        assert!(
+            q.angle_to(Quat::from_euler_rad(45f32.to_radians(), 0.0, 0.0)) < 1e-4,
+            "snapped"
+        );
+        assert_eq!(p, Vec3::new(2.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn listener_motion_rate_limit_caps_the_yaw_step() {
+        // 100°/s at 48 kHz / 512-frame blocks ≈ 1.07° per block; a 90°
+        // target never steps faster and catches up.
+        let mut node = SpatialNode::new(48_000.0);
+        node.prepare(48_000.0, 2);
+        node.set_enabled(true);
+        node.set_listener_tracking(crate::spatial::TrackingConfig {
+            smoothing_ms: 0.0,
+            max_angular_rate_deg_s: 100.0,
+        });
+        let target = Quat::from_euler_rad(90f32.to_radians(), 0.0, 0.0);
+        node.set_listener_pose_target(target, Vec3::ZERO);
+        let frames = 512;
+        let mut l = vec![0.3f32; frames];
+        let mut r = vec![0.3f32; frames];
+        let mut prev = node.listener_pose().0;
+        let mut max_step = 0.0f32;
+        for _ in 0..120 {
+            let mut planes: Vec<&mut [f32]> = vec![&mut l, &mut r];
+            node.process_block_f32(&mut planes);
+            let q = node.listener_pose().0;
+            max_step = max_step.max(q.angle_to(prev).to_degrees());
+            prev = q;
+        }
+        assert!(max_step <= 1.2, "per-block step ≤ cap (max {max_step}°)");
+        assert!(prev.angle_to(target).to_degrees() < 1.0, "caught up");
+    }
+
+    #[test]
+    fn listener_rebake_due_crosses_cell_bounds() {
+        // The relevance-bound seam: a bake at the origin stays fresh while
+        // the listener glides within one cell and goes stale once a full
+        // cell is crossed.
+        let mut node = SpatialNode::new(48_000.0);
+        node.prepare(48_000.0, 2);
+        node.set_enabled(true);
+        assert!(!node.listener_rebake_due(0.5, Vec3::ZERO), "at origin");
+        // Within the cell (0.4 m off) — not due.
+        node.set_listener_tracking(crate::spatial::TrackingConfig {
+            smoothing_ms: 0.0,
+            max_angular_rate_deg_s: 0.0,
+        });
+        node.set_listener_pose_target(Quat::IDENTITY, Vec3::new(0.4, 0.0, 0.0));
+        let frames = 64;
+        let mut l = vec![0.0f32; frames];
+        let mut r = vec![0.0f32; frames];
+        let mut planes: Vec<&mut [f32]> = vec![&mut l, &mut r];
+        node.process_block_f32(&mut planes);
+        assert!(!node.listener_rebake_due(0.5, Vec3::ZERO), "inside cell");
+        // Across the bound (0.6 m) — due.
+        node.set_listener_pose_target(Quat::IDENTITY, Vec3::new(0.6, 0.0, 0.0));
+        let mut planes: Vec<&mut [f32]> = vec![&mut l, &mut r];
+        node.process_block_f32(&mut planes);
+        assert!(node.listener_rebake_due(0.5, Vec3::ZERO), "crossed a cell");
+    }
+
+    #[test]
+    fn listener_pose_command_applies_through_the_control_handle() {
+        // The queued surface: `set_spatial_listener_pose` on the control
+        // handle lands at the block-boundary drain and the node glides
+        // from there. (The angle tolerance is f32 `angle_to` noise —
+        // identical quats round-trip the dot product at ~1e-3.)
+        let mut graph = crate::dsp::graph2::prod::arena::DspGraph::from_config(
+            &EngineConfig::default(),
+            48_000.0,
+        );
+        let handle = graph.control_handle();
+        handle.set_spatial_enabled(true);
+        handle.set_spatial_listener_tracking(0.0, 0.0);
+        let target = Quat::from_euler_rad(30f32.to_radians(), 0.0, 0.0);
+        handle.set_spatial_listener_pose(target, Vec3::new(1.0, 0.5, 0.0));
+        graph.drain_queued_control();
+        let (q, p) = graph.spatial().listener_pose_target();
+        assert!(
+            q.angle_to(target) < 1e-3,
+            "target applied: {}",
+            q.angle_to(target)
+        );
+        assert_eq!(p, Vec3::new(1.0, 0.5, 0.0));
+        // And the glide policy landed too.
+        let policy = graph.spatial().listener_tracking();
+        assert_eq!(policy.smoothing_ms, 0.0);
+        assert_eq!(policy.max_angular_rate_deg_s, 0.0);
+    }
+
+    #[test]
+    fn moving_listener_rotates_the_rendered_image() {
+        // End-to-end audio: a world-fixed left-impulse image moves across
+        // the ears as the listener yaws +90° through the glide — the same
+        // perceptual cue as the static `apply_listener` test, reached by
+        // motion.
+        let mut node = SpatialNode::new(48_000.0);
+        node.prepare(48_000.0, 2);
+        node.set_enabled(true);
+        node.apply_screen(0.0, 30.0, 0.0, 1.0);
+        node.set_listener_tracking(crate::spatial::TrackingConfig {
+            smoothing_ms: 0.0,
+            max_angular_rate_deg_s: 0.0,
+        });
+        node.set_listener_pose_target(
+            Quat::from_euler_rad(90f32.to_radians(), 0.0, 0.0),
+            Vec3::ZERO,
+        );
+        let frames = 1024;
+        let mut l = vec![0.0f32; frames];
+        l[64] = 1.0;
+        let mut r = vec![0.0f32; frames];
+        let mut planes: Vec<&mut [f32]> = vec![&mut l, &mut r];
+        node.process_block_f32(&mut planes);
+        let il = argmax_abs(planes[0]);
+        let ir = argmax_abs(planes[1]);
+        let expect = woodworth_samples(120f32.to_radians(), 48_000);
+        assert!(ir > il, "right ear contralateral ({ir} vs {il})");
+        assert!(
+            ((ir - il) as f32 - expect).abs() <= 6.0,
+            "ITD {} samples vs {expect}",
+            ir - il
+        );
+        let e_l: f32 = planes[0].iter().map(|v| v * v).sum();
+        let e_r: f32 = planes[1].iter().map(|v| v * v).sum();
+        assert!(e_l > e_r * 2.0, "image left ({e_l} vs {e_r})");
+    }
+
+    #[test]
+    fn converged_listener_motion_renders_deterministically() {
+        // Once converged, the motion deactivates (a settled target renders
+        // bit-identically across two fresh nodes — the same determinism
+        // discipline as the voice-budget suite; the renderer itself is
+        // stateful *within* a node, warm-up included, so the guarantee is
+        // across equal initial states).
+        let frames = 256;
+        let target = Quat::from_euler_rad(20f32.to_radians(), 0.0, 0.0);
+        let build = || -> SpatialNode {
+            let mut node = SpatialNode::new(48_000.0);
+            node.prepare(48_000.0, 2);
+            node.set_enabled(true);
+            node.set_listener_tracking(crate::spatial::TrackingConfig {
+                smoothing_ms: 0.0,
+                max_angular_rate_deg_s: 0.0,
+            });
+            node.set_listener_pose_target(target, Vec3::new(0.5, 0.5, 0.0));
+            node
+        };
+        let run = |mut node: SpatialNode| -> (Vec<f32>, f32) {
+            let mut l: Vec<f32> = (0..frames).map(|i| (i as f32 * 0.01).sin()).collect();
+            let mut r: Vec<f32> = (0..frames).map(|i| (i as f32 * 0.02).cos()).collect();
+            let mut planes: Vec<&mut [f32]> = vec![l.as_mut_slice(), r.as_mut_slice()];
+            node.process_block_f32(&mut planes); // snap + converge
+            let residual = node.listener_pose().0.angle_to(target);
+            let out = planes.iter().flat_map(|p| p.to_vec()).collect();
+            (out, residual)
+        };
+        let (a, res_a) = run(build());
+        let (b, res_b) = run(build());
+        assert!(res_a < 1e-3 && res_b < 1e-3, "motion converged");
+        assert_eq!(a, b, "equal states render bit-identically");
     }
 
     #[test]

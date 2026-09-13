@@ -552,6 +552,10 @@ pub extern "C" fn engine_correction_info(
 /// Out-params: `enabled`, `voice_active`, `voice_full_voices`,
 /// `voice_degraded_voices`, `voice_dropped_voices` (i32), and `peak_db_l`,
 /// `peak_db_r`, `rms_db_l`, `rms_db_r` (f32).
+///
+/// Phase 51: prefer [`engine_spatial_listener_pose`] for the live
+/// listener pose (yaw/pitch/roll + position) — this function keeps its
+/// Phase-17 signature unchanged.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_spatial_info(
@@ -604,6 +608,118 @@ pub extern "C" fn engine_spatial_info(
         *rms_db_l = info.as_ref().map(|i| i.rms_db_l).unwrap_or(-96.0);
         *rms_db_r = info.as_ref().map(|i| i.rms_db_r).unwrap_or(-96.0);
     }
+    EngineStatus::Ok as i32
+}
+
+/// Read the live listener pose from the spatial master telemetry
+/// (Phase 51 listener motion, v4.3.0): yaw/pitch/roll in degrees and the
+/// world-space position (metres) — the post-glide state the renderers
+/// read, mirrored on the telemetry cadence.
+///
+/// Out-params are optional (pass NULL to skip any).
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn engine_spatial_listener_pose(
+    handle: *mut EngineHandleFFI,
+    yaw_deg: *mut f32,
+    pitch_deg: *mut f32,
+    roll_deg: *mut f32,
+    pos_x: *mut f32,
+    pos_y: *mut f32,
+    pos_z: *mut f32,
+) -> i32 {
+    let h = match unsafe { handle.as_ref() } {
+        Some(h) => h,
+        None => return EngineStatus::InvalidHandle as i32,
+    };
+    let info = h.handle.playback_info().spatial;
+    let pose = info.unwrap_or_default();
+    unsafe {
+        if let Some(p) = yaw_deg.as_mut() {
+            *p = pose.listener_yaw_deg;
+        }
+        if let Some(p) = pitch_deg.as_mut() {
+            *p = pose.listener_pitch_deg;
+        }
+        if let Some(p) = roll_deg.as_mut() {
+            *p = pose.listener_roll_deg;
+        }
+        if let Some(p) = pos_x.as_mut() {
+            *p = pose.listener_position.x;
+        }
+        if let Some(p) = pos_y.as_mut() {
+            *p = pose.listener_position.y;
+        }
+        if let Some(p) = pos_z.as_mut() {
+            *p = pose.listener_position.z;
+        }
+    }
+    EngineStatus::Ok as i32
+}
+
+/// Set the target listener pose (Phase 51 listener motion): world-space
+/// orientation as a quaternion `(x, y, z, w)` + position `(x, y, z)`
+/// metres. The spatial master glides toward it every processed block
+/// (nlerp on orientation, one-pole on position) per its tracking policy.
+/// Non-finite inputs are rejected.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn engine_set_spatial_listener_pose(
+    handle: *mut EngineHandleFFI,
+    qx: f32,
+    qy: f32,
+    qz: f32,
+    qw: f32,
+    px: f32,
+    py: f32,
+    pz: f32,
+) -> i32 {
+    let h = match unsafe { handle.as_ref() } {
+        Some(h) => h,
+        None => return EngineStatus::InvalidHandle as i32,
+    };
+    use crate::spatial::math::{Quat, Vec3};
+    let q = Quat::new(qx, qy, qz, qw);
+    let p = Vec3::new(px, py, pz);
+    if !(q.x.is_finite() && q.y.is_finite() && q.z.is_finite() && q.w.is_finite()) {
+        return EngineStatus::InvalidArgument as i32;
+    }
+    if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
+        return EngineStatus::InvalidArgument as i32;
+    }
+    // Normalize a non-unit quaternion so the glide math stays exact.
+    let len = q.length();
+    let q = if len > f32::EPSILON {
+        Quat::new(q.x / len, q.y / len, q.z / len, q.w / len)
+    } else {
+        Quat::IDENTITY
+    };
+    h.handle.set_spatial_listener_pose(q, p);
+    EngineStatus::Ok as i32
+}
+
+/// Set the listener-motion glide policy (Phase 51): one-pole smoothing
+/// time constant in ms (`0` snaps exactly) and an optional angular rate
+/// limit in deg/s (`0` unlimited). Negative values are rejected.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn engine_set_spatial_listener_tracking(
+    handle: *mut EngineHandleFFI,
+    smoothing_ms: f32,
+    max_angular_rate_deg_s: f32,
+) -> i32 {
+    let h = match unsafe { handle.as_ref() } {
+        Some(h) => h,
+        None => return EngineStatus::InvalidHandle as i32,
+    };
+    if !smoothing_ms.is_finite() || smoothing_ms < 0.0 {
+        return EngineStatus::InvalidArgument as i32;
+    }
+    if !max_angular_rate_deg_s.is_finite() || max_angular_rate_deg_s < 0.0 {
+        return EngineStatus::InvalidArgument as i32;
+    }
+    h.handle
+        .set_spatial_listener_tracking(smoothing_ms, max_angular_rate_deg_s);
     EngineStatus::Ok as i32
 }
 
@@ -1333,6 +1449,50 @@ mod tests {
             EngineStatus::InvalidHandle as i32
         );
 
+        // Phase-51 listener motion: non-finite / negative inputs are
+        // rejected; the pose read tolerates NULL out-params.
+        assert_eq!(
+            engine_set_spatial_listener_pose(ptr, f32::NAN, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+            EngineStatus::InvalidArgument as i32
+        );
+        assert_eq!(
+            engine_set_spatial_listener_pose(ptr, 0.0, 0.0, 0.0, 1.0, f32::INFINITY, 0.0, 0.0),
+            EngineStatus::InvalidArgument as i32
+        );
+        assert_eq!(
+            engine_set_spatial_listener_tracking(ptr, -1.0, 0.0),
+            EngineStatus::InvalidArgument as i32
+        );
+        assert_eq!(
+            engine_set_spatial_listener_tracking(ptr, 0.0, -5.0),
+            EngineStatus::InvalidArgument as i32
+        );
+        assert_eq!(
+            engine_set_spatial_listener_pose(
+                std::ptr::null_mut(),
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ),
+            EngineStatus::InvalidHandle as i32
+        );
+        assert_eq!(
+            engine_spatial_listener_pose(
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ),
+            EngineStatus::InvalidHandle as i32
+        );
+
         shutdown(&mut ffi);
     }
 
@@ -1405,6 +1565,72 @@ mod tests {
                 &mut rr,
             ),
             EngineStatus::InvalidArgument as i32
+        );
+
+        shutdown(&mut ffi);
+    }
+
+    #[test]
+    fn ffi_spatial_listener_pose_round_trips() {
+        // Phase 51: the pose target lands on the engine handle channel and
+        // the telemetry read mirrors the live pose (the FFI tick thread
+        // drains commands and publishes telemetry on its 5 ms cadence).
+        use crate::spatial::math::Quat;
+        let (mut ffi, ptr) = ffi_with_engine(EngineConfig::default());
+
+        // A 90° yaw target at (1, 2, 0.5): normalized quaternion + position.
+        let q = Quat::from_euler_rad(90f32.to_radians(), 0.0, 0.0);
+        assert_eq!(
+            engine_set_spatial_listener_tracking(ptr, 0.0, 0.0),
+            EngineStatus::Ok as i32
+        );
+        assert_eq!(
+            engine_set_spatial_listener_pose(ptr, q.x, q.y, q.z, q.w, 1.0, 2.0, 0.5),
+            EngineStatus::Ok as i32
+        );
+        // A non-unit quaternion is normalized, not rejected (len 2·identity
+        // at the origin supersedes the first target).
+        assert_eq!(
+            engine_set_spatial_listener_pose(ptr, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0),
+            EngineStatus::Ok as i32
+        );
+
+        // Let the tick thread drain the commands and publish telemetry.
+        std::thread::sleep(std::time::Duration::from_millis(120));
+
+        let mut yaw = -999.0f32;
+        let mut pitch = -999.0f32;
+        let mut roll = -999.0f32;
+        let mut x = -999.0f32;
+        let mut y = -999.0f32;
+        let mut z = -999.0f32;
+        assert_eq!(
+            engine_spatial_listener_pose(
+                ptr, &mut yaw, &mut pitch, &mut roll, &mut x, &mut y, &mut z,
+            ),
+            EngineStatus::Ok as i32
+        );
+        // The normalized-identity-at-origin target was drained: the glide
+        // (0 ms policy) reports the snapped pose, not the sentinels.
+        assert!(yaw.abs() < 1.0, "yaw {yaw}");
+        assert!(pitch.abs() < 1.0, "pitch {pitch}");
+        assert!(roll.abs() < 1.0, "roll {roll}");
+        assert!(x.abs() < 1e-6, "x {x}");
+        assert!(y.abs() < 1e-6, "y {y}");
+        assert!(z.abs() < 1e-6, "z {z}");
+
+        // NULL out-params are skipped, not rejected.
+        assert_eq!(
+            engine_spatial_listener_pose(
+                ptr,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ),
+            EngineStatus::Ok as i32
         );
 
         shutdown(&mut ffi);

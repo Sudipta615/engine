@@ -1,13 +1,18 @@
 //! Head tracking — the VR/AR orientation seam (spec §48, §136; roadmap
-//! Phase 15).
+//! Phase 15). Phase 51 (listener motion) extends the same conventions to
+//! the listener **position**: a moving listener is tracked with the same
+//! one-pole smoothing discipline, and the pair (orientation, position)
+//! is exposed as a [`ListenerPose`] the spatial master consumes at block
+//! rate.
 //!
 //! The scene's listener already owns a world-space orientation
-//! ([`crate::spatial::scene::Listener::orientation`]) and every renderer
-//! applies it per block, so *head tracking is purely a control-side
-//! problem*: turn a stream of raw orientation samples (an IMU, a webcam, a
+//! ([`crate::spatial::scene::Listener::orientation`]) and position
+//! ([`crate::spatial::scene::Listener::position`]), and every renderer
+//! applies them per block, so *tracking is purely a control-side
+//! problem*: turn a stream of raw pose samples (an IMU, a webcam, a
 //! game engine's VR rig — anything that can produce a timestamped
-//! [`Quat`]) into a smooth, current head orientation that the host applies
-//! to the listener before each render block. The audio thread never
+//! [`Quat`] and position) into a smooth, current listener pose that the
+//! host applies before each render block. The audio thread never
 //! touches the tracker.
 //!
 //! ## The pipeline (all host-thread)
@@ -39,8 +44,28 @@
 //! untouched and lock-free). Deterministic: the same sample stream produces
 //! bit-identical orientations (verified by the acceptance suite).
 
-use super::math::Quat;
+use super::math::{Quat, Vec3};
 use super::scene::Listener;
+
+/// The full listener pose: world-space orientation + position (Phase 51).
+/// Plain data (`Copy`), so it rides the control queues and telemetry
+/// snapshots without allocation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ListenerPose {
+    /// World-space orientation (unit quaternion; +Y = facing).
+    pub orientation: Quat,
+    /// World-space position (metres).
+    pub position: Vec3,
+}
+
+impl Default for ListenerPose {
+    fn default() -> Self {
+        Self {
+            orientation: Quat::IDENTITY,
+            position: Vec3::ZERO,
+        }
+    }
+}
 
 /// Smoothing / limiting policy for a [`HeadTracker`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -71,11 +96,35 @@ pub struct HeadSample {
     pub time: f64,
     /// The head's world-space orientation at `time`.
     pub orientation: Quat,
+    /// The head's world-space position at `time` (Phase 51; metres).
+    /// Defaults to the origin for orientation-only trackers.
+    pub position: Vec3,
 }
 
 impl HeadSample {
     pub fn new(time: f64, orientation: Quat) -> Self {
-        Self { time, orientation }
+        Self {
+            time,
+            orientation,
+            position: Vec3::ZERO,
+        }
+    }
+
+    /// A full pose sample (Phase 51 listener motion).
+    pub fn with_position(time: f64, orientation: Quat, position: Vec3) -> Self {
+        Self {
+            time,
+            orientation,
+            position,
+        }
+    }
+
+    /// The sample as a [`ListenerPose`].
+    pub fn pose(&self) -> ListenerPose {
+        ListenerPose {
+            orientation: self.orientation,
+            position: self.position,
+        }
     }
 }
 
@@ -97,6 +146,17 @@ pub struct HeadTracker {
     smoothed: Quat,
     smoothed_time: f64,
     has_samples: bool,
+    // ── Phase 51: position tracking (same one-pole discipline) ──
+    /// Previous sample position (the interpolation segment's start).
+    prev_pos: Vec3,
+    /// Latest sample position (the segment's end / held target).
+    latest_pos: Vec3,
+    /// Last emitted (smoothed) position.
+    smoothed_pos: Vec3,
+    /// The time the position one-pole last advanced (tracks
+    /// `smoothed_time`; kept separate so `sample` (orientation-only)
+    /// and `sample_pose` stay independent).
+    pos_time: f64,
 }
 
 impl Default for HeadTracker {
@@ -116,6 +176,10 @@ impl HeadTracker {
             smoothed: Quat::IDENTITY,
             smoothed_time: 0.0,
             has_samples: false,
+            prev_pos: Vec3::ZERO,
+            latest_pos: Vec3::ZERO,
+            smoothed_pos: Vec3::ZERO,
+            pos_time: 0.0,
         }
     }
 
@@ -126,9 +190,11 @@ impl HeadTracker {
         if self.has_samples {
             self.prev_time = self.latest_time;
             self.prev_quat = self.latest_quat;
+            self.prev_pos = self.latest_pos;
         }
         self.latest_time = sample.time;
         self.latest_quat = sample.orientation;
+        self.latest_pos = sample.position;
         self.has_samples = true;
         self
     }
@@ -142,6 +208,10 @@ impl HeadTracker {
         self.latest_quat = sample.orientation;
         self.smoothed = sample.orientation;
         self.smoothed_time = sample.time;
+        self.prev_pos = sample.position;
+        self.latest_pos = sample.position;
+        self.smoothed_pos = sample.position;
+        self.pos_time = sample.time;
         self.has_samples = true;
         self
     }
@@ -217,6 +287,62 @@ impl HeadTracker {
         let q = self.sample(time);
         listener.set_orientation(q);
         q
+    }
+
+    /// The last smoothed listener position (origin before any sample).
+    pub fn current_position(&self) -> Vec3 {
+        self.smoothed_pos
+    }
+
+    /// Sample the smoothed listener **pose** (orientation + position) at
+    /// `time` — the Phase-51 listener-motion surface. Orientation follows
+    /// the nlerp + one-pole + rate-limit discipline of [`Self::sample`];
+    /// position interpolates linearly across the sample segment and then
+    /// one-pole smooths with the same time constant (`smoothing_ms = 0`
+    /// snaps exactly; the first pose sample snaps, no easing from the
+    /// origin). Allocation-free.
+    pub fn sample_pose(&mut self, time: f64) -> ListenerPose {
+        let orientation = self.sample(time);
+        // `sample` advanced `smoothed_time` to the block time; the
+        // position one-pole advances against its own clock so pure
+        // orientation sampling (`sample`/`apply_to`) never disturbs it.
+        let dt = (time - self.pos_time).max(0.0) as f32;
+        self.pos_time = time.max(self.pos_time);
+        let target = self.position_target(time);
+        let alpha = self.alpha(dt);
+        let next = Vec3::lerp(self.smoothed_pos, target, alpha);
+        self.smoothed_pos = next;
+        ListenerPose {
+            orientation,
+            position: next,
+        }
+    }
+
+    /// Convenience: sample the pose and write it onto a scene listener
+    /// (orientation + position) — the host's per-block loop.
+    pub fn apply_pose_to(&mut self, listener: &mut Listener, time: f64) -> ListenerPose {
+        let pose = self.sample_pose(time);
+        listener.set_orientation(pose.orientation);
+        listener.set_position(pose.position);
+        pose
+    }
+
+    /// The interpolated (pre-smoothing) position target at `time`: linear
+    /// across the last sample segment, held past the latest sample and
+    /// clamped to the segment's endpoints (mirroring the orientation
+    /// target's clamp behaviour).
+    fn position_target(&self, time: f64) -> Vec3 {
+        if !self.has_samples {
+            return Vec3::ZERO;
+        }
+        if time >= self.latest_time || self.prev_time == self.latest_time {
+            self.latest_pos
+        } else if time <= self.prev_time {
+            self.prev_pos
+        } else {
+            let f = ((time - self.prev_time) / (self.latest_time - self.prev_time)) as f32;
+            self.prev_pos.lerp(self.latest_pos, f)
+        }
     }
 }
 
@@ -396,6 +522,128 @@ mod tests {
             let got = deg_between(q, yaw(deg));
             assert!(got < 1e-3, "sweep point {k}: {got}°");
             assert!(q.length() - 1.0 < 1e-6, "unit quaternion");
+        }
+    }
+
+    #[test]
+    fn pose_sampling_interpolates_position_across_the_segment() {
+        // Phase 51: two pose samples 0→(3, 0, 0) over 100 ms; exact mode
+        // (smoothing 0) returns the closed-form midpoint, holds past the
+        // latest sample, and the first pose snaps (no easing from origin).
+        let mut t = HeadTracker::new(TrackingConfig {
+            smoothing_ms: 0.0,
+            max_angular_rate_deg_s: 0.0,
+        });
+        t.push(HeadSample::with_position(0.0, yaw(0.0), Vec3::ZERO));
+        t.push(HeadSample::with_position(
+            0.1,
+            yaw(90.0),
+            Vec3::new(3.0, 0.0, 0.0),
+        ));
+        let mid = t.sample_pose(0.05);
+        assert!(
+            (mid.position.x - 1.5).abs() < 1e-4,
+            "mid x {}",
+            mid.position.x
+        );
+        assert!((mid.position.y).abs() < 1e-9 && (mid.position.z).abs() < 1e-9);
+        assert!(
+            (deg_between(mid.orientation, Q::IDENTITY) - 45.0).abs() < EPS,
+            "mid yaw"
+        );
+        let late = t.sample_pose(0.5);
+        assert!(
+            (late.position.x - 3.0).abs() < 1e-6,
+            "holds latest position"
+        );
+        // Before the first sample the segment start clamps.
+        let mut t2 = HeadTracker::new(TrackingConfig {
+            smoothing_ms: 0.0,
+            max_angular_rate_deg_s: 0.0,
+        });
+        t2.push(HeadSample::with_position(
+            0.1,
+            yaw(90.0),
+            Vec3::new(3.0, 0.0, 0.0),
+        ));
+        let early = t2.sample_pose(0.0);
+        assert!((early.position.x - 0.0).abs() < 1e-9, "clamps to start");
+    }
+
+    #[test]
+    fn pose_smoothing_ramps_a_position_jump_and_converges() {
+        // A 4 m jump with τ = 20 ms sampled at 100 Hz: bounded per-step
+        // travel, exponential convergence — the orientation discipline
+        // applied to position.
+        let mut t = HeadTracker::new(TrackingConfig {
+            smoothing_ms: 20.0,
+            max_angular_rate_deg_s: 0.0,
+        });
+        t.push(HeadSample::with_position(0.0, yaw(0.0), Vec3::ZERO));
+        t.push(HeadSample::with_position(
+            0.01,
+            yaw(90.0),
+            Vec3::new(4.0, 0.0, 0.0),
+        ));
+        let mut prev = t.sample_pose(0.0).position;
+        for k in 1..=60 {
+            let p = t.sample_pose(0.01 * k as f64).position;
+            let step = (p.x - prev.x).abs();
+            assert!(step < 4.0, "no single-block 4 m jump (step {step} at {k})");
+            prev = p;
+        }
+        assert!(
+            (prev.x - 4.0).abs() < 0.05,
+            "converged after 60 samples: {}",
+            prev.x
+        );
+    }
+
+    #[test]
+    fn apply_pose_to_writes_orientation_and_position() {
+        let mut t = HeadTracker::new(TrackingConfig {
+            smoothing_ms: 0.0,
+            max_angular_rate_deg_s: 0.0,
+        });
+        t.push(HeadSample::with_position(0.0, yaw(0.0), Vec3::ZERO));
+        t.push(HeadSample::with_position(
+            0.1,
+            yaw(90.0),
+            Vec3::new(2.0, 1.0, 0.5),
+        ));
+        let mut scene = crate::spatial::scene::SpatialScene::new(48_000);
+        let pose = t.apply_pose_to(&mut scene.listener, 0.1);
+        assert_eq!(scene.listener.orientation, pose.orientation);
+        assert_eq!(scene.listener.position, pose.position);
+        assert_eq!(scene.listener.position, Vec3::new(2.0, 1.0, 0.5));
+        assert!(scene.listener.orientation.angle_to(yaw(90.0)) < 1e-5);
+    }
+
+    #[test]
+    fn pose_sampling_is_deterministic() {
+        let build = || {
+            let mut t = HeadTracker::new(TrackingConfig {
+                smoothing_ms: 12.0,
+                max_angular_rate_deg_s: 0.0,
+            });
+            t.push(HeadSample::with_position(
+                0.0,
+                yaw(10.0),
+                Vec3::new(0.0, 0.0, 0.0),
+            ));
+            t.push(HeadSample::with_position(
+                0.1,
+                yaw(80.0),
+                Vec3::new(1.5, 2.5, -0.5),
+            ));
+            t
+        };
+        let mut a = build();
+        let mut b = build();
+        for k in 0..=20 {
+            let pa = a.sample_pose(0.005 * k as f64);
+            let pb = b.sample_pose(0.005 * k as f64);
+            assert_eq!(pa, pb, "pose streams identical at {k}");
         }
     }
 }

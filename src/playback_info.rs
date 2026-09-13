@@ -143,11 +143,12 @@ pub struct PlaybackInfo {
     pub spatial_health: Option<crate::spatial::health::SpatialHealthSnapshot>,
 }
 
-/// Spatial master output telemetry (Phase 17). Mirrored from the
-/// [`crate::dsp::graph2::prod::SpatialNode`] on the telemetry cadence: the
-/// binaural output's left/right-ear peak & RMS (dBFS) and the per-block
-/// voice-budget admission counts (spec §76). Hosts read this from the
-/// lock-free [`PlaybackInfo`] snapshot.
+/// Spatial master output telemetry (Phase 17; listener pose added in
+/// Phase 51). Mirrored from the [`crate::dsp::graph2::prod::SpatialNode`]
+/// on the telemetry cadence: the binaural output's left/right-ear peak &
+/// RMS (dBFS), the per-block voice-budget admission counts (spec §76),
+/// and the live listener pose (yaw/pitch/roll degrees + world position).
+/// Hosts read this from the lock-free [`PlaybackInfo`] snapshot.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SpatialTelemetry {
     /// Whether the spatial master stage is enabled.
@@ -168,6 +169,14 @@ pub struct SpatialTelemetry {
     pub rms_db_l: f32,
     /// Right-ear output RMS, dBFS.
     pub rms_db_r: f32,
+    /// Live listener yaw (degrees; Phase 51 listener motion).
+    pub listener_yaw_deg: f32,
+    /// Live listener pitch (degrees).
+    pub listener_pitch_deg: f32,
+    /// Live listener roll (degrees).
+    pub listener_roll_deg: f32,
+    /// Live listener world position (metres).
+    pub listener_position: crate::spatial::math::Vec3,
 }
 
 /// Phase-7 S5 room/headphone correction telemetry.

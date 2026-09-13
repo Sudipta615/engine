@@ -1132,6 +1132,65 @@ fn realtime_spatial_node_does_not_allocate() {
     );
 }
 
+/// Phase 51 (listener motion, v4.3.0): a runtime-moving listener — pose
+/// targets re-set every block through the queued control surface and the
+/// node gliding (nlerp + one-pole + rate limit) inside the plan step —
+/// must stay allocation-free on the audio path. This exercises the exact
+/// production surface: `set_spatial_listener_pose` enqueues, the drain
+/// applies, `glide_listener` runs inside `render_block`.
+#[test]
+fn realtime_spatial_listener_motion_does_not_allocate() {
+    let mut graph = DspGraph::from_config(&config::EngineConfig::default(), 48_000.0);
+    graph.set_spatial_enabled(true);
+    graph.set_spatial_screen(0.0, 30.0, 0.0, 1.0);
+    graph.set_spatial_room(true, 12.0, 10.0, 3.0, 0.3, 2, 800.0, 0.5, false, 0.5);
+    graph.set_spatial_listener_pose(Quat::IDENTITY, Vec3::ZERO);
+    graph.drain_queued_control();
+    assert!(graph.spatial().enabled());
+
+    let mut left = [0.0f32; 128];
+    let mut right = [0.0f32; 128];
+
+    // Warm up: fill the ITD rings and the room state before arming.
+    left[0] = 1.0;
+    right[0] = 0.5;
+    graph.process_block(&mut left, &mut right);
+    left.fill(0.0);
+    right.fill(0.0);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    // A per-block pose target sweep drives the glide every block: the
+    // target changes (never converges), so the nlerp / one-pole / rate
+    // limit path runs fully each block alongside the room + binaural
+    // render.
+    let mut yaw = 0.0f32;
+    let mut x = 0.0f32;
+    for block in 0..10_000 {
+        yaw = (yaw + 0.05) % 360.0;
+        x = (x + 0.01) % 2.0;
+        let q = engine::spatial::math::Quat::from_euler_rad(
+            yaw.to_radians(),
+            (block as f32 * 0.001).sin(),
+            0.0,
+        );
+        graph.set_spatial_listener_pose(q, Vec3::new(x, 0.5, 0.0));
+        graph.drain_queued_control();
+        left.fill(0.2);
+        right.fill(0.15);
+        graph.process_block(&mut left, &mut right);
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocations = THREAD_ALLOCS.with(|c| c.get());
+
+    assert_eq!(
+        allocations, 0,
+        "listener-motion spatial processing allocated on the audio path"
+    );
+}
+
 /// The measured-HRTF dataset path (Phase 11 / roadmap Phase 18) must be
 /// allocation-free even in the worst case: bilinear IR interpolation into
 /// preallocated scratch, FIR convolution on preallocated rings, and the

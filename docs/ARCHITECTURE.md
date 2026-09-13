@@ -467,10 +467,12 @@ src/
 │   │                         #   (semantic-role fold, LFE at 1/√2), fields
 │   │                         #   + late field via a virtual 8-speaker ring
 │   ├── tracking.rs           # Head tracking (VR/AR seam): HeadTracker,
-│   │                         #   HeadSample, TrackingConfig — nlerp
-│   │                         #   interpolation + one-pole smoothing +
-│   │                         #   optional rate limit; host applies the
-│   │                         #   result to the listener per block
+│   │                         #   HeadSample, TrackingConfig, ListenerPose
+│   │                         #   — nlerp interpolation + one-pole
+│   │                         #   smoothing + optional rate limit, the
+│   │                         #   same discipline extended to position
+│   │                         #   (Phase 51 listener motion); host applies
+│   │                         #   the result to the listener per block
 │   ├── automation.rs         # Spatial automation: CurveScalar / CurveVec3 /
 │   │                         #   CurveQuat positional-seconds curves + a
 │   │                         #   SpatialAutomation evaluated allocation-free

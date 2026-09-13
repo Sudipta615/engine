@@ -458,6 +458,31 @@ impl EngineHandle {
         let _ = self.send_command(EngineCommand::SetSpatialAutomationTime(seconds));
     }
 
+    /// Phase-51 listener motion: set the target listener pose (world-space
+    /// orientation + position). The spatial master glides toward it every
+    /// processed block per its tracking policy — the runtime-editable
+    /// listener rotation/position surface (v4.3.0).
+    pub fn set_spatial_listener_pose(
+        &self,
+        orientation: crate::spatial::math::Quat,
+        position: crate::spatial::math::Vec3,
+    ) {
+        let _ = self.send_command(EngineCommand::SetSpatialListenerPose {
+            orientation,
+            position,
+        });
+    }
+
+    /// Phase-51 listener motion: set the glide's smoothing policy (one-pole
+    /// time constant ms, `0` snaps; angular rate limit deg/s, `0`
+    /// unlimited).
+    pub fn set_spatial_listener_tracking(&self, smoothing_ms: f32, max_rate_deg_s: f32) {
+        let _ = self.send_command(EngineCommand::SetSpatialListenerTracking {
+            smoothing_ms,
+            max_angular_rate_deg_s: max_rate_deg_s,
+        });
+    }
+
     /// Live wet/dry depth in [0, 1] (1.0 = fully corrected).
     pub fn set_correction_depth(&self, depth: f32) {
         let _ = self.send_command(EngineCommand::SetCorrectionDepth(depth));

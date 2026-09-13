@@ -226,6 +226,6 @@ pub use scene::{
 #[cfg(feature = "sofa-import")]
 pub use sofa::{import_sofa, SofaImportError};
 pub use speaker::{LayoutCalibration, Speaker, SpeakerId, SpeakerLayout};
-pub use tracking::{HeadSample, HeadTracker, TrackingConfig};
+pub use tracking::{HeadSample, HeadTracker, ListenerPose, TrackingConfig};
 pub use upmix::{UpmixMode, UpmixTrims};
 pub use voice::{BudgetCandidate, VoiceAdmission, VoiceBudget, VoicePlan, VoicePriority};

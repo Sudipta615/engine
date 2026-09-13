@@ -112,6 +112,25 @@ pub(crate) enum NodeCmd {
         pitch_deg: f32,
         roll_deg: f32,
     },
+    /// Phase-51 listener motion: target listener pose (world-space
+    /// orientation + position) the node glides toward per block.
+    SetSpatialListenerPose {
+        /// Quaternion bit pattern `(x, y, z, w)` — `Quat` is plain data
+        /// but not `Copy`-friendly for the queue, so it rides as bits.
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+        px: f32,
+        py: f32,
+        pz: f32,
+    },
+    /// Phase-51 listener motion: smoothing / rate-limit policy for the
+    /// listener glide.
+    SetSpatialListenerTracking {
+        smoothing_ms: f32,
+        max_angular_rate_deg_s: f32,
+    },
     /// Runtime crossfade config (Phase 3 S3): curve / enabled / duration
     /// mirror the pipeline's `TrackMixer` setters the engine calls on
     /// `handle_set_crossfade_config`.
@@ -1127,6 +1146,42 @@ impl GraphControlHandle {
         );
     }
 
+    /// Phase-51 listener motion: set the target listener pose (world-space
+    /// orientation quaternion + position). The spatial node glides toward
+    /// it every processed block (nlerp + one-pole per its tracking policy),
+    /// so a moving listener sweeps the image smoothly instead of snapping.
+    pub fn set_spatial_listener_pose(
+        &self,
+        orientation: crate::spatial::math::Quat,
+        position: crate::spatial::math::Vec3,
+    ) {
+        self.enqueue(
+            node_id::SPATIAL,
+            NodeCmd::SetSpatialListenerPose {
+                qx: orientation.x,
+                qy: orientation.y,
+                qz: orientation.z,
+                qw: orientation.w,
+                px: position.x,
+                py: position.y,
+                pz: position.z,
+            },
+        );
+    }
+
+    /// Phase-51 listener motion: set the listener glide's smoothing policy
+    /// (one-pole time constant ms; `0` snaps; angular rate limit deg/s,
+    /// `0` unlimited).
+    pub fn set_spatial_listener_tracking(&self, smoothing_ms: f32, max_angular_rate_deg_s: f32) {
+        self.enqueue(
+            node_id::SPATIAL,
+            NodeCmd::SetSpatialListenerTracking {
+                smoothing_ms,
+                max_angular_rate_deg_s,
+            },
+        );
+    }
+
     /// Control-side read of the mirrored spatial enable flag.
     pub fn spatial_enabled(&self) -> bool {
         self.bus.user_spatial()
@@ -1517,6 +1572,31 @@ fn apply_node_cmd(node: &mut GraphNode, cmd: &NodeCmd) {
                 roll_deg,
             },
         ) => n.apply_listener(*yaw_deg, *pitch_deg, *roll_deg),
+        (
+            GraphNode::Spatial(n),
+            NodeCmd::SetSpatialListenerPose {
+                qx,
+                qy,
+                qz,
+                qw,
+                px,
+                py,
+                pz,
+            },
+        ) => {
+            use crate::spatial::math::{Quat, Vec3};
+            n.set_listener_pose_target(Quat::new(*qx, *qy, *qz, *qw), Vec3::new(*px, *py, *pz));
+        }
+        (
+            GraphNode::Spatial(n),
+            NodeCmd::SetSpatialListenerTracking {
+                smoothing_ms,
+                max_angular_rate_deg_s,
+            },
+        ) => n.set_listener_tracking(crate::spatial::TrackingConfig {
+            smoothing_ms: *smoothing_ms,
+            max_angular_rate_deg_s: *max_angular_rate_deg_s,
+        }),
         (GraphNode::Mix(n), NodeCmd::SetMixCurve(c)) => n.curve = (*c).into(),
         (GraphNode::Mix(n), NodeCmd::SetMixEnabled(e)) => n.crossfade_enabled = *e,
         (GraphNode::Mix(n), NodeCmd::SetMixDurationFrames(f)) => {
@@ -1928,6 +2008,24 @@ impl DspGraph {
     pub fn set_spatial_listener(&self, yaw_deg: f32, pitch_deg: f32, roll_deg: f32) {
         self.control_handle()
             .set_spatial_listener(yaw_deg, pitch_deg, roll_deg);
+    }
+
+    /// Phase-51 listener motion: set the target listener pose (see
+    /// [`GraphControlHandle::set_spatial_listener_pose`]).
+    pub fn set_spatial_listener_pose(
+        &self,
+        orientation: crate::spatial::math::Quat,
+        position: crate::spatial::math::Vec3,
+    ) {
+        self.control_handle()
+            .set_spatial_listener_pose(orientation, position);
+    }
+
+    /// Phase-51 listener motion: set the listener glide's smoothing policy
+    /// (see [`GraphControlHandle::set_spatial_listener_tracking`]).
+    pub fn set_spatial_listener_tracking(&self, smoothing_ms: f32, max_rate_deg_s: f32) {
+        self.control_handle()
+            .set_spatial_listener_tracking(smoothing_ms, max_rate_deg_s);
     }
 
     /// The spatial master's enable flag (mirrored at drain).
