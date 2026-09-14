@@ -73,7 +73,7 @@ pub struct EngineConfig {
     #[serde(default)]
     pub spatial: SpatialConfig,
     /// Optional explicit path for the active spatial scene's auto-save file
-    /// (Phase 21). `None` = the engine's user-data directory default
+    /// . `None` = the engine's user-data directory default
     /// (`<data_local_dir>/engine/spatial_scene.json`). Hosts that want a
     /// custom location (or to disable persistence entirely, via `Some` of a
     /// path that is never writable) set this.
@@ -81,7 +81,7 @@ pub struct EngineConfig {
     pub spatial_autosave_path: Option<std::path::PathBuf>,
     #[serde(default)]
     pub endpoints: Vec<EndpointConfig>,
-    /// Phase 49: the plugin host insert (Rust-native effect plugins at
+    /// The plugin host insert (Rust-native effect plugins at
     /// the master insert seam). Disabled by default = bit-exact.
     #[serde(default)]
     pub plugins: PluginHostConfig,
@@ -136,7 +136,7 @@ fn default_drift_correction() -> bool {
     true
 }
 
-/// Phase 49: one plugin slot in the master insert chain.
+/// One plugin slot in the master insert chain.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PluginSlotConfig {
     /// How to locate the plugin: either a library path (`/path/libecho.so`)
@@ -156,7 +156,7 @@ pub struct PluginSlotConfig {
     pub state: Option<Vec<u8>>,
 }
 
-/// Phase 49: the plugin host insert section.
+/// The plugin host insert section.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PluginHostConfig {
     /// Master-chain inserts, in application order. The plugin host node
@@ -265,7 +265,7 @@ pub struct AuxBusConfig {
     pub enabled: bool,
     #[serde(default = "default_master_gain")]
     pub return_gain: f32,
-    /// Whether the insert convolution is active (Phase 6). Disabled = no
+    /// Whether the insert convolution is active. Disabled = no
     /// insert processing = bit-exact.
     #[serde(default)]
     pub insert_enabled: bool,
@@ -293,7 +293,7 @@ fn default_mix_slots() -> usize {
     2
 }
 
-/// The spatial master output stage (Phase 17): renders the mixed front
+/// The spatial master output stage: renders the mixed front
 /// pair through the engine's spatial layer (binaural head model + room).
 /// Disabled by default, so existing configurations render bit-identically.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -333,7 +333,7 @@ pub struct SpatialConfig {
     /// Output metering enable (spec §70).
     #[serde(default)]
     pub metering: SpatialMeterConfig,
-    /// Named trigger cues (Phase 52, v4.4.0): the bank the spatial master
+    /// Named trigger cues (v4.4.0): the bank the spatial master
     /// loads at construction / reconfig and fires by name at runtime
     /// (`EngineCommand::TriggerSpatialCue` / the timeline scheduler).
     #[serde(default)]
@@ -389,7 +389,7 @@ pub struct SpatialRoomConfig {
     /// Late-field wet mix `0..1`.
     #[serde(default = "default_room_late_mix")]
     pub late_mix: f32,
-    /// Late-field distance roll-off (Phase 50): attenuate each object's
+    /// Late-field distance roll-off: attenuate each object's
     /// room-send by its distance model at its direct distance, so the
     /// tail rolls off with source distance like the direct and
     /// early-reflection paths. Default `false` = legacy bit-exact.
@@ -830,7 +830,7 @@ impl EngineConfig {
                 message: v.warnings.last().unwrap().clone(),
             });
         }
-        // Phase 49: plugin host insert validation. Enabled slots must
+        // Plugin host insert validation. Enabled slots must
         // name a plugin source; params must be finite. Loading the
         // library / resolving the UID happens in the engine (which owns
         // the host), not here.

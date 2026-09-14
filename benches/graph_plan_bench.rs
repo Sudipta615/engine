@@ -83,7 +83,7 @@ fn bench_graph_plan(c: &mut Criterion) {
 }
 
 /// Head-to-head: the enum-dispatch plan executor vs the direct-call pipeline.
-/// The Phase-1 contract is that the graph never regresses the hot path
+/// The contract is that the graph never regresses the hot path
 /// dramatically; this group is the reporting side of that gate (the hard
 /// CI assertion lives in the equivalence suite's fixed-iteration test).
 fn bench_graph_vs_pipeline(c: &mut Criterion) {
@@ -124,7 +124,7 @@ fn bench_graph_vs_pipeline(c: &mut Criterion) {
     group.finish();
 }
 
-/// Phase 2: live reconfiguration cost. A generation swap lands at a block
+/// Live reconfiguration cost. A generation swap lands at a block
 /// boundary every K blocks (build + publish on the control side, swap on the
 /// audio side) while the hot path runs uninterrupted. Reconfigs are rare
 /// events; these groups report the marginal per-block cost of a live reconfig

@@ -1,4 +1,4 @@
-//! S4 — correction derivation: from a conditioned IR to a phase-rendered
+//! Correction derivation: from a conditioned IR to a phase-rendered
 //! correction IR set.
 //!
 //! The chain, all control-thread `f64` DSP:

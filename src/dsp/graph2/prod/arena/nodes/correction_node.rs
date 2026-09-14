@@ -1,12 +1,12 @@
-//! Phase 7 S5 — the correction node: a per-channel bank of partitioned
+//! Room/headphone correction — the correction node: a per-channel bank of partitioned
 //! [`ConvolutionEngine`]s running as an `AllChannels`-scoped plan step placed
 //! **post-aux / pre-EQ** (`mix → aux → correction → eq → …`), so user EQ
 //! stacks on the corrected response and the node's declared latency flows
 //! into the graph's latency metadata (`position_secs_compensated`).
 //!
 //! The node only ever processes **pre-rendered** correction IRs
-//! ([`CorrectionIrSet`], produced by the S4 derive chain on the control
-//! thread). Nothing in the S1–S4 measurement machinery is on the hot path:
+//! ([`CorrectionIrSet`], produced by the correction derivation chain on the control
+//! Thread). Nothing in the measurement-to-correction measurement machinery is on the hot path:
 //! the IR set is loaded once (control path — allocation is fine there) and
 //! the engines then run the same allocation-free partitioned-FFT contract as
 //! the existing convolution node.
@@ -119,8 +119,8 @@ impl CorrectionNode {
                 .all(|e| e.is_ir_loaded() && !e.ir_needs_reload())
     }
 
-    /// Apply the derivation config (Phase 7 S5): enabled / depth plus the
-    /// optional measured IR paths, which run the full S2→S4 chain
+    /// Apply the derivation config: enabled / depth plus the
+    /// Optional measured IR paths, which run the full IR conditioning to derivation chain
     /// (condition → smooth → SNR-weighted regularized inverse → phase
     /// render) on the control path. A missing/unreadable IR leaves the node
     /// inactive — bit-exact passthrough.
@@ -239,7 +239,7 @@ impl CorrectionNode {
     }
 }
 
-/// Run the S2→S4 chain over the configured measured IR paths (control
+/// Run the IR conditioning to derivation chain over the configured measured IR paths (control
 /// path). One path = a multichannel WAV; several = per-channel files (each
 /// file's channel 0 is that channel's measurement).
 fn derive_from_config(
@@ -271,7 +271,7 @@ fn derive_from_config(
         (merged, rate)
     };
 
-    // The S2 conditioner is strict about rate alignment: a file whose rate
+    // The conditioner is strict about rate alignment: a file whose rate
     // differs from the session must be resampled before conditioning (the
     // engine's rate machinery owns that; here the mismatch surfaces as a
     // logged warning and the node stays bit-exact).

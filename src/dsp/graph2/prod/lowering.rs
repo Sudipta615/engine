@@ -1,5 +1,5 @@
 //! Plan lowering: the compiled Graph2 production topology → the arena
-//! [`PlanSet`] (Phase 46; since Phase 48 the **single plan source**).
+//! [`PlanSet`] (since the **single plan source**).
 //!
 //! [`lowered_plans`] walks the topologically compiled MC-chain order and
 //! emits one [`PlanStep`] per chain node (skipping the output-domain

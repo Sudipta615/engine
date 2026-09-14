@@ -197,7 +197,7 @@ impl AelogRecorder {
         });
     }
 
-    // ── Phase 52: scene animation cues ─────────────────────────────────────
+    // ── Scene animation cues ─────────────────────────────────────
 
     /// Record the spatial master's **cue bank** (the scene's named cues,
     /// serde model verbatim). Idempotent; record before any cue

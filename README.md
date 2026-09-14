@@ -12,7 +12,7 @@ from C, C++, Python, C#, Node.js, and any language that can call C.
 
 > **Documentation:** [Owner's Guide](docs/OWNERS_GUIDE.md) (plain-English, full-system map) ·
 > [Architecture](docs/ARCHITECTURE.md) · [Signal Flow](docs/SIGNAL_FLOW.md) ·
-> [Embedding guide](docs/EMBEDDING.md) · [Evolution](docs/EVOLUTION.md) · [Contributing & versioning](AGENTS.md)
+> [Embedding guide](docs/EMBEDDING.md) · [Contributing & versioning](AGENTS.md)
 
 ---
 
@@ -504,7 +504,7 @@ cross-target compile check of the native WASAPI/ASIO backends. Always re-run `ca
 │   └── bin/                   # audio-engine-cli, replaygain-scanner
 ├── benches/                   # dsp_bench, pipeline_bench, graph_plan_bench, spatial_bench
 ├── docs/                      # OWNERS_GUIDE.md, ARCHITECTURE.md, SIGNAL_FLOW.md,
-│                              #   EMBEDDING.md, EVOLUTION.md, QUALITY.md
+│                              #   EMBEDDING.md
 └── tests/                     # headless_playback.rs + decoder_from_memory.rs +
                                #   memory_and_hotplug.rs, fidelity/ (55 suites)
 ```

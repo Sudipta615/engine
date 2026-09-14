@@ -162,7 +162,7 @@ pub struct BinauralRenderer {
     obj_itd: Vec<f32>,
     /// Per-(object, direction, ear) head-shadow shelf.
     obj_shelf: Vec<HeadShadow>,
-    /// Per-(object, direction, ear) pinna notch (Phase 18: the analytic
+    /// Per-(object, direction, ear) pinna notch (the analytic
     /// elevation cue; zero-depth at 0° elevation = passthrough).
     obj_notch: Vec<ElevationNotch>,
     /// ITD ring length (from the head parameters and sample rate).
@@ -170,7 +170,7 @@ pub struct BinauralRenderer {
     /// Global ring write cursor (every ring is written each frame).
     itd_pos: usize,
 
-    /// Phase 18: loaded measured/synthetic spectral HRTFs. `None` = the
+    /// Loaded measured/synthetic spectral HRTFs. `None` = the
     /// analytic head model (ITD ring + shelf + notch) serves the direct
     /// object paths.
     dataset: Option<std::sync::Arc<HrtfDataset>>,
@@ -190,7 +190,7 @@ pub struct BinauralRenderer {
     room_late: RoomLateField,
     /// Per-(object, image, ear) reflection shadow shelf + smoothed tap gain.
     ref_shelf: Vec<HeadShadow>,
-    /// Per-(object, image, ear) reflection pinna notch (Phase 18).
+    /// Per-(object, image, ear) reflection pinna notch.
     ref_notch: Vec<ElevationNotch>,
     ref_gain: Vec<f32>,
     late_scratch: Vec<f32>,
@@ -223,7 +223,7 @@ pub struct BinauralRenderer {
     /// solve every block. `None` (default) keeps the live solve path
     /// bit-identical.
     baked: Option<BakedScene>,
-    /// Scene-wide air-absorption model (Phase 50): applied on the live
+    /// Scene-wide air-absorption model: applied on the live
     /// reflection path as a per-image distance corner composed onto each
     /// image's surface corner (the baked path composes its own). Disabled
     /// (default) keeps every reflection bit-identical.
@@ -328,7 +328,7 @@ impl BinauralRenderer {
     }
 
     /// Configure the scene-wide air-absorption model applied to **live**
-    /// room reflections (Phase 50): each image's surface corner is composed
+    /// Room reflections: each image's surface corner is composed
     /// with the model's distance corner so realtime reflections darken with
     /// travel distance, agreeing with the offline spectral kernels. Disabled
     /// (default) keeps the reflection path bit-identical.
@@ -337,7 +337,7 @@ impl BinauralRenderer {
         self
     }
 
-    /// The scene-wide air-absorption model (Phase 50).
+    /// The scene-wide air-absorption model.
     pub fn air_absorption(&self) -> AirAbsorption {
         self.air_absorption
     }
@@ -362,7 +362,7 @@ impl BinauralRenderer {
         self
     }
 
-    /// Load (or clear) a spectral HRTF dataset (Phase 18). Control path,
+    /// Load (or clear) a spectral HRTF dataset. Control path,
     /// must be set before `prepare`. When loaded, the direct object paths
     /// replace the analytic ITD ring + shelf + notch with FIR convolution
     /// of the bilinearly interpolated impulse response (which carries the
@@ -429,7 +429,7 @@ impl BinauralRenderer {
         self.bed_itd = vec![0.0; MAX_BEDS * MAX_BED_CHANNELS * self.itd_len];
         self.vs_itd = vec![0.0; VIRTUAL_RING_SPEAKERS * self.itd_len];
 
-        // Phase 18: size the FIR path from the loaded dataset (per-object
+        // Size the FIR path from the loaded dataset (per-object
         // ring shared by all (direction, ear) convolutions + per-path IR
         // scratch).
         if let Some(ds) = &self.dataset {
@@ -621,7 +621,7 @@ impl BinauralRenderer {
                 }
             }
 
-            // Phase 18: hoist the per-(direction, ear) IR interpolation
+            // Hoist the per-(direction, ear) IR interpolation
             // (bilinear in azimuth/elevation) once per block when a
             // dataset is loaded.
             if let Some(ds) = &self.dataset {
@@ -678,7 +678,7 @@ impl BinauralRenderer {
                     ref_az[i] = az;
                     // v3.47: colour the reflection with its surface's
                     // spectral low-pass (material spectrum / diffraction
-                    // corner) when the baked path carries one. Phase 50:
+                    // Corner) when the baked path carries one.:
                     // on the live path, fold the scene-wide air model's
                     // distance corner into the image's corner so realtime
                     // reflections darken with distance exactly as the
@@ -723,7 +723,7 @@ impl BinauralRenderer {
             let fir_len = self.fir_len;
             let taps = self.dataset.as_ref().map(|d| d.taps()).unwrap_or(0);
 
-            // Phase 22: hoist per-frame-constant geometry out of the frame
+            // Hoist per-frame-constant geometry out of the frame
             // loop. The analytic ITD delay and the room images' ITD are pure
             // functions of this block's (direction/ear) and (image/ear)
             // pairs — computing them once per block instead of once per
@@ -795,7 +795,7 @@ impl BinauralRenderer {
                         if use_fir {
                             let ir_base = idx * taps;
                             let mut acc = 0.0f32;
-                            // Phase 22: descending ring reads with a wrap
+                            // Descending ring reads with a wrap
                             // branch instead of a modulo per tap. `taps <
                             // fir_len`, so the window wraps at most once;
                             // same samples, same order — bit-exact.
@@ -856,7 +856,7 @@ impl BinauralRenderer {
                         }
                     }
                     if obj.room_send > 0.0 {
-                        // Phase 50 item 3: late-field distance roll-off (see
+                        // Item 3: late-field distance roll-off (see
                         // the panner's identical branch); off = legacy send.
                         let send = if scene.room.late_distance {
                             s * gain * obj.room_send * dist_gain

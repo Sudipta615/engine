@@ -1,4 +1,4 @@
-//! Multi-track lane registry (Phase 4 S6).
+//! Multi-track lane registry.
 //!
 //! A lane is an independent playback stream mixed onto a mix-bus slot ≥ 2
 //! (an "always-on track"). Lanes decode independently of the primary
@@ -47,9 +47,9 @@ pub struct LaneTrack {
     pub gain: f32,
     /// User pan target in [-1, 1].
     pub pan: f32,
-    /// Post-fader master-send gain in [0, 1] (Phase 5 S2).
+    /// Post-fader master-send gain in [0, 1].
     pub send_master_gain: f32,
-    /// Post-fader aux-send gain in [0, 1] (Phase 5 S2).
+    /// Post-fader aux-send gain in [0, 1].
     pub send_aux_gain: f32,
     /// Set on EndOfStream; the lane contributes silence until removed.
     pub finished: bool,

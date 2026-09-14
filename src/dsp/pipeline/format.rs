@@ -137,7 +137,7 @@ pub struct BitPerfectReport {
     pub compressor_bypassed: bool,
     /// Convolution / FIR bypassed (or no IR loaded).
     pub convolution_bypassed: bool,
-    /// Room/headphone correction bypassed (Phase 7 S5: disabled or no IR
+    /// Room/headphone correction bypassed (disabled or no IR
     /// loaded — an inactive correction node is bit-exact).
     pub correction_bypassed: bool,
     /// Crossfeed bypassed.
@@ -271,7 +271,7 @@ pub struct LatencyReport {
     /// Uniform partitioned convolution delay (ms).
     pub convolution_latency_ms: f32,
     /// Room/headphone correction latency (ms) — the correction IR set's
-    /// declared phase-mode group delay (Phase 7 S5); 0 when inactive.
+    /// Declared phase-mode group delay; 0 when inactive.
     pub correction_latency_ms: f32,
     /// Crossfeed delay-line latency (ms); 0 when the crossfeed is disabled.
     /// The low-pass biquads add phase delay too, but the ring-buffer delay is

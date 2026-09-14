@@ -1,7 +1,7 @@
 //! # Shadow Desktop Plugin ABI
 //!
 //! The versioned Rust-native plugin specification for Shadow Desktop
-//! (Phase 49): effect plugins compiled as pure Rust crates that expose a
+//! Effect plugins compiled as pure Rust crates that expose a
 //! **stable C-ABI vtable** and are hosted in the engine's production DSP
 //! graph at the master insert seam.
 //!

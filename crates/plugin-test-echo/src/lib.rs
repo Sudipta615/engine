@@ -1,6 +1,6 @@
 //! # Reference plugin: `echo`
 //!
-//! A deliberately simple but *complete* Phase-49 plugin: a feedback-free
+//! A deliberately simple but *complete* plugin: a feedback-free
 //! delay line ("echo") with input gain, per-channel delay in
 //! milliseconds, and wet/dry mix. It demonstrates every ABI obligation:
 //!

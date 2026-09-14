@@ -1,6 +1,6 @@
 //! Fidelity tests — Acoustic World (v3.25, Direction 6/7/8/9).
 //!
-//! Evolution thresholds (`docs/EVOLUTION.md` Phase 23):
+//! Fidelity thresholds:
 //! * a source/listener pair in an order-1 box yields exactly one direct +
 //!   six image-source reflections, each carrying a finite, physically-placed
 //!   delay (excess path over the direct, matched to the renderer's

@@ -1,4 +1,4 @@
-//! Phase 49: the plugin host node — Rust-native effect plugins at the
+//! The plugin host node — Rust-native effect plugins at the
 //! master insert seam of the production graph.
 //!
 //! One [`PluginHostNode`] lives in the arena (slot [`node_id::PLUGIN`])

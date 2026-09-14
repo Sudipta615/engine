@@ -1,4 +1,4 @@
-//! # Unified quality-evaluation harness (Phase 2)
+//! # Unified quality-evaluation harness
 //!
 //! A reusable framework for measuring whether a DSP / spatial component is
 //! *technically correct* — independent of the engine's deeper Perceptual
@@ -101,11 +101,11 @@ pub enum MetricKind {
     /// HRTF/interpolation error: how far an interpolated response falls
     /// outside the convex hull of its bracketing grid nodes (dB; 0 = convex).
     HrtfInterpolationErrorDb,
-    /// Phase 53 (v4.5.0): spatial-stage modeled render cost per block
+    /// Spatial-stage modeled render cost per block
     /// (cost units; deterministic model, not wall-clock). Used to gate
     /// scene-cost regressions.
     SpatialRenderCostUnits,
-    /// Phase 53: spatial-stage cost-budget utilization (fraction; ≤ 1 =
+    /// Spatial-stage cost-budget utilization (fraction; ≤ 1 =
     /// within budget).
     SpatialCostUtilization,
 }

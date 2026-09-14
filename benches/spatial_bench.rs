@@ -1,9 +1,9 @@
-//! Spatial renderer benchmarks (Phase 22 — Optimization).
+//! Spatial renderer benchmarks (— Optimization).
 //!
 //! Pins the binaural hot paths (FIR-with-dataset, analytic, room) and the
 //! VBAP array renderer at realistic block sizes, plus the production graph
 //! with the SpatialNode enabled. The binaural numbers are the regression
-//! guard for the Phase-22 arithmetic reduction (per-block trig hoisting,
+//! Guard for the arithmetic reduction (per-block trig hoisting,
 //! modulo-free FIR ring reads); the graph number exercises the same paths
 //! end-to-end through the node.
 //!

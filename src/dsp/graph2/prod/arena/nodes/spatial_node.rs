@@ -1,4 +1,4 @@
-//! Phase 17 — the SpatialNode: the spatial master output stage in the
+//! The SpatialNode: the spatial master output stage in the
 //! production graph.
 //!
 //! The graph's canonical chain ends with a spatial stage that renders the
@@ -37,7 +37,7 @@
 //! construction/reconfig; the live control surface
 //! (`GraphControlHandle::set_spatial_*`) changes it at runtime.
 //!
-//! ## Phase 51 — listener motion (v4.3.0)
+//! ## — listener motion (v4.3.0)
 //!
 //! The listener is **runtime-movable** on the audio path: a
 //! `SetSpatialListenerPose` control command sets a target pose
@@ -73,7 +73,7 @@ use std::sync::Arc;
 /// speaker presets' nominal radius.
 const SCREEN_RADIUS: f32 = 2.0;
 
-/// Phase 52: the program objects' authored parameters, snapshotted for
+/// The program objects' authored parameters, snapshotted for
 /// the render that carries a cue overlay and restored afterwards (plain
 /// stack data — allocation-free on the audio path).
 #[derive(Default)]
@@ -89,17 +89,17 @@ pub struct SpatialNode {
     enabled: bool,
     /// The node-private scene: two program objects + room + listener.
     scene: SpatialScene,
-    /// Phase 52: the scene-clock for cue evaluation (seconds, advanced
+    /// The scene-clock for cue evaluation (seconds, advanced
     /// per block by `frames / sample_rate`). Owned by the node so cue
     /// triggers are independent of the automation clock (which the host
     /// may drive explicitly via `set_automation_time`).
     cue_clock: f32,
-    /// Phase 53: modeled per-block render cost (cost units; refreshed
+    /// Modeled per-block render cost (cost units; refreshed
     /// on the control path via `refresh_cost_diagnostics`).
     last_cost_units: f32,
-    /// Phase 53: modeled budget utilization fraction.
+    /// Modeled budget utilization fraction.
     last_cost_utilization: f32,
-    /// Phase 53: the render tail budget (blocks of headroom).
+    /// The render tail budget (blocks of headroom).
     tail_budget_blocks: f32,
     /// The head-model renderer (2-channel path).
     binaural: BinauralRenderer,
@@ -130,7 +130,7 @@ pub struct SpatialNode {
     voice_full: usize,
     voice_degraded: usize,
     voice_dropped: usize,
-    // ── Phase 51: runtime listener motion ──
+    // ── Runtime listener motion ──
     /// Smoothing policy for the listener glide (nlerp on orientation,
     /// one-pole on position). `smoothing_ms = 0` snaps.
     listener_tracking: TrackingConfig,
@@ -300,10 +300,10 @@ impl SpatialNode {
             cfg.listener_pitch_deg,
             cfg.listener_roll_deg,
         );
-        // Phase 52: the declarative cue bank (control path — the runtime
+        // The declarative cue bank (control path — the runtime
         // curves are built here, then only read).
         self.set_cues(&cfg.cues);
-        // Phase 53: refresh the modeled cost / tail budget for the new
+        // Refresh the modeled cost / tail budget for the new
         // configuration.
         self.refresh_cost_diagnostics();
     }
@@ -374,7 +374,7 @@ impl SpatialNode {
         self.binaural.set_automation_time(seconds);
     }
 
-    // ── Phase 52: scene animation cues (v4.4.0) ──
+    // ── Scene animation cues (v4.4.0) ──
 
     /// Replace the node's cue bank from the scene-file model (control
     /// path — allocates on the caller's thread, then only reads).
@@ -443,7 +443,7 @@ impl SpatialNode {
     /// effective parameters for this block's render, snapshotting the
     /// authored values for [`Self::restore_program`] (audio path,
     /// allocation-free — plain stack data; a no-op when no cue is
-    /// active, so the pre-Phase-52 render stays bit-exact).
+    /// Active, so the legacy render stays bit-exact).
     fn apply_cues_for_render(&mut self) -> ProgramSnapshot {
         let mut snap = ProgramSnapshot::default();
         for target in 0..2 {
@@ -600,7 +600,7 @@ impl SpatialNode {
         }
     }
 
-    /// Phase 53: recompute the modeled render cost + tail budget (control
+    /// Recompute the modeled render cost + tail budget (control
     /// path — pure model math from the diagnostics module; call after
     /// config/scene changes). The values mirror into telemetry.
     pub fn refresh_cost_diagnostics(&mut self) {
@@ -625,7 +625,7 @@ impl SpatialNode {
         };
     }
 
-    /// Phase 53: the modeled render-cost report (deterministic). The
+    /// The modeled render-cost report (deterministic). The
     /// budget defaults to the voice budget's capacity when configured.
     pub fn scene_cost_report(
         &self,
@@ -640,7 +640,7 @@ impl SpatialNode {
         )
     }
 
-    /// Phase 53: the configured voice budget's capacity (the cost budget
+    /// The configured voice budget's capacity (the cost budget
     /// when a budget exists), for the engine-level report accessor.
     pub fn voice_budget_capacity(&self) -> Option<f32> {
         self.voice.as_ref().map(|v| v.capacity as f32)
@@ -716,7 +716,7 @@ impl SpatialNode {
 
     /// Configure the room: geometry, reflection order, late field, the
     /// program's reflection send (`wet`), and the late-field distance
-    /// roll-off (Phase 50).
+    /// Roll-off.
     #[allow(clippy::too_many_arguments)]
     pub fn apply_room(
         &mut self,
@@ -748,20 +748,20 @@ impl SpatialNode {
     }
 
     /// Configure the scene-wide air-absorption model applied to live room
-    /// reflections (Phase 50): each live image's surface corner is composed
+    /// Reflections: each live image's surface corner is composed
     /// with the model's distance corner so realtime reflections darken
     /// with travel distance, agreeing with the offline spectral kernels.
     pub fn set_air_absorption(&mut self, air: crate::spatial::level::AirAbsorption) {
         self.binaural.set_air_absorption(air);
     }
 
-    /// The scene-wide air-absorption model (Phase 50).
+    /// The scene-wide air-absorption model.
     pub fn air_absorption(&self) -> crate::spatial::level::AirAbsorption {
         self.binaural.air_absorption()
     }
 
     /// Set the listener orientation (yaw/pitch/roll, degrees). Snaps the
-    /// listener immediately (the pre-Phase-51 semantic) and seeds the
+    /// Listener immediately (the pre- semantic) and seeds the
     /// motion target so a later glide continues from here.
     pub fn apply_listener(&mut self, yaw_deg: f32, pitch_deg: f32, roll_deg: f32) {
         self.listener_yaw_deg = yaw_deg;
@@ -777,7 +777,7 @@ impl SpatialNode {
         self.listener_motion_active = true;
     }
 
-    // ── Phase 51: runtime listener motion (v4.3.0) ──────────────────────
+    // ── Runtime listener motion (v4.3.0) ──────────────────────
 
     /// The listener-motion smoothing policy (nlerp / one-pole time
     /// constant, optional angular rate limit). Control path — the policy
@@ -795,7 +795,7 @@ impl SpatialNode {
     /// position). The listener glides toward it every processed block
     /// (shortest-arc nlerp on orientation, one-pole on position) per the
     /// tracking conventions — the runtime-editable rotation/position
-    /// surface (Phase 51). With `smoothing_ms = 0` the next block snaps.
+    /// Surface. With `smoothing_ms = 0` the next block snaps.
     /// The glide itself is allocation-free (audio path).
     pub fn set_listener_pose_target(&mut self, orientation: Quat, position: Vec3) {
         self.listener_target_quat = orientation;
@@ -874,11 +874,11 @@ impl SpatialNode {
 
     /// Whether a moving listener has crossed the baked-scene relevance
     /// bound and the control thread should re-bake the acoustic scene
-    /// (Phase 51's smooth re-bake seam). The bound is the bake cell
+    /// ('s smooth re-bake seam). The bound is the bake cell
     /// size (the resolution a re-bake can meaningfully change); the
     /// engine calls this on its tick and, when due, rebuilds the baked
     /// generation on the control thread and publishes it — the audio
-    /// path is never interrupted (the Phase-2 swap machinery).
+    /// Path is never interrupted (the swap machinery).
     pub fn listener_rebake_due(&self, cell_m: f32, last_baked_at: Vec3) -> bool {
         let cell = cell_m.max(0.05);
         let p = self.scene.listener.position;
@@ -895,11 +895,11 @@ impl SpatialNode {
         if planes.len() < 2 {
             return;
         }
-        // Phase 51: glide the listener toward its motion target this
+        // Glide the listener toward its motion target this
         // block (allocation-free; no-op when converged / inactive).
         let block_secs = frames as f32 / self.sample_rate;
         self.glide_listener(block_secs);
-        // Phase 52: advance the cue clock and retire finished cues, then
+        // Advance the cue clock and retire finished cues, then
         // overlay any active cue onto the program objects for this block
         // (allocation-free; no-op when the bank is idle).
         self.step_cues(block_secs);
@@ -945,11 +945,11 @@ impl SpatialNode {
         if planes.len() < 2 {
             return;
         }
-        // Phase 51: glide the listener toward its motion target this
+        // Glide the listener toward its motion target this
         // block (allocation-free; no-op when converged / inactive).
         let block_secs = frames as f32 / self.sample_rate;
         self.glide_listener(block_secs);
-        // Phase 52: advance the cue clock and retire finished cues, then
+        // Advance the cue clock and retire finished cues, then
         // overlay any active cue onto the program objects for this block
         // (allocation-free; no-op when the bank is idle).
         self.step_cues(block_secs);
@@ -1511,7 +1511,7 @@ mod tests {
 
     #[test]
     fn listener_pose_target_glides_smoothly_across_blocks() {
-        // Phase 51: a runtime pose target (90° yaw + 1 m step) with a 20 ms
+        // A runtime pose target (90° yaw + 1 m step) with a 20 ms
         // one-pole glides block-by-block — bounded steps, convergence —
         // and the image tracks it (the world-fixed screen sweeps across
         // the ears as the listener yaws).

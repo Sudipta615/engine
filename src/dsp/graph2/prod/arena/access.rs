@@ -22,7 +22,7 @@ impl DspGraph {
         }
     }
 
-    // ── Aux bus (Phase 6: its own plan node) ──────────────────────────────
+    // ── Aux bus ──────────────────────────────
 
     pub fn aux(&self) -> &AuxBusNode {
         match &self.active.nodes[node_id::AUX] {
@@ -38,7 +38,7 @@ impl DspGraph {
         }
     }
 
-    // ── Correction (Phase 7 S5) ──────────────────────────────────────────
+    // ── Correction ──────────────────────────────────────────
 
     pub fn correction(&self) -> &CorrectionNode {
         match &self.active.nodes[node_id::CORRECTION] {
@@ -54,7 +54,7 @@ impl DspGraph {
         }
     }
 
-    // ── Spatial master (Phase 17) ─────────────────────────────────────────
+    // ── Spatial master ─────────────────────────────────────────
 
     pub fn spatial(&self) -> &SpatialNode {
         match &self.active.nodes[node_id::SPATIAL] {
@@ -63,7 +63,7 @@ impl DspGraph {
         }
     }
 
-    /// The plugin host insert node (Phase 49).
+    /// The plugin host insert node.
     pub fn plugin(&self) -> &PluginHostNode {
         match &self.active.nodes[node_id::PLUGIN] {
             GraphNode::PluginHost(n) => n,
@@ -88,7 +88,7 @@ impl DspGraph {
 
     // ── Pre-mix accessors — input-0 / input-1 aliases into the mix bus ────
     //
-    // Backward-compatible with the Phase-1 named pre-mix accessors: input 0
+    // Backward-compatible with the named pre-mix accessors: input 0
     // is the outgoing (primary) chain, input 1 the incoming (secondary)
     // chain. The bus owns N inputs, so these read the first two.
 

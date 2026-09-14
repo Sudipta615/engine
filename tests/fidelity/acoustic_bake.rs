@@ -1,6 +1,6 @@
 //! Fidelity tests — Acoustic baking (v3.26, roadmap v3.26).
 //!
-//! Evolution thresholds (`docs/EVOLUTION.md` Phase 24):
+//! Fidelity thresholds:
 //! * a `BakedScene` built from an `AcousticWorld` whose room mirrors the
 //!   renderer's `Room` reproduces the **live** room-reflection solve — the
 //!   baked panner, VBAP and binaural outputs match the no-bake renders of

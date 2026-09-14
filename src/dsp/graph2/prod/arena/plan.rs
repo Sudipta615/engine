@@ -72,7 +72,7 @@ pub(crate) struct PlanSet {
 impl PlanSet {
     /// Build a plan set from lowered step lists (the `graph2::prod`
     /// seam): `normal` = the stereo chain, `normal_mc` = routing first.
-    /// Since Phase 48 this is the **only** construction path — the plan
+    /// Since this is the **only** construction path — the plan
     /// source is exclusively the Graph2 topology lowering
     /// (`graph2::prod::lowering`). Control path only.
     pub(crate) fn from_steps(normal: Vec<PlanStep>, normal_mc: Vec<PlanStep>) -> Self {

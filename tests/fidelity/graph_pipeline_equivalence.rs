@@ -1,4 +1,4 @@
-//! Phase-1 gate (re-pointed at Graph 2.0 in Phase 48): the Graph2 engine
+//! Gate (re-pointed at Graph 2.0 in): the Graph2 engine
 //! (plan executor over Graph2-lowered plans) ≡ `DspPipeline` (frozen oracle).
 //!
 //! Drives both engines through an identical, deterministic scenario matrix
@@ -12,12 +12,12 @@
 //! up.
 //!
 //! Crossfade-active configs are covered by the 2-input bus cases below:
-//! the graph's `MixBusNode` (Phase 3 S1) reproduces the pipeline's
+//! The graph's `MixBusNode` reproduces the pipeline's
 //! `TrackMixer` crossfade / fade / gapless path bit-exactly, driven through
 //! `process_block_inputs` against the engine's pre-mix → mix → post-mix
 //! composition. Excluded instead: the output domain (resampler / dither),
 //! which the engine drives separately in both designs. In Quality (f64)
-//! mode the graph keeps the SECONDARY input's pre-mix chain in f32 (S1
+//! Mode the graph keeps the SECONDARY input's pre-mix chain in f32 (secondary pre-mix
 //! precision contract; f64 secondary planes arrive with the engine
 //! migration), so the f64 oracle pre-mixes the incoming stream in f32 and
 //! promotes at the sum — mirroring the graph exactly.
@@ -116,7 +116,7 @@ struct Case {
     blocks: usize,
     overrun: bool,
     /// Drive a second (incoming) stream through the mix bus vs the
-    /// `TrackMixer` oracle (Phase 3 S1). Stereo-only.
+    /// `TrackMixer` oracle. Stereo-only.
     second_input: bool,
 }
 
@@ -406,7 +406,7 @@ fn run_case(case: &Case) -> (Vec<f32>, Vec<f32>) {
         };
 
         if case.channels == 2 && case.second_input {
-            // Two-input mix bus vs TrackMixer oracle (Phase 3 S1).
+            // Two-input mix bus vs TrackMixer oracle.
             drive_2input(&mut p, &mut g, case, b, frames, &mut out_p, &mut out_g);
         } else if case.channels == 2 {
             // Stereo via process_block (plan `Normal`).
@@ -523,7 +523,7 @@ fn check_case(case: &Case) {
 /// Pipeline oracle: the engine's crossfade-path composition — pre-mix each
 /// stream (`process_outgoing_block` / `process_incoming_block`), mix through
 /// [`TrackMixer::process_block`], then post-mix. In Quality mode the graph's
-/// S1 contract keeps the SECONDARY pre-mix in f32 (promoted at the sum), so
+/// Secondary pre-mix contract keeps the SECONDARY pre-mix in f32 (promoted at the sum), so
 /// the f64 oracle pre-mixes the incoming stream in f32 and promotes — the
 /// outgoing stream and the envelope run in f64 on both sides.
 #[allow(clippy::too_many_arguments)]
@@ -582,7 +582,7 @@ fn drive_2input(
             let mut p0_l64: Vec<f64> = p0_l.iter().map(|&x| x as f64).collect();
             let mut p0_r64: Vec<f64> = p0_r.iter().map(|&x| x as f64).collect();
             p.process_outgoing_block_f64(&mut p0_l64, &mut p0_r64);
-            p.process_incoming_block(p1_l, p1_r); // f32 (S1 contract)
+            p.process_incoming_block(p1_l, p1_r); // F32 (contract)
             for (i, x) in p1_l.iter().enumerate() {
                 p1_l64[start + i] = *x as f64;
             }
@@ -1003,7 +1003,7 @@ fn cases() -> Vec<Case> {
         16,
     ));
 
-    // 22–27. Phase 3 S1: the 2-input mix bus vs the pipeline's TrackMixer
+    // 22–27.: the 2-input mix bus vs the pipeline's TrackMixer
     // crossfade path. The graph's `process_block_inputs` must reproduce the
     // engine's pre-mix → mix → post-mix composition bit-exactly through
     // every transition state and precision mode.
@@ -1026,7 +1026,7 @@ fn cases() -> Vec<Case> {
     );
 
     // 23. Same crossfade in Quality (f64) mode: the envelope and the
-    // outgoing chain run in f64; the secondary pre-mix stays f32 (S1
+    // Outgoing chain run in f64; the secondary pre-mix stays f32 (secondary pre-mix
     // contract, mirrored by the oracle).
     let mut xf_cfg64 = EngineConfig {
         precision_mode: PrecisionMode::Quality,

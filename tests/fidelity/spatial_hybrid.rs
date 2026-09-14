@@ -1,4 +1,4 @@
-//! Acceptance suite for hybrid beds & fields (spec Phase 6 / §13, §37).
+//! Acceptance suite for hybrid beds & fields (§13, §37).
 //!
 //! The contract tests the spatial mixer is reviewed against:
 //!

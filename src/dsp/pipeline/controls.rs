@@ -420,8 +420,7 @@ impl DspPipeline {
         let compressor_bypassed = self.bit_perfect || !self.multiband_compressor.is_enabled();
         let convolution_bypassed =
             self.bit_perfect || !self.convolution.is_enabled() || !self.convolution.is_ir_loaded();
-        // The frozen pipeline oracle hosts no correction stage (Phase 7 S5
-        // lives in the graph), so this term is always bypassed here; the
+        // The frozen pipeline oracle hosts no correction stage (lives in the graph), so this term is always bypassed here; the
         // graph's twin builder reads the live CorrectionNode.
         let correction_bypassed = true;
         let crossfeed_bypassed = self.bit_perfect || !self.crossfeed.is_enabled();
@@ -671,8 +670,7 @@ impl DspPipeline {
         } else {
             0.0
         };
-        // The frozen pipeline oracle hosts no correction stage (Phase 7 S5
-        // lives in the graph); the graph's twin builder reports the live
+        // The frozen pipeline oracle hosts no correction stage (lives in the graph); the graph's twin builder reports the live
         // CorrectionNode latency.
         let correction_latency_ms = 0.0;
         let crossfeed_delay_ms = self.crossfeed.latency_ms();

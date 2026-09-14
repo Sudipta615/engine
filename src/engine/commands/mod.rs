@@ -311,7 +311,7 @@ impl AudioEngine {
             EngineCommand::SetPitch(semitones) => self.handle_set_pitch(semitones),
             EngineCommand::Shutdown => self.handle_shutdown(),
 
-            // ── Multi-track lanes (Phase 4 S6) ──
+            // ── Multi-track lanes ──
             EngineCommand::AddTrack(source) => self.handle_add_track(source),
             EngineCommand::RemoveTrack(slot) => self.handle_remove_track(slot),
             EngineCommand::SetTrackGain { slot, gain } => self.handle_set_track_gain(slot, gain),
@@ -432,7 +432,7 @@ impl AudioEngine {
                 self.graph.set_aux_insert(enabled, wet_mix);
             }
 
-            // ── Plugin host (Phase 49) ──
+            // ── Plugin host ──
             EngineCommand::SetPluginEnabled(enabled) => {
                 self.graph.set_plugin_enabled(enabled);
             }
@@ -444,7 +444,7 @@ impl AudioEngine {
                 self.graph.set_plugin_params(batch);
             }
 
-            // ── Spatial master (Phase 17) ──
+            // ── Spatial master ──
             EngineCommand::SetSpatialQuality(q) => {
                 use crate::spatial::SpatialQuality as Sq;
                 let q = match q {
@@ -490,7 +490,7 @@ impl AudioEngine {
                 self.graph
                     .with_graph(|g| g.spatial_mut().set_automation_time(seconds));
             }
-            // Phase-51 listener motion: target pose + glide policy ride
+            // Listener motion: target pose + glide policy ride
             // the graph's queued control surface (block-boundary SPSC).
             EngineCommand::SetSpatialListenerPose {
                 orientation,
@@ -505,7 +505,7 @@ impl AudioEngine {
                 self.graph
                     .set_spatial_listener_tracking(smoothing_ms, max_angular_rate_deg_s);
             }
-            // ── Phase 52: scene animation cues ──
+            // ── Scene animation cues ──
             EngineCommand::SetSpatialCues(cues) => {
                 self.graph.set_spatial_cues(&cues);
             }
@@ -519,7 +519,7 @@ impl AudioEngine {
                 self.graph.stop_all_spatial_cues();
             }
 
-            // ── Correction (Phase 7 S5) ──
+            // ── Correction ──
             EngineCommand::SetCorrectionEnabled(enabled) => {
                 self.handle_set_correction_enabled(enabled)
             }

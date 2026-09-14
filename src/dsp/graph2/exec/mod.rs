@@ -1,4 +1,4 @@
-//! Graph 2.0 executors (v3.50 Phase 45 — split from `exec.rs` per the
+//! Graph 2.0 executors (v3.50 — split from `exec.rs` per the
 //! `dsp/pipeline/` house pattern).
 //!
 //! [`OfflineExecutor`] renders a **compiled** [`Graph2`] topology block by
@@ -11,14 +11,14 @@
 //! start — an unconnected input reads silence, an unconnected output is
 //! dropped). State lives per node (delay lines, oscillator phase).
 //!
-//! ## Module map (the Phase-45 house split)
+//! ## Module map (the house split)
 //!
 //! - `mod.rs` (this file) — module wiring, the [`OfflineExecutor`] struct
 //!   definition, control-surface methods (scene attach/swap, automation,
 //!   external tracks) and `process_block` dispatch.
 //! - `offline.rs` — the offline executor's per-node `run_*` operations,
 //!   delegating the shared math to [`ops`].
-//! - `ops.rs` — the **shared node-processing kernels** (Phase 45 S3): one
+//! - `ops.rs` — the **shared node-processing kernels**: one
 //!   set of per-node processing math used by *both* executors — the
 //!   offline executor here and the realtime executor in
 //!   `crate::dsp::graph2::rt` — so offline/realtime divergence is
@@ -34,7 +34,7 @@
 //!
 //! The realtime lowering substrate lives in `crate::dsp::graph2::rt`: it
 //! builds an immutable, preallocated `RtPlan` on the control thread and
-//! publishes it behind an atomic pointer (the Phase-2 generation-swap
+//! Publishes it behind an atomic pointer (the generation-swap
 //! discipline), so the audio thread runs the exact same kernels with zero
 //! allocation. This module remains the offline/oracle path.
 

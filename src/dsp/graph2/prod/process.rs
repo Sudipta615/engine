@@ -1,6 +1,6 @@
 //! Block entry points — the `process_*` methods of [`DspGraph`],
-//! forwarded verbatim (the Phase-47 shadow bit-compare was removed with
-//! the legacy plan source in Phase 48).
+//! forwarded verbatim (the shadow bit-compare was removed with
+//! the legacy plan source).
 
 use super::Graph2Engine;
 

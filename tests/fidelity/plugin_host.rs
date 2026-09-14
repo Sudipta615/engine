@@ -1,4 +1,4 @@
-//! Phase 49 plugin host fidelity suite: the plugin ABI in the production
+//! Plugin host fidelity suite: the plugin ABI in the production
 //! graph.
 //!
 //! Covers the whole v1 plugin surface end-to-end **through the engine's

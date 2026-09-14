@@ -115,12 +115,12 @@ pub struct CurveQuatConfig {
 /// automatable parameter, positional in scene seconds. A curve in `Some`
 /// drives the object's parameter over time; `None` leaves it static.
 ///
-/// Phase 52 (v4.4.0) adds playback modes on top of the keyframes:
+/// Playback modes on top of the keyframes:
 ///
 /// - `looping` — wrap the clock at the automation's duration (the curves
 ///   repeat); default `false` (play once).
 /// - `hold` — past the last keyframe, keep the final value (`true`, the
-///   pre-Phase-52 behavior); `false` releases the parameter back to its
+///   legacy behavior); `false` releases the parameter back to its
 ///   authored static value.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct SpatialAutomationConfig {
@@ -136,7 +136,7 @@ pub struct SpatialAutomationConfig {
     #[serde(default)]
     pub looping: bool,
     /// Past the end, hold the final keyframe value (default: `true` —
-    /// the pre-Phase-52 behavior; `false` releases to the static value).
+    /// The legacy behavior; `false` releases to the static value).
     #[serde(default = "default_true")]
     pub hold: bool,
 }
@@ -157,7 +157,7 @@ impl SpatialAutomationConfig {
     }
 }
 
-/// One named trigger cue (Phase 52, v4.4.0): composable parameter curves
+/// One named trigger cue (v4.4.0): composable parameter curves
 /// applied to a target object **relative to the moment the cue fires**.
 /// The cue bank lives on the spatial master; `target` is the program
 /// object it drives (`0` = L, `1` = R; other indices are ignored by the
@@ -324,7 +324,7 @@ pub struct SpatialSceneConfig {
     pub fields: Vec<SpatialFieldConfig>,
     #[serde(default)]
     pub room: SpatialRoomConfig,
-    /// Named trigger cues (Phase 52, v4.4.0): composable parameter-curve
+    /// Named trigger cues (v4.4.0): composable parameter-curve
     /// events the host fires by name via `EngineCommand::TriggerSpatialCue`
     /// or the timeline scheduler. Absent in legacy scenes = no cues.
     #[serde(default)]

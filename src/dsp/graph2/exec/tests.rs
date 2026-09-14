@@ -1,4 +1,4 @@
-//! Offline-executor test battery (v3.50 Phase 45 — moved from `exec.rs`
+//! Offline-executor test battery (v3.50 — moved from `exec.rs`
 //! verbatim; imports adapted to the `exec/` split).
 //!
 //! The oracles here are the **bit-exact expectations** the realtime

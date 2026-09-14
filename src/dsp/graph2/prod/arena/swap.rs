@@ -1,4 +1,4 @@
-//! Phase 2 — live graph swap: stable node identity and the swappable
+//! Live graph swap: stable node identity and the swappable
 //! generation container.
 //!
 //! A [`GraphGeneration`] is one complete, ownable graph configuration:
@@ -23,7 +23,7 @@
 use super::*;
 use crate::dsp::correction::CorrectionIrSet;
 
-/// One mix-bus slot's listener-facing user state (Phase 4 S1). Slots 0/1 are
+/// One mix-bus slot's listener-facing user state. Slots 0/1 are
 /// the transition pair; slots >= 2 are independent lanes. Mirrored from the
 /// audio side at drain and replayed into fresh generations so a reconfig
 /// never snaps a lane's gain / balance / mute / detachment.
@@ -40,14 +40,14 @@ pub struct SlotState {
     /// Detached: the slot contributes nothing and its chains do not advance.
     /// Slot 0 is never detached.
     pub active: bool,
-    /// Post-fader master-send gain in [0, 1] (Phase 5 S2).
+    /// Post-fader master-send gain in [0, 1].
     pub send_master_gain: f32,
-    /// Post-fader aux-send gain in [0, 1] (Phase 5 S2).
+    /// Post-fader aux-send gain in [0, 1].
     pub send_aux_gain: f32,
     /// Per-channel trim gains (linear, default 1.0), index by channel
-    /// (Phase 5 S1).
+    /// .
     pub trim_gains: [f32; MAX_CHANNELS],
-    /// Per-channel polarity inversion (Phase 5 S1).
+    /// Per-channel polarity inversion.
     pub trim_invert: [bool; MAX_CHANNELS],
 }
 
@@ -68,7 +68,7 @@ impl Default for SlotState {
 }
 
 /// Immutable snapshot of a slot's automation track, carried across a
-/// generation rebuild (Phase 5 S4). `Copy` data; the audio-side cursor
+/// Generation rebuild. `Copy` data; the audio-side cursor
 /// (`SlotAutomation::pos`/`cursor`) starts fresh at 0 on the new generation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SlotAutomationData {
@@ -98,51 +98,51 @@ pub struct UserState {
     pub slots: Vec<SlotState>,
     /// Whether `slots`/aux carry LIVE bus state (a [`ControlBus`] snapshot)
     /// as opposed to pristine defaults. False at construction, so the
-    /// config-applied trims/sends/aux (Phase 5 S1/S2/S3) are authoritative;
+    /// Config-applied trims/sends/aux are authoritative;
     /// true on a reconfig, so live commands applied since the last rebuild
     /// win over the config.
     pub has_live_bus_state: bool,
-    /// Aux bus enabled (Phase 5 S2/S3).
+    /// Aux bus enabled.
     pub aux_enabled: bool,
-    /// Aux return gain in [0, 1] (Phase 5 S2/S3).
+    /// Aux return gain in [0, 1].
     pub aux_return_gain: f32,
-    /// Phase-6 aux insert: enabled / wet-mix, carried across a rebuild so a
+    /// Aux insert: enabled / wet-mix, carried across a rebuild so a
     /// live runtime toggle survives a generation swap.
     pub aux_insert_enabled: bool,
     pub aux_insert_wet_mix: f32,
-    /// Phase 7 S5: live correction enabled / depth, mirrored like the aux
+    /// Room/headphone correction: live correction enabled / depth, mirrored like the aux
     /// state so a runtime toggle survives a generation swap.
     pub correction_enabled: bool,
     pub correction_depth: f32,
-    /// Phase 7 S5: the rendered correction IR set carried across a rebuild
+    /// Room/headphone correction: the rendered correction IR set carried across a rebuild
     /// (a `LoadCorrectionIr` / `MeasureRoom` result survives a swap).
     /// Immutable after load; `None` = no IR.
     pub correction_ir: Option<Arc<CorrectionIrSet>>,
-    /// Phase 17: the spatial master enable flag, mirrored like the aux
+    /// The spatial master enable flag, mirrored like the aux
     /// state so a live runtime toggle survives a generation swap.
     pub spatial_enabled: bool,
-    /// Phase 52: the spatial master's cue bank (serde model), carried
+    /// The spatial master's cue bank (serde model), carried
     /// across a rebuild so a runtime bank swap survives a generation
     /// swap. `None` = no live bank (the config's `cues` are
     /// authoritative).
     pub spatial_cues: Option<Arc<Vec<config::SpatialCueConfig>>>,
-    /// Phase 52: the per-target active-cue indices carried across a
+    /// The per-target active-cue indices carried across a
     /// rebuild (a live trigger survives a generation swap). `MAX` =
     /// idle. Cue clock t0 is NOT carried — a fresh generation restarts
     /// the cue clock; the trigger survives as "re-fired at t = 0"
     /// semantics.
     pub spatial_active_cues: [Option<usize>; crate::spatial::cue::MAX_ACTIVE_CUES],
-    /// Phase 49: the plugin host runtime enable flag, mirrored so a live
+    /// The plugin host runtime enable flag, mirrored so a live
     /// toggle survives a generation swap.
     pub plugin_enabled: bool,
-    /// Phase 49: the last live plugin parameter batch, mirrored so a
+    /// The last live plugin parameter batch, mirrored so a
     /// runtime param change survives a generation swap. `None` = no live
     /// batch (config params are authoritative).
     pub plugin_params: Option<plugin_abi::PluginParams>,
-    /// Program-gated ducking config (Phase 4 S4), carried across a rebuild
+    /// Program-gated ducking config, carried across a rebuild
     /// so a reconfig never drops a configured duck. `None` = disabled.
     pub duck: Option<DuckState>,
-    /// Per-slot automation tracks, indexed by mix-bus slot (Phase 5 S4).
+    /// Per-slot automation tracks, indexed by mix-bus slot.
     /// Shorter than the generation's slot count is fine (missing entries
     /// keep no track); entries beyond the generation's slots are ignored.
     pub slot_automation: Vec<Option<SlotAutomationData>>,
@@ -179,7 +179,7 @@ impl Default for UserState {
 ///
 /// [`NodeIdx`] addresses a slot *inside one generation* (plans reference it);
 /// [`NodeId`] addresses the persistent per-node SPSC control queue, which
-/// lives in the graph shell and survives swaps. In the canonical Phase-2
+/// Lives in the graph shell and survives swaps. In the canonical
 /// layout `node_id` values and `NodeId` coincide numerically, so plans and
 /// queues index the same table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -208,7 +208,7 @@ impl NodeId {
 /// [`GraphControlHandle::publish_generation`]; the swap itself happens at the
 /// next block boundary and performs no allocation on the audio thread.
 pub struct GraphGeneration {
-    /// Node arena. The canonical 17-slot layout from Phase 1, but the swap
+    /// Node arena. The canonical 17-slot layout from, but the swap
     /// machinery does not assume a fixed length.
     pub(crate) nodes: Vec<GraphNode>,
     /// Compiled plans referencing this generation's arena slots.
@@ -218,7 +218,7 @@ pub struct GraphGeneration {
 }
 
 impl GraphGeneration {
-    /// The default Phase-2 layout: canonical node order, `NodeId(i)` for
+    /// The default layout: canonical node order, `NodeId(i)` for
     /// arena slot `i` (matching the `node_id` table).
     pub(crate) fn canonical_ids(node_count: usize) -> Vec<NodeId> {
         (0..node_count).map(NodeId).collect()

@@ -1,6 +1,6 @@
 //! Construction & configuration for [`DspGraph`].
 //!
-//! Phase 2: the arena + plans now live in a swappable [`swap::GraphGeneration`].
+//! The arena + plans now live in a swappable [`swap::GraphGeneration`].
 //! [`GraphGeneration::build`] constructs a fresh generation on the control
 //! path (allocation is fine there); [`DspGraph::from_config`] installs it as
 //! the initial active generation, and [`DspGraph::reconfigure`] builds a new
@@ -34,7 +34,7 @@ impl GraphGeneration {
     /// the listener's settings. The state is an immutable snapshot — the
     /// builder does not need (or touch) a live control bus.
     ///
-    /// Since Phase 48 this is the **only** plan source: the hand-authored
+    /// Since this is the **only** plan source: the hand-authored
     /// `PlanSet::compile()` is gone and every generation carries
     /// Graph2-lowered plans.
     pub(crate) fn build_with_state(
@@ -54,7 +54,7 @@ impl GraphGeneration {
 
     /// The config/user-state replay shared by every build path: mix
     /// trims/sends, aux, correction, spatial, and the sticky user-state
-    /// replay. Factored out of the generation builder (Phase 46) so the
+    /// Replay. Factored out of the generation builder so the
     /// topology-lowered build runs the exact same node configuration +
     /// replay sequence on it.
     pub(crate) fn finish_build(
@@ -63,7 +63,7 @@ impl GraphGeneration {
         sample_rate: f32,
         user: UserState,
     ) {
-        // Phase 5 config replay: generation-level trim, send, and aux
+        // Config replay: generation-level trim, send, and aux
         // settings are applied before sticky user-state replay. User state
         // remains authoritative for values changed through the live control
         // surface.
@@ -81,29 +81,29 @@ impl GraphGeneration {
                     input.send.master_gain = send.master_gain.clamp(0.0, 1.0);
                     let aux = send.aux_gain.clamp(0.0, 1.0);
                     input.send.aux_gain = aux;
-                    // Phase 6: mirror the per-slot send target onto the
+                    // Mirror the per-slot send target onto the
                     // shared bus the aux node reads.
                     let sb = mix.send_bus.data_mut();
                     sb.send_targets[send.slot] = aux;
                     sb.send_active[send.slot] = aux != 0.0;
                 }
             }
-            // Phase 6: the aux config now applies to the aux bus node (the
+            // The aux config now applies to the aux bus node (the
             // mix node's taps are gated on the shared bus's `enabled`).
             gen_node!(self, node_id::AUX, Aux)
                 .apply_aux(config.aux.enabled, config.aux.return_gain);
         }
 
-        // Phase 7 S5: the correction config (enabled / depth / measured IR
-        // paths → S2–S4 derive) applies to the correction node.
+        // Room/headphone correction: the correction config (enabled / depth / measured IR
+        // paths → derivation) applies to the correction node.
         gen_node!(self, node_id::CORRECTION, Correction)
             .apply_config(&config.correction, sample_rate);
 
-        // Phase 17: the spatial config (enabled / screen / room / listener)
+        // The spatial config (enabled / screen / room / listener)
         // applies to the spatial master node.
         gen_node!(self, node_id::SPATIAL, Spatial).apply_config(&config.spatial, sample_rate);
 
-        // Phase 49: the plugin host insert. Each configured slot is
+        // The plugin host insert. Each configured slot is
         // resolved (library path or `static:<uid>`), instantiated, and
         // attached; a slot that fails to load is skipped (a broken
         // plugin never interrupts playback — the node stays
@@ -127,7 +127,7 @@ impl GraphGeneration {
 
         // User-state replay: a fresh generation inherits the listener's
         // volume / balance / speed from the control bus (seeded with defaults
-        // at construction, mirroring the Phase-1 semantics where volume is
+        // At construction, mirroring the semantics where volume is
         // user state that survives track changes).
         gen_node!(self, node_id::VOLUME, Volume)
             .processor
@@ -137,7 +137,7 @@ impl GraphGeneration {
             .stretcher
             .set_speed(user.speed);
 
-        // Phase 4 S1: per-slot user-state replay. The new generation's slot
+        // Per-slot user-state replay. The new generation's slot
         // count comes from `config.mix_slots`; the snapshot may carry more or
         // fewer entries — replay the overlap, keep defaults for the rest.
         // Gains are replayed as *targets* (one-pole ramp, same semantics as
@@ -154,7 +154,7 @@ impl GraphGeneration {
                 if i != 0 {
                     input.active = slot.active;
                 }
-                // Phase 5 S1/S2: trims and sends are user state that survives
+                // Trims and sends are user state that survives
                 // a generation swap (mirrored onto the bus atomics at drain).
                 // Gated on `has_live_bus_state`: at construction the snapshot
                 // is pristine and the config-applied values (from
@@ -168,7 +168,7 @@ impl GraphGeneration {
                         *g = slot.trim_gains[c];
                     }
                     input.trim.invert.copy_from_slice(&slot.trim_invert[..]);
-                    // Phase 6: sync the per-slot send target onto the shared
+                    // Sync the per-slot send target onto the shared
                     // bus (same mirror as `MixInputCmd::SetSend`).
                     let mix = gen_node!(self, node_id::MIX, Mix);
                     let sb = mix.send_bus.data_mut();
@@ -176,18 +176,18 @@ impl GraphGeneration {
                     sb.send_active[i] = aux != 0.0;
                 }
             }
-            // Phase 5 S3: aux bus state survives a swap (live snapshots
+            // Aux bus state survives a swap (live snapshots
             // only; construction keeps the config-applied aux config). The
-            // aux node owns the bus now (Phase 6).
+            // Aux node owns the bus now.
             if user.has_live_bus_state {
                 gen_node!(self, node_id::AUX, Aux)
                     .apply_aux(user.aux_enabled, user.aux_return_gain);
-                // Phase 6: a live runtime toggle of the aux insert survives
+                // A live runtime toggle of the aux insert survives
                 // the swap too (the config-applied IR stays loaded).
                 gen_node!(self, node_id::AUX, Aux)
                     .set_aux_insert(user.aux_insert_enabled, user.aux_insert_wet_mix);
             }
-            // Phase 7 S5: a live correction toggle, depth, and the rendered
+            // Room/headphone correction: a live correction toggle, depth, and the rendered
             // IR set survive a swap (live snapshots only; construction
             // keeps the config-applied correction).
             if user.has_live_bus_state {
@@ -198,11 +198,11 @@ impl GraphGeneration {
                         gen_node!(self, node_id::CORRECTION, Correction).load_set(set, sample_rate);
                 }
             }
-            // Phase 17: a live spatial enable toggle survives a swap (live
+            // A live spatial enable toggle survives a swap (live
             // snapshots only; construction keeps the config-applied state).
             if user.has_live_bus_state {
                 gen_node!(self, node_id::SPATIAL, Spatial).set_enabled(user.spatial_enabled);
-                // Phase 52: a live cue bank + active triggers survive a
+                // A live cue bank + active triggers survive a
                 // swap. The bank (when set) is authoritative over the
                 // config's `cues`; the active triggers re-fire at the new
                 // generation's cue clock origin (documented semantics).
@@ -213,7 +213,7 @@ impl GraphGeneration {
                     gen_node!(self, node_id::SPATIAL, Spatial).trigger_cue(*idx);
                 }
             }
-            // Phase 49: a live plugin host enable toggle + the last
+            // A live plugin host enable toggle + the last
             // parameter batch survive a swap (live snapshots only).
             if user.has_live_bus_state {
                 gen_node!(self, node_id::PLUGIN, PluginHost)
@@ -224,7 +224,7 @@ impl GraphGeneration {
             }
         }
 
-        // Phase 5 S4: duck + automation tracks survive a rebuild (seeded by
+        // Duck + automation tracks survive a rebuild (seeded by
         // `DspGraph::reconfigure` from the live generation; `from_config`
         // passes `None`/empty).
         {
@@ -247,13 +247,13 @@ impl GraphGeneration {
     }
 
     /// Build a generation whose execution plans are **Graph2-derived**
-    /// (Phase 46): the plan set comes from lowering the production topology
+    /// The plan set comes from lowering the production topology
     /// (see `crate::dsp::graph2::prod`) instead of the hand-authored
     /// `PlanSet::compile()`. The arena, config application, and user-state
     /// replay are the exact same code path as the canonical build — the
     /// only difference is the plan source — so the two builds are
     /// bit-equivalent by construction.
-    #[allow(dead_code)] // first consumer: `graph2::prod` (Phase 47 shadow A/B)
+    #[allow(dead_code)] // First consumer: `graph2::prod` (shadow A/B)
     pub(crate) fn build_with_plans(
         config: &EngineConfig,
         sample_rate: f32,
@@ -412,7 +412,7 @@ impl GraphGeneration {
         {
             // Both bus inputs share the master loudness config (each input
             // carries its own metadata + mode for the engine's per-stream
-            // application in S2).
+            // application).
             let mix = gen_node!(self, node_id::MIX, Mix);
             for input in &mut mix.inputs {
                 let loud = &mut input.loudness;
@@ -557,7 +557,7 @@ impl GraphGeneration {
             routing.trimmer.set_lfe_channels(lfe_channels);
         }
 
-        // Phase 5 S1/S2/S3 config surface: per-slot channel trims, sends,
+        // Config surface: per-slot channel trims, sends,
         // and the aux bus are applied from `EngineConfig` here so a host
         // that configures them (construction, config-file load) gets them
         // wired. On the generation path the sticky user-state replay (in
@@ -580,14 +580,14 @@ impl GraphGeneration {
                     mix.inputs[entry.slot].send.master_gain = entry.master_gain.clamp(0.0, 1.0);
                     let aux = entry.aux_gain.clamp(0.0, 1.0);
                     mix.inputs[entry.slot].send.aux_gain = aux;
-                    // Phase 6: sync the per-slot send target onto the shared
+                    // Sync the per-slot send target onto the shared
                     // bus (mirrors `MixInputCmd::SetSend`).
                     let sb = mix.send_bus.data_mut();
                     sb.send_targets[entry.slot] = aux;
                     sb.send_active[entry.slot] = aux != 0.0;
                 }
             }
-            // Phase 6: the aux config / insert apply to the aux bus node.
+            // The aux config / insert apply to the aux bus node.
             gen_node!(self, node_id::AUX, Aux)
                 .apply_aux(config.aux.enabled, config.aux.return_gain);
             gen_node!(self, node_id::AUX, Aux).apply_aux_insert(
@@ -616,14 +616,14 @@ impl GraphGeneration {
 impl DspGraph {
     /// Construct a new DSP Graph from an [`EngineConfig`] and sample rate.
     /// The generations carry **Graph2-lowered** plans (the single plan
-    /// source since Phase 48).
+    /// Source since ).
     pub fn from_config(config: &EngineConfig, sample_rate: f32) -> Self {
         let plans = crate::dsp::graph2::prod::lowering::lowered_plans();
         Self::from_config_with_plans(config, sample_rate, plans)
     }
 
     /// Build the graph with an explicit plan set — the `graph2::prod`
-    /// seam (Phase 46). The arena, config application, and user-state
+    /// Seam. The arena, config application, and user-state
     /// replay are the exact same code path as [`Self::from_config`].
     pub(crate) fn from_config_with_plans(
         config: &EngineConfig,
@@ -663,7 +663,7 @@ impl DspGraph {
     pub fn apply_config(&mut self, config: &EngineConfig) {
         self.active
             .apply_config(config, self.sample_rate, &self.multichannel_layout);
-        // Phase 7 S5: a live LoadCorrectionIr / MeasureRoom result survives
+        // Room/headphone correction: a live LoadCorrectionIr / MeasureRoom result survives
         // an unrelated config apply when the config itself carries no IR
         // paths (the sticky set is authoritative over the config only for
         // the IR — enabled/depth always come from the config here).
@@ -689,7 +689,7 @@ impl DspGraph {
         self.reconfigure_with_plans(config, plans);
     }
 
-    /// The `graph2::prod` reconfiguration seam (Phase 46): the same live
+    /// The `graph2::prod` reconfiguration seam: the same live
     /// reconfiguration with an explicit plan set.
     pub(crate) fn reconfigure_with_plans(&mut self, config: &EngineConfig, plans: PlanSet) {
         // Flush queued control commands into the ACTIVE generation first so
@@ -702,7 +702,7 @@ impl DspGraph {
         let sample_rate = self.sample_rate;
         let layout = self.multichannel_layout.clone();
         let mut user = self.bus.snapshot();
-        // Phase 5 S4: ducking and automation tracks are generation state
+        // Ducking and automation tracks are generation state
         // too — carry them over from the live generation so a reconfig never
         // drops a configured duck or a lane's automation track. (The
         // cross-thread `publish_generation` path does not carry them; hosts

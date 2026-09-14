@@ -1,4 +1,4 @@
-//! Phase 3 S1 — the mix bus node, split by concern (Phase 4 S1).
+//! The mix bus node, split by concern.
 //!
 //! [`MixBusNode`] replaces the graph's four global pre-mix slots
 //! (`OutPreamp` / `OutLoudness` / `InPreamp` / `InLoudness`) with a single
@@ -9,7 +9,7 @@
 //! gain functions, so a 2-input bus reproduces the pipeline's crossfade
 //! path bit-for-bit — pinned by `tests/fidelity/graph_pipeline_equivalence`.
 //!
-//! Phase 4 S1 parameterizes the bus: the **slot count** is fixed per
+//! Parameterizes the bus: the **slot count** is fixed per
 //! generation ([`MixBusNode::with_slots`], fed from
 //! `EngineConfig::mix_slots` at construction), so a generation carrying N
 //! simultaneous streams is a plain generation rebuild. The split keeps the
@@ -20,8 +20,8 @@
 //! Realtime contract: the node owns one pair of secondary-input planes per
 //! input (preallocated at construction), advances every input's state
 //! exactly once per processed block, and performs no allocation on the hot
-//! path. S1 sums secondary inputs into the stereo front pair only;
-//! multichannel bus mixing is Phase 4 S2.
+//! Path. sums secondary inputs into the stereo front pair only;
+//! Multichannel bus mixing is.
 
 pub mod envelope;
 pub mod sum;
@@ -56,34 +56,34 @@ pub struct MixInput {
     pub gain: GainProcessor,
     /// Per-input balance in [-1, 1] (0 = center). Shapes the front L/R pair.
     pub balance: f32,
-    /// Per-input pan in [-1, 1] (Phase 4 S3): -1 hard left, 0 center,
+    /// Per-input pan in [-1, 1]: -1 hard left, 0 center,
     /// +1 hard right, shaped by [`pan_law`]. Compounds with `balance` on the
     /// front pair; pan = 0 yields a (1, 1) pair so the existing `balance`
     /// paths stay bit-exact.
     pub pan: f32,
-    /// Pan law for the per-input `pan` (Phase 4 S3).
+    /// Pan law for the per-input `pan`.
     pub pan_law: PanLaw,
-    /// Peak / RMS metering accumulators for this slot (Phase 4 S3), published
+    /// Peak / RMS metering accumulators for this slot, published
     /// to the control bus once per block. Zero-alloc block scratch.
     pub(crate) meters: SlotMeters,
-    /// Automation track (Phase 4 S5): generation-carried immutable
+    /// Automation track: generation-carried immutable
     /// breakpoints + audio-side cursor. `None` = no track, which keeps the
     /// sum bit-exact.
     pub(crate) automation: Option<SlotAutomation>,
-    /// Per-channel trim (Phase 5 S1): per-channel gain / polarity applied on
+    /// Per-channel trim: per-channel gain / polarity applied on
     /// the slot's own planes after the pre-mix chains. All-unity = inactive
     /// = bit-exact.
     pub(crate) trim: PerChannelTrim,
-    /// Send levels (Phase 5 S2): master-send + post-fader aux tap.
+    /// Send levels: master-send + post-fader aux tap.
     pub(crate) send: SlotSend,
     /// Mute: the input contributes silence.
     pub mute: bool,
     /// Detached slot: the input contributes nothing and its chains do not
-    /// advance (Phase 3 S2 slot lifecycle). Slot 0 is never detached.
+    /// Advance (slot lifecycle). Slot 0 is never detached.
     pub active: bool,
     /// Secondary-input plane storage: channel-major, `MAX_CHANNELS` planes
     /// of [`MAX_AUDIO_BLOCK_FRAMES`] frames each, preallocated at
-    /// construction (Phase 4 S2 makes every slot N-channel-capable; stereo
+    /// construction (every slot is N-channel-capable; stereo
     /// sources use `planes[0]` / `planes[1]`). The graph's process driver
     /// feeds these; the node processes them. Zero allocation on the hot path.
     pub(crate) channels: usize,
@@ -162,7 +162,7 @@ impl MixInput {
         Some(auto.value_at(absolute))
     }
 
-    /// Apply this slot's per-channel trim (Phase 5 S1) to the master planes
+    /// Apply this slot's per-channel trim to the master planes
     /// (slot 0 processes the caller's planes in place). Skipped when unity.
     fn apply_trim(&self, planes: &mut [&mut [f32]], channels: usize, frames: usize) {
         if !self.trim.is_active() {
@@ -210,32 +210,32 @@ pub enum MixInputCmd {
     SetGainDb(f32),
     /// Set the per-input balance in [-1, 1].
     SetBalance(f32),
-    /// Set the per-input pan in [-1, 1] (Phase 4 S3).
+    /// Set the per-input pan in [-1, 1].
     SetPan(f32),
-    /// Set the per-input pan law (Phase 4 S3).
+    /// Set the per-input pan law.
     SetPanLaw(PanLaw),
-    /// Set one channel's trim (Phase 5 S1): gain in dB + polarity.
+    /// Set one channel's trim: gain in dB + polarity.
     SetSlotTrim {
         channel: usize,
         gain_db: f32,
         invert: bool,
     },
-    /// Set the slot's send levels (Phase 5 S2): master-send + aux tap.
+    /// Set the slot's send levels: master-send + aux tap.
     SetSend {
         master_gain: f32,
         aux_gain: f32,
     },
-    /// Replace the slot's automation track (Phase 4 S5). Fixed-array points
+    /// Replace the slot's automation track. Fixed-array points
     /// keep this `Copy`; a track with `count == 0` is treated as cleared.
     SetAutomation {
         target: AutomationTarget,
         points: [AutomationPoint; MAX_AUTOMATION_POINTS],
         count: usize,
     },
-    /// Remove the slot's automation track (Phase 4 S5).
+    /// Remove the slot's automation track.
     ClearAutomation,
     SetMute(bool),
-    /// Detach / re-attach the slot (Phase 3 S2 stream slots).
+    /// Detach / re-attach the slot (stream slots).
     SetActive(bool),
     SetLoudnessMode(LoudnessMode),
     ApplyLoudnessMetadata(LoudnessMetadata),
@@ -273,7 +273,7 @@ fn balance_gains(balance: f32) -> (f32, f32) {
 /// Maximum number of duck targets one [`DuckState`] can address.
 pub const MAX_DUCK_TARGETS: usize = 4;
 
-/// Program-gated, block-synchronous ducking configuration (Phase 4 S4).
+/// Program-gated, block-synchronous ducking configuration.
 /// Plain `Copy` data that rides the SPSC control queues; the audio side
 /// evaluates the trigger once per block from the *source* slot's peak meter
 /// and ramps the duck gain toward the depth target over attack/release.
@@ -327,12 +327,12 @@ pub enum AutomationTarget {
     /// is active; the static balance still shapes the pair).
     #[default]
     Pan,
-    /// Per-frame aux-send multiplier (Phase 5 S2): modulates the slot's
+    /// Per-frame aux-send multiplier: modulates the slot's
     /// post-fader tap into the aux bus without touching the front pair.
     Send,
 }
 
-/// Per-slot per-channel trim (Phase 5 S1): linear gain + polarity per
+/// Per-slot per-channel trim: linear gain + polarity per
 /// channel on the slot's own planes, applied after the pre-mix chains and
 /// before the sum. All-unity = inactive = bit-exact (the pass is skipped).
 #[derive(Clone, Copy, Debug)]
@@ -355,7 +355,7 @@ impl PerChannelTrim {
     }
 
     /// Apply this trim to its slot's channel-major plane views (the
-    /// secondary pre-mix path, Phase 5 S1). A `PerChannelTrim` method so the
+    /// Secondary pre-mix path, ). A `PerChannelTrim` method so the
     /// caller only borrows the trim field while the views hold the planes.
     /// Skipped when unity.
     fn apply_views(&self, views: &mut [&mut [f32]], channels: usize, frames: usize) {
@@ -389,7 +389,7 @@ impl PerChannelTrim {
     }
 }
 
-/// Per-slot send levels (Phase 5 S2): `master_gain` scales the slot's
+/// Per-slot send levels: `master_gain` scales the slot's
 /// contribution to the master sum (0.0 = "sends-only"); `aux_gain` is the
 /// post-fader tap into the aux bus. Both at defaults (1.0 / 0.0) = bit-exact.
 #[derive(Clone, Copy, Debug)]
@@ -408,11 +408,11 @@ impl SlotSend {
 }
 
 /// Reserved aux-bus identifier for [`DuckState`] `source` / `targets`
-/// (Phase 5 S3): a source or target of `AUX_BUS_ID` addresses the aux
+/// A source or target of `AUX_BUS_ID` addresses the aux
 /// accumulator instead of a slot.
 pub const AUX_BUS_ID: usize = usize::MAX;
 
-/// A slot's automation track (Phase 4 S5): generation-carried immutable
+/// A slot's automation track: generation-carried immutable
 /// breakpoints plus an audio-side cursor. The track is replaced wholesale by
 /// `SetAutomation` (append-only live trims ride the same command), and the
 /// runner advances the cursor monotonically as stream time moves forward.
@@ -466,7 +466,7 @@ impl SlotAutomation {
     }
 }
 
-/// Per-slot pan law (Phase 4 S3). Affects the front L/R pair only; channels
+/// Per-slot pan law. Affects the front L/R pair only; channels
 /// ≥ 2 pass through at per-input gain.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum PanLaw {
@@ -476,7 +476,7 @@ pub enum PanLaw {
     Center,
 }
 
-/// Per-slot peak/RMS metering accumulators (Phase 4 S3). Peak is a
+/// Per-slot peak/RMS metering accumulators. Peak is a
 /// per-channel max over the block; RMS is a one-pole envelope over the
 /// per-frame channel sum. Published to the control bus once per block.
 #[derive(Clone, Copy, Debug, Default)]
@@ -525,13 +525,13 @@ pub struct MixBusNode {
     pub curve: CrossfadeCurve,
     /// Whether crossfade transitions are enabled (`config.crossfade.enabled`).
     pub crossfade_enabled: bool,
-    /// Program-gated ducking (Phase 4 S4). `None` = ducking disabled, which
+    /// Program-gated ducking. `None` = ducking disabled, which
     /// keeps the sum bit-exact. Runtime gain is advanced once per block by
     /// [`Self::duck_tick`] and folded into the target slots' gains.
     pub(crate) duck: Option<DuckRuntime>,
-    /// Shared send bus (Phase 5 S2/S3): the sum loops write each slot's
+    /// Shared send bus: the sum loops write each slot's
     /// post-fader front-pair signal here; the aux bus node (a separate plan
-    /// step, Phase 6) consumes it. `None`-free by construction — the aux
+    /// Step, ) consumes it. `None`-free by construction — the aux
     /// node builds the bus and passes a clone in. Disabled = bit-exact
     /// (no taps, no writes).
     pub(crate) send_bus: Arc<AuxSendBus>,
@@ -575,7 +575,7 @@ impl MixBusNode {
     }
 
     /// Construct a bus with `slots` inputs (clamped to `[2, MAX_MIX_SLOTS]`),
-    /// the Phase 4 S1 generation parameter: a generation carrying N
+    /// The generation parameter: a generation carrying N
     /// simultaneous streams is built with N slots. Slots 0/1 are the
     /// transition pair (`out_preamp`/`in_preamp` chains); slots ≥ 2 are
     /// independent lanes summed after the pair envelope. All slots default
@@ -665,7 +665,7 @@ impl MixBusNode {
                 slot.send.master_gain = master_gain.clamp(0.0, 1.0);
                 let aux = aux_gain.clamp(0.0, 1.0);
                 slot.send.aux_gain = aux;
-                // Phase 6: the aux bus node owns the per-slot send targets on
+                // The aux bus node owns the per-slot send targets on
                 // the shared bus — keep the mirror in sync so the tap gating
                 // (`send_active`) and the per-send automation ramps follow.
                 let sb = self.send_bus.data_mut();
@@ -688,7 +688,7 @@ impl MixBusNode {
     }
 
     /// Compute per-slot peak/RMS metering over the `frames` just processed
-    /// (Phase 4 S3). Peak is the max |sample| over the slot's channels in
+    /// . Peak is the max |sample| over the slot's channels in
     /// dBFS; RMS is the block-windowed RMS of the per-frame channel sum.
     /// Slot 0 processes the caller's master planes in place (its secondary
     /// storage is never fed), so it is metered from `master`; inputs >= 1
@@ -737,7 +737,7 @@ impl MixBusNode {
 
     /// Recompute slot 0's (the master's) meters from the FINAL output planes
     /// after the whole plan has run. The plan runs the aux bus node AFTER
-    /// this node (Phase 6), so `compute_meters` — which runs at the end of
+    /// This node, so `compute_meters` — which runs at the end of
     /// the mix step — would otherwise miss the aux return; the graph shell
     /// calls this once more at the end of the block so the published master
     /// meter includes it. Zero-alloc.
@@ -884,7 +884,7 @@ impl MixBusNode {
         }
     }
 
-    /// Apply a ducking configuration (Phase 4 S4). `None` disables ducking.
+    /// Apply a ducking configuration. `None` disables ducking.
     /// Control path (queued command); the runtime starts disengaged at unity.
     pub fn apply_duck(&mut self, cfg: Option<DuckState>) {
         self.duck = cfg.map(|cfg| DuckRuntime {
@@ -894,7 +894,7 @@ impl MixBusNode {
         });
     }
 
-    /// Advance the duck envelope once per block (Phase 4 S4). `source_peak_db`
+    /// Advance the duck envelope once per block. `source_peak_db`
     /// is the trigger slot's peak from this block's metering; the trigger is
     /// evaluated block-synchronously and the gain ramps toward the depth
     /// target over attack/release frames. Zero-alloc, disabled is a no-op.
@@ -904,7 +904,7 @@ impl MixBusNode {
         };
         let target_linear = DuckState::linear(duck.cfg.depth_db);
         let threshold = duck.cfg.threshold_db;
-        // Phase 5 S3: a source of AUX_BUS_ID reads the aux bus node's meter
+        // A source of AUX_BUS_ID reads the aux bus node's meter
         // (published to the shared bus after its step) instead of a slot's.
         let source_peak_db = if duck.cfg.source == AUX_BUS_ID {
             self.send_bus.data().aux_peak_db
@@ -947,7 +947,7 @@ impl MixBusNode {
         }
     }
 
-    /// Duck gain for the aux return (Phase 5 S3): `current_linear` when the
+    /// Duck gain for the aux return: `current_linear` when the
     /// aux bus is a duck target, 1.0 otherwise.
     pub(super) fn aux_duck_gain(&self) -> f32 {
         self.duck_gain_for(AUX_BUS_ID)
@@ -1023,12 +1023,12 @@ impl DspNode for MixBusNode {
         }
         let frames = planes[0].len();
         // Input 0 pre-mix in place (exactly the old OUT_PREAMP / OUT_LOUDNESS
-        // steps), then its per-channel trim (Phase 5 S1), then the secondary
+        // Steps), then its per-channel trim, then the secondary
         // inputs' pre-mix on their own planes.
         self.inputs[0].preamp.process_block_f32(planes);
         self.inputs[0].loudness.process_block_f32(planes);
         self.inputs[0].apply_trim(planes, channels, frames);
-        // Phase 5 S2/S3: prepare the send bus for this block — clear the
+        // Prepare the send bus for this block — clear the
         // active slots' planes so the taps write fresh values. The aux bus
         // node (a separate plan step after this one) consumes them.
         {

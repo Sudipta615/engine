@@ -1,4 +1,4 @@
-//! Engine commands for the multi-track lane registry (Phase 4 S6).
+//! Engine commands for the multi-track lane registry.
 
 use crate::decode::Decoder;
 use crate::dsp::graph2::prod::{DuckState, MAX_DUCK_TARGETS};
@@ -89,7 +89,7 @@ impl super::AudioEngine {
         self.graph.set_input_pan(slot, pan);
     }
 
-    /// Set a lane's post-fader master-send gain in [0, 1] (Phase 5 S2) and
+    /// Set a lane's post-fader master-send gain in [0, 1] and
     /// mirror it to the bus. Independent of the user gain: the master-send
     /// scales the slot's contribution to the master sum (0.0 = send-only).
     pub(super) fn handle_set_track_master_gain(&mut self, slot: u8, gain: f32) {
@@ -106,7 +106,7 @@ impl super::AudioEngine {
         self.graph.set_slot_send(slot, gain, aux);
     }
 
-    /// Set a lane's post-fader aux-send gain in [0, 1] (Phase 5 S2) and
+    /// Set a lane's post-fader aux-send gain in [0, 1] and
     /// mirror it to the bus: taps the lane's signal into the aux bus
     /// accumulator (0.0 = no aux contribution).
     pub(super) fn handle_set_track_send(&mut self, slot: u8, gain: f32) {
@@ -123,7 +123,7 @@ impl super::AudioEngine {
         self.graph.set_slot_send(slot, master, gain);
     }
 
-    /// Configure program-gated ducking across lanes (Phase 4 S4). An empty
+    /// Configure program-gated ducking across lanes. An empty
     /// `targets` list disables ducking. `ms` values are converted to frames
     /// at the output sample rate.
     pub(super) fn handle_duck_tracks(

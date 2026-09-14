@@ -28,7 +28,7 @@ impl DspGraph {
                     node.process_block_f32(&mut pair);
                 }
             }
-            // Phase 6: the aux bus node runs right after the mix node, so
+            // The aux bus node runs right after the mix node, so
             // the mix step's end-of-step metering misses the aux return.
             // Recompute the master (slot 0) meter HERE — the return has just
             // landed in the front pair, but the post-mix chain hasn't run —
@@ -63,7 +63,7 @@ impl DspGraph {
                     node.process_block_f64(&mut pair);
                 }
             }
-            // Phase 6: see [`Self::run_plan`] — same post-aux master-meter
+            // See [`Self::run_plan`] — same post-aux master-meter
             // recompute for the f64 chain.
             if step.node.0 == node_id::AUX {
                 if let GraphNode::Aux(aux) = &self.active.nodes[node_id::AUX] {
@@ -85,14 +85,14 @@ impl DspGraph {
     /// (eq → dynamics → convolution → balance → crossfeed → stereo →
     /// timestretch → volume → seek fade).
     pub fn process_block(&mut self, left: &mut [f32], right: &mut [f32]) {
-        // Phase 2: apply queued control commands and any pending generation
+        // Apply queued control commands and any pending generation
         // swap once per CALLER block, before any splitting or bypass checks
         // (bypass governs signal processing, not control application).
         self.control_tick();
         self.process_block_inner(left, right);
     }
 
-    /// Process a stereo block with a second mix-bus input (Phase 3 S1).
+    /// Process a stereo block with a second mix-bus input.
     /// `input0` is the primary (outgoing) stream, processed in place through
     /// the full chain; `input1` is the secondary (incoming) stream, summed
     /// by the mix bus under its transition envelope. Bit-exact against the
@@ -112,7 +112,7 @@ impl DspGraph {
     }
 
     /// Process a stereo block with one primary stream and any number of
-    /// lane streams (Phase 4 S6). Identical to [`Self::process_block_streams`]
+    /// Lane streams. Identical to [`Self::process_block_streams`]
     /// except lane `k` feeds mix-bus slot `k + 2`, leaving slot 1 (the pair's
     /// incoming member) untouched — the lane feed for the single-stream path,
     /// where no crossfade is in progress. `process_block_inputs` still covers
@@ -146,8 +146,7 @@ impl DspGraph {
         self.process_block_inner(primary.0, primary.1);
     }
 
-    /// Process a stereo block during a crossfade with active lanes (Phase 4
-    /// S6): the incoming stream feeds slot 1, lane `k` feeds slot `k + 2`
+    /// Process a stereo block during a crossfade with active lanes : the incoming stream feeds slot 1, lane `k` feeds slot `k + 2`
     /// (the slot-addressed lane placement). Kept as a dedicated entry so the
     /// engine never has to assemble the incoming + lanes into one contiguous
     /// array on the hot path (the old MAX_LANES+1 assembly panicked on the
@@ -181,7 +180,7 @@ impl DspGraph {
     }
 
     /// Process a stereo block with one primary stream and any number of
-    /// secondary mix-bus streams (Phase 3 S2 stream slots). `primary` is
+    /// Secondary mix-bus streams (stream slots). `primary` is
     /// processed in place through the full chain; secondary `k` feeds mix-bus
     /// slot `k + 1` (slots ≥ 2 are independent streams summed after the
     /// transition envelope). The secondary streams may be shorter than the
@@ -241,8 +240,7 @@ impl DspGraph {
         mix.inputs[slot].channels = 2;
     }
 
-    /// Feed a secondary slot from an N-channel interleaved source (Phase 4
-    /// S2). `frames * channels` samples are de-interleaved channel-major into
+    /// Feed a secondary slot from an N-channel interleaved source . `frames * channels` samples are de-interleaved channel-major into
     /// the slot's preallocated planes and the slot's channel count is set, so
     /// the channel-wise MC sum includes all of them. Audio-side, no
     /// allocation.
@@ -272,7 +270,7 @@ impl DspGraph {
 
     /// Process an interleaved `channels > 2`-channel multichannel block with
     /// a primary stream and any number of N-channel secondary mix-bus streams
-    /// (Phase 4 S2). The primary is processed in place through the full MC
+    /// . The primary is processed in place through the full MC
     /// plan; each secondary is fed channel-major into its slot and summed
     /// channel-wise at the mix step. `secondaries` is `(interleaved,
     /// channels)` per slot — a secondary may carry fewer channels than the
@@ -365,7 +363,7 @@ impl DspGraph {
 
     /// Copy the mix bus's per-slot meters (computed during the plan run) onto
     /// the control bus atomics so telemetry can read them from any thread
-    /// (Phase 4 S3). Audio-side, allocation-free, relaxed stores.
+    /// . Audio-side, allocation-free, relaxed stores.
     fn publish_mix_meters(&mut self) {
         let inputs = &self.active.nodes[node_id::MIX];
         if let GraphNode::Mix(mix) = inputs {
@@ -374,13 +372,13 @@ impl DspGraph {
                     .publish_slot_meters(i, input.meters.peak_db, input.meters.rms_db);
             }
         }
-        // Phase 5 S3 / Phase 6: publish the aux bus meters (computed by the
+        // /: publish the aux bus meters (computed by the
         // aux node after the return, once per block) so telemetry can read
         // the aux level from any thread. The aux bus is its own plan node.
         if let GraphNode::Aux(aux) = &self.active.nodes[node_id::AUX] {
             self.bus
                 .publish_aux_meters(aux.meters.peak_db, aux.meters.rms_db);
-            // Phase 6: independent per-send metering (each slot's own aux
+            // Independent per-send metering (each slot's own aux
             // peak), read via `ControlHandle::aux_send_peak`.
             self.bus.publish_aux_send_peaks(&aux.send_peak_db);
         }

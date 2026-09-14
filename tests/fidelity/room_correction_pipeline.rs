@@ -1,6 +1,6 @@
-//! Fidelity tests — Phase 7 S5 room-correction pipeline THROUGH THE GRAPH.
+//! Fidelity tests — Room/headphone correction room-correction pipeline THROUGH THE GRAPH.
 //!
-//! Evolution thresholds (`docs/EVOLUTION.md` Phase 7):
+//! Fidelity thresholds:
 //! * pink noise through a corrected synthetic room → octave-band residual
 //!   within **±0.5 dB, 40 Hz–16 kHz**;
 //! * **disabled = bit-exact**: plans without the correction step remain
@@ -32,7 +32,7 @@ const BLOCK: usize = 1024;
 const FRAMES: usize = 48_000 * 4;
 
 /// Synthetic ±6 dB room magnitude (broad, smooth — nothing pathological),
-/// shared with the S4 acceptance suite.
+/// Shared with the acceptance suite.
 fn room_mag_db(f: f64) -> f64 {
     let bump = |fc: f64, amp: f64, sigma_oct: f64| {
         amp * (-((f / fc).log2().powi(2)) / (2.0 * sigma_oct * sigma_oct)).exp()

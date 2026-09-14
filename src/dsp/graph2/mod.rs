@@ -2,7 +2,7 @@
 //!
 //! The v3.27 milestone — **the graph as the true center of the rendering
 //! engine** — realized: the production chain
-//! ([`crate::dsp::graph2::prod::DspGraph`], since Phase 48 the crate-private
+//! ([`crate::dsp::graph2::prod::DspGraph`], since the crate-private
 //! descendant of the former public `dsp::graph`) is built from an *arbitrary
 //! topology* runtime. Where the arena is a canonical set of stages whose
 //! order is data but whose chain is implicit, [`Graph2`] is a model of
@@ -424,7 +424,7 @@ impl Graph2 {
         id
     }
 
-    /// A production engine stage (Phase 46): the node's DSP is the shared
+    /// A production engine stage: the node's DSP is the shared
     /// production arena node at `stage.slot()`; the topology contributes the
     /// port shape and the execution order. `slot` must match
     /// `stage.slot()` (the production `node_id` table) or the lowering

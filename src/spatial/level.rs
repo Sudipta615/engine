@@ -64,7 +64,7 @@ pub const MAX_GAIN: f32 = 2.0;
 /// `magnitude(f)` over frequency that is **exact 1.0 at DC** (air is
 /// transparent to a static pressure field) and monotonically decreasing
 /// with distance. Two renderings exist of the *same* model and must agree
-/// (the Phase-50 "acoustic agreement" contract):
+/// (the "acoustic agreement" contract):
 ///
 /// * **Offline** — `magnitude` is sampled per FFT bin and composed onto
 ///   every spectral kernel (`bake::path_filter_kernel_with`).
@@ -92,14 +92,14 @@ pub struct AirAbsorption {
     pub per_meter: f32,
     /// Baseline cutoff at zero distance (Hz).
     pub base_cutoff_hz: f32,
-    /// The magnitude family shaping the roll-off (Phase 50). Default
+    /// The magnitude family shaping the roll-off. Default
     /// `OnePole` keeps the v3.48 behaviour bit-exactly.
     #[serde(default)]
     pub rolloff_model: AirRolloffModel,
 }
 
 /// Frequency-dependent attenuation families richer than the one-pole
-/// (Phase 50 item 2). Every family is a magnitude approximation: DC-exact
+/// (item 2). Every family is a magnitude approximation: DC-exact
 /// (magnitude 1.0 at f = 0), monotonically non-increasing, and bounded by
 /// the base cutoff — `disabled` (or `enabled` with any family) composes to
 /// exactly ×1.0 when the model is off.
@@ -146,7 +146,7 @@ impl AirAbsorption {
     }
 
     /// The distance-dependent **magnitude** of the model at frequency `f`
-    /// (Hz) — the offline rendering (Phase 50). DC-exact: `magnitude(0, d)
+    /// (Hz) — the offline rendering. DC-exact: `magnitude(0, d)
     /// == 1.0` for every distance and family; disabled = exactly 1.0 at
     /// every frequency (bit-exact discipline).
     #[inline]
@@ -167,7 +167,7 @@ impl AirAbsorption {
     }
 
     /// The **equivalent one-pole corner** (Hz) realising this model's
-    /// magnitude on the realtime path (Phase 50 item 1): the frequency
+    /// Magnitude on the realtime path (item 1): the frequency
     /// where the family's magnitude crosses `1/√2` (−3 dB), so a biquad
     /// low-pass at that corner reproduces the model's −3 dB point exactly
     /// and its DC gain exactly. Disabled → `None` (nothing to fold; the
@@ -369,7 +369,7 @@ mod tests {
     #[test]
     fn air_corner_matches_the_family_3db_point() {
         // The realtime corner must sit exactly at the family's −3 dB
-        // magnitude (the Phase-50 agreement invariant between the offline
+        // magnitude (the agreement invariant between the offline
         // magnitude sampling and the realtime biquad corner).
         const SR: f32 = 48_000.0;
         let mut a = AirAbsorption {

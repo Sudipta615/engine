@@ -1,5 +1,4 @@
-//! Acceptance suite for Ambisonics / First-Order Ambisonics (spec Phase 7,
-//! Part VI §32–37, §55).
+//! Acceptance suite for Ambisonics / First-Order Ambisonics (spec Part VI §32–37, §55).
 //!
 //! The contract this suite pins down:
 //!

@@ -1,4 +1,4 @@
-//! Fidelity tests — Phase 50 acoustic agreement (v4.2.0).
+//! Fidelity tests — Acoustic agreement (v4.2.0).
 //!
 //! The production spatial path and the offline `Acoustic` node must agree
 //! on **distance colour** and **late-field distance roll-off**:

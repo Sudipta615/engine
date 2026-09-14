@@ -86,7 +86,7 @@ pub struct Room {
     /// Late-field wet mix `0..1` — scales the tail before the ambisonic
     /// decode.
     pub late_mix: f32,
-    /// Late-field distance roll-off (Phase 50 item 3): when enabled, each
+    /// Late-field distance roll-off (item 3): when enabled, each
     /// object's room-send is attenuated by the object's own distance model
     /// at its direct distance — the tail then rolls off with source
     /// distance exactly as the direct and early-reflection paths do

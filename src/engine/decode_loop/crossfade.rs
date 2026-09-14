@@ -271,7 +271,7 @@ impl AudioEngine {
                     }
                 };
 
-                // Phase 3 S3: the graph's mix bus owns the per-stream pre-mix
+                // The graph's mix bus owns the per-stream pre-mix
                 // chains, the transition envelope, and the post-mix chain —
                 // all applied inside `process_block_inputs` when the block is
                 // flushed. Here we only accumulate the raw output-domain
@@ -419,7 +419,7 @@ impl AudioEngine {
                         break;
                     };
                     *source_idx += channels.max(1);
-                    // Phase 3 S3: the source frames feed the resampler RAW —
+                    // The source frames feed the resampler RAW —
                     // the per-stream pre-mix (preamp + loudness) moved into
                     // the graph's mix bus and is applied on the resampled
                     // output-domain planes inside `process_block_inputs`.
@@ -490,7 +490,7 @@ impl AudioEngine {
                         break;
                     };
                     *source_idx += channels.max(1);
-                    // Phase 3 S3: raw source frames — the incoming pre-mix
+                    // Raw source frames — the incoming pre-mix
                     // chain lives in the graph's mix bus (slot 1).
                     feed_resampled_frame(
                         resampler,
@@ -548,7 +548,7 @@ impl AudioEngine {
                     break;
                 };
                 *source_idx += channels.max(1);
-                // Phase 3 S3: raw source frames (pre-mix moved into the bus).
+                // Raw source frames (pre-mix moved into the bus).
                 self.push_crossfade_out((l, r));
             }
             return;
@@ -584,7 +584,7 @@ impl AudioEngine {
                     break;
                 };
                 *source_idx += channels.max(1);
-                // Phase 3 S3: raw source frames (pre-mix moved into the bus).
+                // Raw source frames (pre-mix moved into the bus).
                 self.push_crossfade_in((l, r));
             }
             return;
@@ -615,7 +615,7 @@ impl AudioEngine {
         if n == 0 {
             return true;
         }
-        // Phase 3 S3: the graph runs the full chain in one call — per-stream
+        // The graph runs the full chain in one call — per-stream
         // pre-mix chains (bus slots 0/1), the transition envelope, and the
         // post-mix chain — then the output-domain final limiter runs here as
         // before (the block is already in the output domain: both sides were
@@ -629,7 +629,7 @@ impl AudioEngine {
                 ),
             );
         } else {
-            // Active lanes (Phase 4 S6) ride after the incoming stream: the
+            // Active lanes ride after the incoming stream: the
             // incoming feeds bus slot 1 and lane k feeds bus slot k + 2 via
             // the dedicated crossfade entry (slot-addressed, matching
             // `fill_lane_scratch`, so a lane's audio always reaches its own

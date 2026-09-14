@@ -656,9 +656,9 @@ pub struct ChannelMixConfig {
     pub template: ChannelMixTemplate,
 }
 
-// ── Room & headphone correction (Phase 7 S5) ────────────────────────────────
+// ── Room & headphone correction ────────────────────────────────
 
-/// Phase-rendering mode for a correction IR (Phase 7 S5).
+/// Phase-rendering mode for a correction IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum CorrectionPhaseMode {
     /// Cepstral minimum phase: zero added latency, phase-dispersive.
@@ -671,7 +671,7 @@ pub enum CorrectionPhaseMode {
     Hybrid,
 }
 
-/// Target response the correction is derived against (Phase 7 S5).
+/// Target response the correction is derived against.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub enum CorrectionTarget {
     /// Flat magnitude (0 dB at every frequency).
@@ -696,11 +696,11 @@ pub enum CorrectionTarget {
     },
 }
 
-/// Room & headphone correction configuration (Phase 7 S5).
+/// Room & headphone correction configuration.
 ///
 /// The node is a per-channel partitioned-convolution bank placed
 /// post-aux / pre-EQ. `ir_paths` are the **measured** IR files (one path
-/// per channel, or a single multichannel WAV); the full S2→S4 chain
+/// Per channel, or a single multichannel WAV); the full IR conditioning to derivation chain
 /// (conditioning → smoothing → SNR-weighted regularized inverse → phase
 /// render) runs on the control path at config-apply time, so a host that
 /// configures correction at construction or config-load gets the derived

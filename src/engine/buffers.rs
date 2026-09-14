@@ -37,12 +37,12 @@ pub(crate) struct EngineScratch {
     pub(crate) pending_multichannel_channels: usize,
     /// Accumulated mixed frames during a crossfade transition: the primary
     /// (outgoing) stream and the secondary (incoming) stream, accumulated in
-    /// lockstep and handed to the graph's `process_block_inputs` (Phase 3 S3).
+    /// Lockstep and handed to the graph's `process_block_inputs`.
     pub(crate) mix_l: Vec<f32>,
     pub(crate) mix_r: Vec<f32>,
     pub(crate) mix_in_l: Vec<f32>,
     pub(crate) mix_in_r: Vec<f32>,
-    /// Per-lane block buffers (Phase 4 S6): the decode loop fills each active
+    /// Per-lane block buffers: the decode loop fills each active
     /// lane's planes with up to [`MAX_AUDIO_BLOCK_FRAMES`] frames per block
     /// and hands them to the graph as secondaries. Sized to [`MAX_LANES`];
     /// preallocated so the audio path never allocates.

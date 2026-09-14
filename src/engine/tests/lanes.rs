@@ -1,4 +1,4 @@
-//! Phase 4 S6: multi-track lane registry end-to-end tests.
+//! Multi-track lane registry end-to-end tests.
 //!
 //! A lane is an independent stream mixed onto a bus slot ≥ 2. These tests
 //! drive the real engine: open a silent primary + a loud lane, tick the
@@ -93,7 +93,7 @@ fn lane_mixes_onto_bus_and_tracks_gain_and_removal() {
         master_peak(&mut engine)
     );
 
-    // Phase 5 S2/S3: make the lane send-only (master-send 0, aux-send 1)
+    // Make the lane send-only (master-send 0, aux-send 1)
     // with the aux return enabled at unity. The master silences (silent
     // primary + no master contribution) while the aux meter reports the
     // lane's level — the post-fader tap is observable end to end.
@@ -167,7 +167,7 @@ fn lane_mixes_onto_bus_and_tracks_gain_and_removal() {
 
 #[test]
 fn lane_crossfade_with_active_lanes_completes_without_panic() {
-    // Phase 5 regression: a crossfade flush while lanes are registered built
+    // Regression: a crossfade flush while lanes are registered built
     // the secondaries array with MAX_LANES+1 iterator pulls from a
     // MAX_LANES-element scratch and panicked on the 7th — any crossfade with
     // a lane present aborted the engine. The transition must run to
@@ -277,7 +277,7 @@ fn lane_crossfade_with_active_lanes_completes_without_panic() {
 
 #[test]
 fn lane_slot_addresses_survive_removal_and_readd() {
-    // Phase 5 regression: `fill_lane_scratch` fed the graph by LANE INDEX,
+    // Regression: `fill_lane_scratch` fed the graph by LANE INDEX,
     // but every control command addresses the lane's SLOT. After a removal
     // created a hole, a re-added lane landed on a lower slot than its index:
     // audio and controls disagreed (a lane feeding a detached slot went

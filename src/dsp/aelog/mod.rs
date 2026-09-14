@@ -164,14 +164,14 @@ pub enum RecordedCommand {
         node: u32,
         curve: CurveBeats,
     },
-    /// Phase-52 scene animation (v4.4.0): the spatial master's **cue
+    /// Scene animation (v4.4.0): the spatial master's **cue
     /// bank** — the scene's named cues verbatim (the serde scene-file
     /// model; the runtime curves are rebuilt at replay). Idempotent:
     /// re-recording replaces the bank on replay. Recorded before any cue
     /// triggers so a replayed session fires the same cues with the same
     /// curves.
     SetSpatialCues(Vec<config::SpatialCueConfig>),
-    /// Phase-52 scene animation: fire the cue at bank index `cue` at
+    /// Scene animation: fire the cue at bank index `cue` at
     /// master sample `at` — the event twin of
     /// `EngineCommand::TriggerSpatialCue`, replayed sample-accurately
     /// against the recorded cue bank.

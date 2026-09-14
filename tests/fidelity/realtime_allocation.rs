@@ -227,7 +227,7 @@ fn realtime_full_chain_quality_mode_does_not_allocate() {
     run_full_chain_no_alloc(config::PrecisionMode::Quality);
 }
 
-/// The Phase-1 plan executor (`DspGraph`) must uphold the same zero-allocation
+/// The plan executor (`DspGraph`) must uphold the same zero-allocation
 /// contract as the pipeline it mirrors: the enum-dispatch `run_plan` hot path,
 /// the f64 quality-mode promotion, and the multichannel `NormalMc` plan
 /// (de-interleave → routing → chain → re-interleave) all run entirely on
@@ -236,7 +236,7 @@ fn run_graph_plan_no_alloc(mode: config::PrecisionMode) {
     let mut cfg = full_chain_config();
     cfg.precision_mode = mode;
 
-    // Phase 5/6: the aux bus with per-slot sends and the global convolution
+    // The aux bus with per-slot sends and the global convolution
     // insert must also be allocation-free on the audio path (aux taps in the
     // sum, the SIMD `accumulate_scaled` return, and the insert's in-place
     // convolution all run on preallocated planes). The IR is loaded from a
@@ -334,7 +334,7 @@ fn realtime_graph_plan_quality_mode_does_not_allocate() {
 /// also be allocation-free, including the per-block plane-view construction
 /// and channel de-interleave/re-interleave. Exercises the >2-channel path
 /// with channel trim configured and a mid-ramp volume, the scenario that
-/// surfaced the scratch-length bug in Phase 1.
+/// Surfaced the scratch-length bug in.
 #[test]
 fn realtime_graph_plan_multichannel_does_not_allocate() {
     let mut cfg = full_chain_config();
@@ -375,7 +375,7 @@ fn realtime_graph_plan_multichannel_does_not_allocate() {
     );
 }
 
-/// Phase 2: a generation swap executed by the audio thread at a block
+/// A generation swap executed by the audio thread at a block
 /// boundary must itself be allocation-free. The swap path is exactly
 /// `Box::from_raw` / `mem::replace` / `Box::into_raw` plus the bounded queue
 /// drains — no allocation, no locks. The generations are built and published
@@ -554,7 +554,7 @@ fn realtime_spatial_panner_does_not_allocate() {
     );
 }
 
-/// The VBAP renderer (Phase 4, spec Part V §25–29) must uphold the same
+/// The VBAP renderer (spec Part V §25–29) must uphold the same
 /// zero-allocation contract: `process_block` solves against the precomputed
 /// triangle table, reuses its per-(object,speaker) smoothing state, and
 /// never allocates — including the out-of-coverage nearest-speaker fallback
@@ -615,7 +615,7 @@ fn realtime_spatial_vbap_does_not_allocate() {
     );
 }
 
-/// Object behavior (Phase 5, spec §30/§41/§43–44) must uphold the same
+/// Object behavior (spec §30/§41/§43–44) must uphold the same
 /// zero-allocation contract: directivity curve evaluation (stack-copied
 /// table), the per-object occlusion biquad (preallocated state, block-rate
 /// coefficients), and the angular-region spread solve (fixed ring samples)
@@ -686,7 +686,7 @@ fn realtime_spatial_object_behavior_does_not_allocate() {
     );
 }
 
-/// Hybrid beds & fields (Phase 6, spec §13/§37) must uphold the same
+/// Hybrid beds & fields (spec §13/§37) must uphold the same
 /// zero-allocation contract inside `process_hybrid_block`: bed routing is a
 /// role-table scan, and the diffuse field mixer reads/writes preallocated
 /// per-speaker delay rings with a fixed stack-array plane list — no `Vec`
@@ -748,7 +748,7 @@ fn realtime_spatial_hybrid_does_not_allocate() {
     );
 }
 
-/// The ambisonic renderer (Phase 7, spec Part VI §32–37) must uphold the
+/// The ambisonic renderer (spec Part VI §32–37) must uphold the
 /// same zero-allocation contract: the per-frame listener rotation (stack
 /// frame + `rotate_bus_frame`) and the decode matrix multiplication all run
 /// on preallocated scratch — no `Vec` growth on the hot path. The field
@@ -803,7 +803,7 @@ fn realtime_ambisonic_renderer_does_not_allocate() {
     );
 }
 
-/// Room acoustics (Phase 8, spec §49/§55) must uphold the same
+/// Room acoustics (spec §49/§55) must uphold the same
 /// zero-allocation contract inside `process_hybrid_block`: the image-source
 /// enumeration is pure arithmetic into fixed stack arrays, the reflection
 /// rings/tap matrix are preallocated, and the Schroeder tail writes into a
@@ -886,7 +886,7 @@ fn realtime_spatial_room_does_not_allocate() {
     );
 }
 
-/// The binaural renderer (Phase 9, spec Part VII §47–48) must uphold the
+/// The binaural renderer (spec Part VII §47–48) must uphold the
 /// same zero-allocation contract inside `process_hybrid_block`: the per-ear
 /// ITD rings, the head-shadow shelves, the room's reflection taps, and the
 /// virtual-ring diffuse path are all preallocated flat at `prepare` — the
@@ -992,7 +992,7 @@ fn realtime_spatial_binaural_does_not_allocate() {
     );
 }
 
-/// Head tracking (Phase 10, spec §48/§136) must also be allocation-free:
+/// Head tracking (spec §48/§136) must also be allocation-free:
 /// the tracker is host-side (the renderers never touch it), but a host may
 /// run it on the audio thread's caller — `push` and `sample` are pure
 /// fixed-size state (interpolation + one-pole + optional rate limit), no
@@ -1029,7 +1029,7 @@ fn realtime_head_tracker_does_not_allocate() {
     );
 }
 
-/// Higher-order ambisonics (Phase 11 / roadmap Phase 16) must uphold the
+/// Higher-order ambisonics (roadmap) must uphold the
 /// zero-allocation contract at order 2: the 9-channel SH basis, the exact
 /// order-2 bus rotation (WXYZ→WXYZ+UV), and the per-order max-rE decoder
 /// weights all run on preallocated flat buffers.
@@ -1083,7 +1083,7 @@ fn realtime_hoa_renderer_does_not_allocate() {
     );
 }
 
-/// The SpatialNode (Phase 11 / roadmap Phase 17) is a real plan step in the
+/// The SpatialNode (roadmap) is a real plan step in the
 /// production graph, so its steady-state path — binaural head model with the
 /// room's image sources + late field on the master's front pair — must be
 /// allocation-free like every other graph node. The node preallocates its
@@ -1132,7 +1132,7 @@ fn realtime_spatial_node_does_not_allocate() {
     );
 }
 
-/// Phase 51 (listener motion, v4.3.0): a runtime-moving listener — pose
+/// A runtime-moving listener — pose
 /// targets re-set every block through the queued control surface and the
 /// node gliding (nlerp + one-pole + rate limit) inside the plan step —
 /// must stay allocation-free on the audio path. This exercises the exact
@@ -1191,7 +1191,7 @@ fn realtime_spatial_listener_motion_does_not_allocate() {
     );
 }
 
-/// The measured-HRTF dataset path (Phase 11 / roadmap Phase 18) must be
+/// The measured-HRTF dataset path (roadmap) must be
 /// allocation-free even in the worst case: bilinear IR interpolation into
 /// preallocated scratch, FIR convolution on preallocated rings, and the
 /// analytic fallback shelf/notch chain all coexist in one block.
@@ -1281,7 +1281,7 @@ fn realtime_hrtf_dataset_path_does_not_allocate() {
     );
 }
 
-/// The Graph 2.0 **realtime executor** (Phase 45) must render a compiled
+/// The Graph 2.0 **realtime executor** must render a compiled
 /// topology with zero allocation on the audio path — plan build and publish
 /// are control-side; the measured loop only adopts and renders.
 ///
@@ -1362,7 +1362,7 @@ fn graph2_rt_executor_does_not_allocate() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase 46/47: the Graph2 production engine (`Graph2Engine`) — the lowered
+// The Graph2 production engine (`Graph2Engine`) — the lowered
 // plans drive the same arena, so the zero-allocation contract must hold
 // identically. Shadow mode is *diagnostic by design* (it allocates on
 // purpose); these cases measure the flag-off production path.
@@ -1548,7 +1548,7 @@ fn realtime_graph2_prod_swap_does_not_allocate_on_audio_thread() {
     );
 }
 
-// ── Phase 49: plugin host insert ──────────────────────────────────────────
+// ── Plugin host insert ──────────────────────────────────────────
 
 /// The plugin host's plan step (a statically-registered reference echo
 /// plugin processing every block) must uphold the same zero-allocation
@@ -1597,7 +1597,7 @@ fn realtime_plugin_host_step_does_not_allocate() {
     );
 }
 
-/// Phase 52 (v4.4.0): the spatial master's cue path — bank step, overlay
+/// The spatial master's cue path — bank step, overlay
 /// evaluation, program snapshot/restore — must be allocation-free on the
 /// audio thread while cues are actively evaluating (the worst case:
 /// looping cues on both program objects, so every block overlays).

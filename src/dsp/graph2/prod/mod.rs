@@ -1,4 +1,4 @@
-//! Phase 46 (v3.51.0) — the production engine on Graph 2.0.
+//! The production engine on Graph 2.0.
 //!
 //! This module is the seam between Graph 2.0's typed-port topology and the
 //! production node arena: the **one node implementation** the engine runs
@@ -22,13 +22,13 @@
 //! The frozen `DspPipeline` oracle pins the chain externally through
 //! `tests/fidelity/graph_pipeline_equivalence.rs`.
 //!
-//! ## Phase 48 (v4.0.0) — legacy `dsp::graph` removal
+//! ## (v4.0.0) — legacy `dsp::graph` removal
 //!
 //! The former public `dsp::graph` module is gone: its arena, plan, nodes,
 //! and handlers moved here as the crate-private [`arena`] (the single node
 //! implementation, now an internal of `graph2::prod`), the hand-authored
 //! plan source was deleted (Graph2 lowering is the only plan source), and
-//! the Phase-47 shadow mode was removed with its `graph2_shadow_verify`
+//! The shadow mode was removed with its `graph2_shadow_verify`
 //! config flag. Hosts reach the surface through the `graph2::prod`
 //! re-exports (previously `dsp::graph` exports).
 //!
@@ -219,7 +219,7 @@ impl Graph2Engine {
         Graph2ControlHandle::new(self.inner.control_handle())
     }
 
-    // ── Phase 52: scene animation cues (v4.4.0) ─────────────────────
+    // ── Scene animation cues (v4.4.0) ─────────────────────
 
     /// Fire the named cue on the spatial master at the block boundary —
     /// resolves the name against the active bank. Returns `false` when
@@ -247,13 +247,13 @@ impl Graph2Engine {
         self.inner.set_cue_bank(cues);
     }
 
-    /// Phase 53: refresh the spatial master's modeled cost / tail-budget
+    /// Refresh the spatial master's modeled cost / tail-budget
     /// diagnostics (control path, after config or scene changes).
     pub fn refresh_spatial_cost(&mut self) {
         self.inner.spatial_mut().refresh_cost_diagnostics();
     }
 
-    /// Phase 53: the spatial master's modeled render-cost report
+    /// The spatial master's modeled render-cost report
     /// (deterministic — a pure function of the scene + stage config).
     pub fn spatial_cost_report(&self) -> crate::spatial::diagnostics::SceneCostReport {
         self.inner

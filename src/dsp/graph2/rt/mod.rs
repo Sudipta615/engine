@@ -1,8 +1,8 @@
-//! # Graph 2.0 realtime executor (v3.50, Phase 45)
+//! # Graph 2.0 realtime executor (v3.50)
 //!
 //! The **realtime lowering substrate**: a compiled [`ExecutionOrder`] made
 //! executable on the audio thread with zero allocation, without touching
-//! the engine yet (the Phase-46/47 port follows).
+//! The engine yet (the port follows).
 //!
 //! ## Design (per the plan)
 //!
@@ -18,7 +18,7 @@
 //!   production plan discipline).
 //! - **Immutable [`RtPlan`] behind an atomic pointer publish**: building
 //!   the plan and pools is control-thread work. The audio thread receives
-//!   the finished plan via the Phase-2 generation-swap discipline
+//!   the finished plan via the generation-swap discipline
 //!   (publish / swap / retire), so the swap itself performs no allocation
 //!   and the audio thread never allocates or frees.
 //! - **Shared kernels**: node processing calls the *same* functions the
@@ -34,7 +34,7 @@
 //! with the counting allocator; `tests/fidelity/graph2_rt_offline_equivalence.rs`
 //! pins RT == offline bit-exactly.
 //!
-//! ## Scope boundaries (deliberate, until Phase 46/47)
+//! ## Scope boundaries
 //!
 //! - **Resampler nodes must use `ratio == 1`.** The offline executor's
 //!   fixed-grid windowed-sinc reader holds a growing input history for
@@ -42,12 +42,12 @@
 //!   which cannot be preallocated. [`RtPlan::build`] rejects such nodes
 //!   with [`RtPlanError::ResamplerRatioUnsupported`]; the production
 //!   streaming resampler (Rubato-backed, fixed-memory) lands with the
-//!   Phase-46 node port.
+//!   production node port.
 //! - **Offline-only conveniences are absent**: tempo-mapped gain
 //!   automation, external-track clip addressing (the aelog replay path),
 //!   live scene swaps / listener drives (a plan rebuild covers a swap),
 //!   and long-kernel partitioned-FFT convolution (the direct path serves
-//!   Phase-45 parity; the engine-backed node ports with Phase 46).
+//!   here; the engine-backed node ports in production).
 //! - **Sinks sum into the caller's output buffer** (`out`): the offline
 //!   executor accumulates unbounded per-sink captures; a realtime render
 //!   mixes every sink's input into one master `out` plane. Single-sink
@@ -110,7 +110,7 @@ impl RtScenes {
 pub enum RtPlanError {
     /// A `Resampler` node with `ratio > 1` cannot run allocation-free on
     /// the fixed-grid interpolator (its reachable history grows without
-    /// bound). Rebuild with `ratio == 1`, or wait for the Phase-46
+    /// Bound). Rebuild with `ratio == 1`, or wait for the
     /// production resampler port.
     #[error("resampler ratio {0} is unsupported on the realtime plan (use ratio 1)")]
     ResamplerRatioUnsupported(f32),

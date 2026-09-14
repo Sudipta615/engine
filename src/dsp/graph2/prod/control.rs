@@ -268,7 +268,7 @@ impl Graph2ControlHandle {
         self.inner
             .set_spatial_listener(yaw_deg, pitch_deg, roll_deg);
     }
-    /// Phase-51 listener motion: target listener pose (orientation +
+    /// Listener motion: target listener pose (orientation +
     /// position) the spatial node glides toward per block.
     pub fn set_spatial_listener_pose(
         &self,
@@ -277,22 +277,22 @@ impl Graph2ControlHandle {
     ) {
         self.inner.set_spatial_listener_pose(orientation, position);
     }
-    /// Phase-51 listener motion: smoothing policy for the listener glide.
+    /// Listener motion: smoothing policy for the listener glide.
     pub fn set_spatial_listener_tracking(&self, smoothing_ms: f32, max_rate_deg_s: f32) {
         self.inner
             .set_spatial_listener_tracking(smoothing_ms, max_rate_deg_s);
     }
-    /// Phase-52 scene animation (v4.4.0): fire cue `cue_index` on the
+    /// Scene animation (v4.4.0): fire cue `cue_index` on the
     /// spatial master at the block boundary (resolve names against the
     /// graph via `Graph2Engine::trigger_spatial_cue`).
     pub fn trigger_spatial_cue(&self, cue_index: usize) {
         self.inner.trigger_spatial_cue(cue_index);
     }
-    /// Phase-52 scene animation: stop the active cue on `target`.
+    /// Scene animation: stop the active cue on `target`.
     pub fn stop_spatial_cue(&self, target: usize) {
         self.inner.stop_spatial_cue(target);
     }
-    /// Phase-52 scene animation: stop every active cue.
+    /// Scene animation: stop every active cue.
     pub fn stop_all_spatial_cues(&self) {
         self.inner.stop_all_spatial_cues();
     }

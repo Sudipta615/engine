@@ -8,7 +8,7 @@
 //!
 //! ## Relationship to the production graph (Graph 2.0)
 //!
-//! The node-based arena (`DspGraph`, since Phase 48 a crate-internal of
+//! The node-based arena (`DspGraph`, a crate-internal of
 //! `dsp::graph2::prod`, previously the public `dsp::graph`) generalized the
 //! pipeline through the [`DspNode`] trait: planar audio, explicit capability
 //! introspection per node (`name, channel_support, precision, stateful,

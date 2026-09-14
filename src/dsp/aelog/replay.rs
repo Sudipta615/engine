@@ -73,12 +73,12 @@ pub struct ReplayOutcome {
     /// tempo map) on the executor, so the gain sweeps match the recording
     /// byte-for-byte.
     pub gain_automation: Vec<(u32, CurveBeats)>,
-    /// Phase 52 (v4.4.0): the recorded **spatial cue bank** (the last
+    /// The recorded **spatial cue bank** (the last
     /// `SetSpatialCues`; empty if never recorded) — the named cues a
     /// driver re-attaches to the spatial master before replaying
     /// [`Self::cue_triggers`].
     pub cue_bank: Vec<config::SpatialCueConfig>,
-    /// Phase 52: the recorded **cue triggers**: `(master sample, bank
+    /// The recorded **cue triggers**: `(master sample, bank
     /// index)` pairs in firing order. `replay_events` returns them for the
     /// driver to apply at the exact samples.
     pub cue_triggers: Vec<(u64, u32)>,
@@ -223,7 +223,7 @@ fn apply_commands(
 /// audio track (channel-major planes), one track per clip (first-recorded
 /// order), the listener trajectory, the acoustic scene-swap timeline, the
 /// musical automation (tempo map + tempo-mapped gain curves), and the
-/// spatial cue bank + trigger timeline (Phase 52).
+/// Spatial cue bank + trigger timeline.
 struct ReconstructedInputs {
     audio: Vec<Vec<f32>>,
     clips: Vec<(String, Vec<Vec<f32>>)>,
@@ -231,9 +231,9 @@ struct ReconstructedInputs {
     scenes: Vec<(u64, BakedScene)>,
     tempo_map: Option<TempoMap>,
     gain_auto: Vec<(u32, CurveBeats)>,
-    /// Phase 52: the last-recorded cue bank (serde model).
+    /// The last-recorded cue bank (serde model).
     cue_bank: Vec<config::SpatialCueConfig>,
-    /// Phase 52: cue triggers in firing order — `(master sample, bank index)`.
+    /// Cue triggers in firing order — `(master sample, bank index)`.
     cue_triggers: Vec<(u64, u32)>,
 }
 

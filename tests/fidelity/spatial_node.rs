@@ -1,4 +1,4 @@
-//! Acceptance suite for the SpatialNode (spec Phase 17 / roadmap Phase 17):
+//! Acceptance suite for the SpatialNode (roadmap):
 //! the spatial master output stage in the production DSP graph.
 //!
 //! The contract this suite pins down:
@@ -14,7 +14,7 @@
 //!   late field) beyond the direct, without changing the direct materially.
 //! - **Listener yaw** — the world-fixed screen moves across the ears as the
 //!   listener turns.
-//! - **Listener motion (Phase 51, v4.3.0)** — a runtime pose target
+//! - **Listener motion (v4.3.0)** — a runtime pose target
 //!   (orientation + position) glides per block with the tracking
 //!   conventions (nlerp + one-pole, optional rate limit); a generation
 //!   swap mid-glide never interrupts audio (no glitch, no NaN), and the
@@ -227,7 +227,7 @@ fn renderer_layout_helpers_line_up_with_the_head_model() {
     let _ = Vec3::ZERO;
 }
 
-// ── Phase 51: listener motion (v4.3.0) ──────────────────────────────────────
+// ── Listener motion (v4.3.0) ──────────────────────────────────────
 
 /// Drive a continuous listener rotation through the queued pose surface
 /// and assert the rendered image tracks it — the moving-listener contract

@@ -1,5 +1,5 @@
 //! Head tracking — the VR/AR orientation seam (spec §48, §136; roadmap
-//! Phase 15). Phase 51 (listener motion) extends the same conventions to
+//! ). (listener motion) extends the same conventions to
 //! the listener **position**: a moving listener is tracked with the same
 //! one-pole smoothing discipline, and the pair (orientation, position)
 //! is exposed as a [`ListenerPose`] the spatial master consumes at block
@@ -47,7 +47,7 @@
 use super::math::{Quat, Vec3};
 use super::scene::Listener;
 
-/// The full listener pose: world-space orientation + position (Phase 51).
+/// The full listener pose: world-space orientation + position.
 /// Plain data (`Copy`), so it rides the control queues and telemetry
 /// snapshots without allocation.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -96,7 +96,7 @@ pub struct HeadSample {
     pub time: f64,
     /// The head's world-space orientation at `time`.
     pub orientation: Quat,
-    /// The head's world-space position at `time` (Phase 51; metres).
+    /// The head's world-space position at `time` (metres).
     /// Defaults to the origin for orientation-only trackers.
     pub position: Vec3,
 }
@@ -110,7 +110,7 @@ impl HeadSample {
         }
     }
 
-    /// A full pose sample (Phase 51 listener motion).
+    /// A full pose sample (listener motion).
     pub fn with_position(time: f64, orientation: Quat, position: Vec3) -> Self {
         Self {
             time,
@@ -146,7 +146,7 @@ pub struct HeadTracker {
     smoothed: Quat,
     smoothed_time: f64,
     has_samples: bool,
-    // ── Phase 51: position tracking (same one-pole discipline) ──
+    // ── Position tracking (same one-pole discipline) ──
     /// Previous sample position (the interpolation segment's start).
     prev_pos: Vec3,
     /// Latest sample position (the segment's end / held target).
@@ -295,7 +295,7 @@ impl HeadTracker {
     }
 
     /// Sample the smoothed listener **pose** (orientation + position) at
-    /// `time` — the Phase-51 listener-motion surface. Orientation follows
+    /// `time` — the listener-motion surface. Orientation follows
     /// the nlerp + one-pole + rate-limit discipline of [`Self::sample`];
     /// position interpolates linearly across the sample segment and then
     /// one-pole smooths with the same time constant (`smoothing_ms = 0`
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn pose_sampling_interpolates_position_across_the_segment() {
-        // Phase 51: two pose samples 0→(3, 0, 0) over 100 ms; exact mode
+        // Two pose samples 0→(3, 0, 0) over 100 ms; exact mode
         // (smoothing 0) returns the closed-form midpoint, holds past the
         // latest sample, and the first pose snaps (no easing from origin).
         let mut t = HeadTracker::new(TrackingConfig {

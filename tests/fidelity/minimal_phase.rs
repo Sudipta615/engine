@@ -1,6 +1,6 @@
-//! Fidelity tests — S3 phase machinery (Phase 7 acceptance).
+//! Fidelity tests — phase machinery (acceptance).
 //!
-//! Evolution thresholds (`docs/EVOLUTION.md` Phase 7):
+//! Fidelity thresholds:
 //! * the min-phase render's magnitude matches its source within
 //!   **±0.01 dB** full band; strictly causal support;
 //! * the excess-phase allpass is flat within **±0.001 dB**; min + excess ≡

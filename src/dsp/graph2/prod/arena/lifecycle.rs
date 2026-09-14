@@ -25,7 +25,7 @@ impl DspGraph {
         self.limiter_mut().prepare(sample_rate, MAX_CHANNELS);
         self.dither_mut().prepare(sample_rate, MAX_CHANNELS);
         self.correction_mut().prepare(sample_rate, MAX_CHANNELS);
-        // Phase 17: the spatial master re-prepares its head model on a rate
+        // The spatial master re-prepares its head model on a rate
         // change (delay lines and filters are rate-dependent).
         self.spatial_mut().prepare(sample_rate, MAX_CHANNELS);
         // Rescale an in-progress bus transition without resetting it (the

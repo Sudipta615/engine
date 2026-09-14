@@ -249,11 +249,11 @@ pub struct SpatialAutomation {
     pub gain: Option<CurveScalar>,
     pub spread: Option<CurveScalar>,
     pub sample_rate: f32,
-    /// Phase 52 (v4.4.0): wrap the clock at the automation duration (the
+    /// Wrap the clock at the automation duration (the
     /// curves repeat). Default `false` = play once.
     pub looping: bool,
-    /// Phase 52: past the final keyframe, keep driving the final value
-    /// (default `true` — the pre-Phase-52 behavior, where `evaluate`
+    /// Past the final keyframe, keep driving the final value
+    /// (default `true` — legacy behavior, where `evaluate`
     /// clamps past the end). `false` releases the parameters back to
     /// their authored values once the automation finishes.
     pub hold: bool,
@@ -289,7 +289,7 @@ impl SpatialAutomation {
     /// Apply the automation at time `t` (seconds) by over-writing `out`.
     /// Only curves present are applied; others are left untouched.
     ///
-    /// Phase 52: `looping` wraps `t` at the automation duration; a
+    /// `looping` wraps `t` at the automation duration; a
     /// finished, non-looping automation with `hold == false` stops
     /// driving its parameters (they fall back to the authored values).
     pub fn apply(&self, t: f32, out: &mut SpatialAudioAutomationFrame) {

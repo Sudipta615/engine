@@ -525,7 +525,7 @@ impl BasicPanner {
                     // v3.47: colour this reflection with its surface's
                     // spectral low-pass (material spectrum / diffraction
                     // corner) when the baked path carries one; live-solve
-                    // and flat images pass through uncoloured. Phase 50:
+                    // And flat images pass through uncoloured.:
                     // on the live path, fold the scene-wide air model's
                     // distance corner into the image's corner so realtime
                     // reflections darken with distance exactly as the
@@ -600,7 +600,7 @@ impl BasicPanner {
                 // Room: store this frame in the object's reflection ring,
                 // fire the delayed taps, and accumulate the late-field send.
                 if room_on {
-                    // Phase 50 item 3: late-field distance roll-off — the
+                    // Item 3: late-field distance roll-off — the
                     // send is attenuated by the object's own distance model
                     // at its direct distance, so the tail rolls off with
                     // source distance like the direct path. Off (default)

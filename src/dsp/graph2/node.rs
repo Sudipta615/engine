@@ -124,7 +124,7 @@ pub enum NodeKind {
     /// executor resamples onto its own frame grid (a rate/pitch remap), the
     /// latency-pass hook the v3.30 roadmap names.
     Resampler,
-    /// A production engine stage (Phase 46): one node of the canonical
+    /// A production engine stage: one node of the canonical
     /// engine chain, executing through the shared production arena
     /// (`graph2::prod::arena`) — the exact node implementation the engine runs, so
     /// offline and realtime renders share one arithmetic path. The topology
@@ -133,7 +133,7 @@ pub enum NodeKind {
 }
 
 /// A production node of the engine's canonical signal chain, as expressed in
-/// the Graph 2.0 topology (Phase 46). Each variant names one arena slot of
+/// The Graph 2.0 topology. Each variant names one arena slot of
 /// the production chain — the node *implementation* stays the
 /// single shared one; this kind exists so the chain can be **described as a
 /// topology** (typed ports, edges, validation, topological compile) and then
@@ -178,7 +178,7 @@ pub enum ProdStage {
     Dither,
     /// The spatial master output stage (all channels, chain tail).
     Spatial,
-    /// Phase 49: the plugin host insert — Rust-native effect plugins at
+    /// The plugin host insert — Rust-native effect plugins at
     /// the master insert seam (post-volume / seek-fade, pre-limiter).
     PluginHost,
 }

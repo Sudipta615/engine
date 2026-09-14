@@ -1,5 +1,5 @@
 //! The production engine chain expressed as a Graph 2.0 topology
-//! (Phase 46).
+//! .
 //!
 //! [`build_topology`] constructs the canonical signal chain as a real
 //! [`Graph2`] — one [`ProdStage`] node per arena slot, wired head-to-tail

@@ -1,4 +1,4 @@
-//! S3 — phase machinery: minimum / linear / hybrid phase rendering.
+//! Phase rendering machinery: minimum / linear / hybrid phase rendering.
 //!
 //! Everything a correction IR needs to move between the magnitude domain
 //! (where measurement and target curves live) and the time domain (where the

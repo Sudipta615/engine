@@ -1,7 +1,7 @@
 //! Fidelity tests — HRTF / convolver taps in the latency pass (v3.34).
 //!
 //! Convolution and binaural branches now report and compensate exactly
-//! like `Delay` nodes (Phase 32):
+//! Like `Delay` nodes:
 //! * a [`NodeKind::Convolution`] node reports its **kernel length** as
 //!   taps — the algorithmic latency a block-partitioned convolver pays —
 //!   and the executor emits `output[k] = (x * h)[k - kernel.len()]`, so

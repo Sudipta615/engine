@@ -629,7 +629,7 @@ pub fn hrtf(reg: &ReferenceVectorRegistry) -> ComponentReport {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 11. Spatial render-cost diagnostics (Phase 53, v4.5.0)
+// 11. Spatial render-cost diagnostics (v4.5.0)
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub fn def_spatial_cost(engine_version: String) -> ReferenceVector {

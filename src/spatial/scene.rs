@@ -115,7 +115,7 @@ pub struct SpatialScene {
     /// Room acoustics (spec §49): early reflections + late field.
     pub room: Room,
     pub sample_rate: u32,
-    /// Named trigger cues (Phase 52, v4.4.0): the runtime cue bank —
+    /// Named trigger cues (v4.4.0): the runtime cue bank —
     /// control-built, audio-read (see [`cue`]).
     pub cue_bank: crate::spatial::cue::CueBank,
 }
@@ -265,7 +265,7 @@ impl SpatialScene {
             field.gain = f.gain;
             field.enabled = f.enabled;
         }
-        // Phase 52: named trigger cues ride the scene file; the runtime
+        // Named trigger cues ride the scene file; the runtime
         // bank is built here (control path) and only read afterwards.
         scene.set_cues(&cfg.cues);
         let r = &cfg.room;
@@ -396,7 +396,7 @@ impl SpatialScene {
         }
     }
 
-    /// The scene's named cues as the scene-file model (Phase 52).
+    /// The scene's named cues as the scene-file model.
     pub fn cues(&self) -> Vec<config::SpatialCueConfig> {
         (0..self.cue_bank.len())
             .map(|i| {
@@ -424,8 +424,7 @@ impl SpatialScene {
             .collect()
     }
 
-    /// Replace the scene's named cues from the scene-file model (Phase
-    /// 52; control path — allocates the runtime curves on the caller's
+    /// Replace the scene's named cues from the scene-file model (control path — allocates the runtime curves on the caller's
     /// thread). Invalid/no-curve entries are skipped.
     pub fn set_cues(&mut self, cues: &[config::SpatialCueConfig]) {
         let runtime: Vec<crate::spatial::cue::SpatialCue> = cues

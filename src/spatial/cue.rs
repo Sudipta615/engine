@@ -1,4 +1,4 @@
-//! Scene animation **cues** (Phase 52, v4.4.0): named, composable trigger
+//! Scene animation **cues** (v4.4.0): named, composable trigger
 //! events with parameter-curve payloads, evaluated on the spatial node.
 //!
 //! A cue is the *event* half of scene animation: object automation drives

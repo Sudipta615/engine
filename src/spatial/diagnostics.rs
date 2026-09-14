@@ -167,7 +167,7 @@ pub fn build_debug_view(
     }
 }
 
-// ── Phase 53: deterministic render-cost diagnostics (v4.5.0) ───────────────
+// ── Deterministic render-cost diagnostics (v4.5.0) ───────────────
 //
 // A scene-cost model and report, independent of wall-clock timing: the
 // per-object render work the spatial stage performs per block, expressed
@@ -194,7 +194,7 @@ pub struct ObjectRenderCost {
     pub cost: f32,
 }
 
-/// The full spatial-stage cost report (Phase 53): per-object rows, the
+/// The full spatial-stage cost report: per-object rows, the
 /// block budget, and the deterministic total.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneCostReport {
@@ -228,7 +228,7 @@ pub fn quality_multiplier(q: crate::spatial::quality::SpatialQuality) -> f32 {
     }
 }
 
-/// Build the deterministic scene-cost report (Phase 53, v4.5.0). Pure
+/// Build the deterministic scene-cost report (v4.5.0). Pure
 /// function of the scene + stage configuration — no clocks, no timers.
 /// The per-object base cost is:
 ///

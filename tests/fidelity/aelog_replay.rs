@@ -1,7 +1,7 @@
 //! Fidelity tests — Aelog deterministic recording & replay (v3.29, roadmap
 //! v3.29).
 //!
-//! Evolution thresholds (`docs/EVOLUTION.md` Phase 27):
+//! Fidelity thresholds:
 //! * a recorded session replayed against the same Graph 2.0 graph produces
 //!   **byte-identical captured audio** (the golden render) and an
 //!   **identical fired-event stream**;

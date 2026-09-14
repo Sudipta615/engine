@@ -1,5 +1,5 @@
 //! The production node arena — the single `DspGraph` implementation the
-//! engine runs (Phase 48: formerly the public `dsp::graph` module, now a
+//! Engine runs (: formerly the public `dsp::graph` module, now a
 //! crate-private internal of [`crate::dsp::graph2::prod`]).
 //!
 //! This module provides the node-based DSP architecture through the
@@ -12,11 +12,11 @@
 //! The graph executes **compiled execution plans**:
 //! all nodes live in a fixed [`GraphNode`] arena (indexed by [`node_id`])
 //! and [`plan::PlanSet`] orders them into per-mode step lists. Since
-//! Phase 48 the **single plan source** is the Graph2 lowering
+//! The **single plan source** is the Graph2 lowering
 //! (`graph2::prod::lowering`) — the hand-authored `PlanSet::compile()` is
 //! gone. The hot path iterates a plan and dispatches through the enum —
 //! stage order is data, not code, which is the prerequisite for live
-//! reconfiguration (Phase 2).
+//! Reconfiguration.
 //!
 //! The static [`DSP_STAGE_CAPABILITIES`] table in the pipeline module is the
 //! single source of truth for stage metadata; node capability implementations
@@ -78,7 +78,7 @@ pub(crate) use controls::{ControlBus, NodeCmd};
 pub use swap::GraphGeneration;
 pub(super) use swap::{NodeId, SlotAutomationData, UserState};
 
-// Phase 48: the plan types + the plans-parameterized generation builder are
+// The plan types + the plans-parameterized generation builder are
 // crate-visible for the `graph2::prod` lowering seam (the single plan
 // source is the Graph2 topology lowering).
 pub(crate) use plan::{PlanSet, PlanStep, StepScope};
@@ -100,7 +100,7 @@ mod node_id {
     /// The mix bus: N per-input pre-mix chains (preamp + loudness + gain +
     /// balance + mute) summed into the master chain. Replaces the former
     /// `OUT_PREAMP` / `OUT_LOUDNESS` / `IN_PREAMP` / `IN_LOUDNESS` slots
-    /// (Phase 3 S1).
+    /// .
     pub const MIX: usize = 0;
     pub const EQ: usize = 1;
     pub const DYNAMICS: usize = 2;
@@ -115,18 +115,18 @@ mod node_id {
     pub const RESAMPLER: usize = 11;
     pub const LIMITER: usize = 12;
     pub const DITHER: usize = 13;
-    /// Phase 6: the aux bus as its own plan node, consuming the mix node's
+    /// The aux bus as its own plan node, consuming the mix node's
     /// send taps and returning into the master. Runs right after the mix
     /// step in the plan (see [`plan::PlanSet::compile`]).
     pub const AUX: usize = 14;
-    /// Phase 7 S5: the room/headphone correction node (per-channel
+    /// Room/headphone correction: the room/headphone correction node (per-channel
     /// partitioned convolution bank), placed post-aux / pre-EQ.
     pub const CORRECTION: usize = 15;
-    /// Phase 17: the spatial master output stage (renders the front pair
+    /// The spatial master output stage (renders the front pair
     /// through the binaural head model with the room), placed at the very
     /// end of the post-mix chain.
     pub const SPATIAL: usize = 16;
-    /// Phase 49: the plugin host insert — Rust-native effect plugins
+    /// The plugin host insert — Rust-native effect plugins
     /// (post-volume, pre-limiter). Disabled / empty = bit-exact.
     pub const PLUGIN: usize = 17;
     /// Number of canonical node slots (also the first non-node `NodeId`).
@@ -185,7 +185,7 @@ const PREAMP_RAMP_DURATION_MS: f32 = VOLUME_RAMP_DURATION_MS;
 ///   ├── Resampler (AudioResampler adapter)
 ///   ├── Limiter (LookaheadLimiter)
 ///   ├── Dither/Conversion (Dither adapter)
-///   └── Spatial (SpatialNode — Phase 17: spatial master output)
+/// └── Spatial (SpatialNode —: spatial master output)
 /// ```
 ///
 /// Features:

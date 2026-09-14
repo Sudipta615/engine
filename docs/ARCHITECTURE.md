@@ -3,9 +3,7 @@
 This document describes the overall structure of the engine. For the sample
 flow through the DSP chain, see [`SIGNAL_FLOW.md`](SIGNAL_FLOW.md). For
 runnable embedding examples (Rust `EngineHandle` + C FFI), see
-[`EMBEDDING.md`](EMBEDDING.md). For the phased evolution from the
-single-stream player to the multi-stream graph runtime, see
-[`EVOLUTION.md`](EVOLUTION.md).
+[`EMBEDDING.md`](EMBEDDING.md).
 
 ## Module map
 
@@ -29,8 +27,7 @@ src/
 │                             #   limits/errors (MAX_AUDIO_BLOCK_FRAMES =
 │                             #   4096, MAX_CHANNELS = 16, …)
 ├── ffi.rs                    # C FFI surface (engine_create/destroy, controls)
-├── eval/                     # Phase 2 quality-evaluation harness (see
-│                             #   docs/QUALITY.md): versioned reference-vector
+├── eval/                     # Quality-evaluation harness: versioned reference-vector
 │                             #   registry (registry.rs — content-addressed
 │                             #   via aelog::cache SHA-256, Expect::Equal /
 │                             #   AtMost/AtLeast specs, ReferenceVector

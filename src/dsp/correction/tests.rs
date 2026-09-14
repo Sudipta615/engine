@@ -1,6 +1,6 @@
-//! Unit tests for the correction chain (S1–S4). The heavyweight fidelity
+//! Unit tests for the correction chain. The heavyweight fidelity
 //! acceptance suites live under `tests/fidelity/` (see
-//! `docs/EVOLUTION.md` Phase 7); these cover the small invariants inline.
+//! these cover the small invariants inline.
 
 use std::path::PathBuf;
 
@@ -62,7 +62,7 @@ fn convolve_empty_inputs() {
     assert!(convolve(&[1.0], &[]).is_empty());
 }
 
-// ── S3 phase ────────────────────────────────────────────────────────────────
+// ── Phase ────────────────────────────────────────────────────────────────
 
 /// Smooth test magnitude: ±6 dB gaussian bumps in log-frequency.
 fn bump_mag_db(n: usize, fs: f64) -> Vec<f64> {
@@ -223,7 +223,7 @@ fn render_rejects_bad_lengths() {
     ));
 }
 
-// ── S2 IR conditioning ──────────────────────────────────────────────────────
+// ── IR conditioning ──────────────────────────────────────────────────────
 
 fn write_temp_wav(channels: &[Vec<f64>], rate: u32) -> PathBuf {
     use std::io::Write;
@@ -325,7 +325,7 @@ fn wav_parser_rejects_garbage() {
     assert!(matches!(result, Err(CorrectionError::WavParse { .. })));
 }
 
-// ── S1 sweep ────────────────────────────────────────────────────────────────
+// ── Sweep ────────────────────────────────────────────────────────────────
 
 #[test]
 fn sweep_peak_and_band_are_respected() {
@@ -403,7 +403,7 @@ fn deconvolve_recovers_impulse_and_noise_floor() {
     );
 }
 
-// ── S4 derivation ───────────────────────────────────────────────────────────
+// ── Derivation ───────────────────────────────────────────────────────────
 
 #[test]
 fn flat_room_yields_zero_correction() {

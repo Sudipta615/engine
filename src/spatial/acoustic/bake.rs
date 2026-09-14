@@ -203,7 +203,7 @@ pub fn path_filter_kernel_with(
     // Air absorption as a per-path HF roll-off from the path's travelled
     // distance. Disabled ⇒ factor 1 (excludes air entirely, bit-exact); a
     // corner at/above Nyquist is also skipped so nothing spurious is added.
-    // Phase 50: the shape is the model's own magnitude family (one-pole /
+    // The shape is the model's own magnitude family (one-pole /
     // two-pole / exponential), not a hardcoded pole pair.
     let f_air = if air.enabled {
         air.cutoff_hz(p.distance, sample_rate)
@@ -477,7 +477,7 @@ impl BakedScene {
     /// renderers realise that corner as a one-pole per-image low-pass, the
     /// same spectral model the offline `Acoustic` node applies exactly.
     ///
-    /// **Distance colour (Phase 50):** when the scene's air-absorption
+    /// **Distance colour:** when the scene's air-absorption
     /// model is enabled, the tap's corner is the **composition** of the
     /// surface corner with the air model's equivalent one-pole corner at
     /// the path's travelled distance ([`AirAbsorption::compose_corner_hz`])
@@ -513,7 +513,7 @@ impl BakedScene {
             } else {
                 corner_for(p.lowpass_hz)
             };
-            // Phase 50: fold the scene's distance-dependent air corner
+            // Fold the scene's distance-dependent air corner
             // into the realtime corner (agreement with the offline kernel,
             // which composes the same model onto the FIR magnitude).
             let lowpass_hz =

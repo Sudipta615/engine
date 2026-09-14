@@ -1,7 +1,7 @@
 //! Fidelity tests — Graph 2.0 general-purpose topology (v3.27, roadmap
 //! v3.27).
 //!
-//! Evolution thresholds (`docs/EVOLUTION.md` Phase 25):
+//! Fidelity thresholds:
 //! * arbitrary topologies are expressible and **render correctly**: a
 //!   dry/wet diamond (`Split → {Gain, Delay} → Mix`) places its dry and wet
 //!   copies at the exact expected offsets and gains, and a three-way

@@ -1,4 +1,4 @@
-//! Multi-endpoint routing primitives for Phase 5.
+//! Multi-endpoint routing primitives for.
 //!
 //! Endpoint state is deliberately independent: each endpoint owns one ring,
 //! one configuration snapshot, and one set of counters. The registry itself

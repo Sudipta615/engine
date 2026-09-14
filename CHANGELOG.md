@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.5.1] — 2026-09-14
+
+### Changed
+
+- **Documentation & internal artifact consolidation**:
+  - Removed internal planning documents (`docs/EVOLUTION.md`,
+    `docs/PHASE46_NODE_PARITY_INVENTORY.md`, `docs/QUALITY.md`, and `.kilo/plans/`).
+  - Standardized terminology across codebase comments, module documentation,
+    and test suites, replacing historical phase/milestone numbers with canonical
+    domain concepts (room correction, multi-track lanes, plugin host insert,
+    listener motion, scene animation, and diagnostics).
+  - Updated system documentation (`README.md`, `AGENTS.md`,
+    `docs/ARCHITECTURE.md`, `docs/OWNERS_GUIDE.md`) and `.gitignore` to reflect
+    the consolidated documentation tree.
+- **Workspace crate versions**:
+  - Synchronized `plugin-abi` and `plugin-test-echo` versions to `4.5.1` in
+    lockstep with `engine` and `config`.
+
 ## [4.5.0] — 2026-09-14
 
 ### Added
@@ -416,7 +434,7 @@ All notable changes to this project are documented in this file.
   itself is unchanged, so hosts using it today keep working. Re-exported as
   `config::{CONFIG_VERSION, migrate_step, VersionedConfig, ConfigLoadError}`.
 - **Unified quality-evaluation harness (Phase 2).** New [`eval`]
-  module (see [`docs/QUALITY.md`]): a versioned [`ReferenceVectorRegistry`]
+  module: a versioned [`ReferenceVectorRegistry`]
   (content-addressed via the aelog `SHA-256` substrate — a changed
   expectation changes the address, so a drifting spec is always
 detectable) plus objective measurement primitives (Goertzel amplitude,
@@ -436,8 +454,7 @@ detectable) plus objective measurement primitives (Goertzel amplitude,
   fidelity test asserts all components pass, the report is deterministic +
   versioned, and cross-version drift is detectable. Everything runs off
   the audio path; measurement numbers mirror the existing
-  golden/fidelity conventions. The controlled listening-test layer is
-  documented in [`docs/QUALITY.md`].
+  golden/fidelity conventions.
 - **Consolidated, versioned track metadata model** (`decode`). New
   [`TrackMetadata`] aggregates the previously scattered metadata into one
   `Clone`/`PartialEq` model: editorial [`TrackTags`] (title/artist/album /

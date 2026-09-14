@@ -1,4 +1,4 @@
-//! Scene animation acceptance suite (Phase 52, v4.4.0): named trigger
+//! Scene animation acceptance suite (v4.4.0): named trigger
 //! cues + automation playback modes on the SpatialNode.
 //!
 //! The contract this suite pins down:

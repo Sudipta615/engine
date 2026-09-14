@@ -1,4 +1,4 @@
-//! Acceptance suite for object behavior (spec Phase 5 / §30, §41, §43–44).
+//! Acceptance suite for object behavior (§30, §41, §43–44).
 //!
 //! The contract tests the renderers are reviewed against:
 //!

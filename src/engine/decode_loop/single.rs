@@ -497,7 +497,7 @@ impl AudioEngine {
             //    passes through unchanged — same as calling process() per
             //    frame. The safety limiter is intentionally NOT part of this
             //    chain: it runs in the output domain, after resampling.
-            //    Active lanes (Phase 4 S6) are decoded and mixed as
+            // Active lanes are decoded and mixed as
             //    secondaries on bus slots ≥ 2.
             if self.lanes.is_empty() {
                 self.graph

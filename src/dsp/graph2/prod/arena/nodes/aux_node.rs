@@ -1,4 +1,4 @@
-//! Phase 5 S2/S3 + Phase 6 — the aux bus as its own plan node.
+//! The aux bus as its own plan node.
 //!
 //! The aux bus lives OUTSIDE the mix node: the mix node's sum loops write
 //! each slot's post-fader front-pair signal into a shared per-slot send bus
@@ -32,7 +32,7 @@ use crate::dsp_utils::accumulate_scaled;
 use super::mix::{SlotMeters, MAX_MIX_SLOTS};
 
 /// Ramp duration for per-send gain automation, mirroring the preamp ramp so
-/// a send target change glides instead of clicking (Phase 6: the aux bus
+/// A send target change glides instead of clicking (: the aux bus
 /// node carries per-send automation).
 const AUX_SEND_RAMP_MS: f32 = 10.0;
 
@@ -144,7 +144,7 @@ impl AuxSendBus {
 pub struct AuxBusNode {
     /// Shared send bus written by the mix node (see [`AuxSendBus`]).
     send_bus: Arc<AuxSendBus>,
-    /// Per-slot send automation: one ramped gain per mix slot (Phase 6).
+    /// Per-slot send automation: one ramped gain per mix slot.
     /// `send_targets` on the shared bus is the target; the ramp glides.
     sends: Vec<GainProcessor>,
     /// Linear return gain from the accumulator into the master.
@@ -154,18 +154,18 @@ pub struct AuxBusNode {
     pub(crate) written: bool,
     /// Stereo accumulator planes, preallocated and zeroed once per block.
     planes: [Vec<f32>; 2],
-    /// Peak / RMS metering over the accumulated send sum (Phase 5 S3),
+    /// Peak / RMS metering over the accumulated send sum,
     /// published like a slot's meters.
     pub(crate) meters: SlotMeters,
-    /// Per-send peak meters (dBFS), one per mix slot (Phase 6: independent
+    /// Per-send peak meters (dBFS), one per mix slot (: independent
     /// per-send metering), published for telemetry.
     pub(crate) send_peak_db: [f32; MAX_MIX_SLOTS],
-    /// Whether each slot's send was engaged last block (Phase 6: the first
+    /// Whether each slot's send was engaged last block (: the first
     /// engagement applies its target INSTANTLY — matching the pre-node
     /// instant send semantics the equivalence suite pins — while subsequent
     /// target changes glide through the per-send automation ramp).
     prev_active: [bool; MAX_MIX_SLOTS],
-    /// Phase-6 insert: a global convolution (reverb / cabinet) that
+    /// Insert: a global convolution (reverb / cabinet) that
     /// processes the accumulator in place before the return. `None` when no
     /// IR has been configured.
     insert: Option<ConvolutionEngine>,
@@ -206,7 +206,7 @@ impl AuxBusNode {
         self.send_bus.data().send_targets[slot.min(MAX_MIX_SLOTS - 1)]
     }
 
-    /// Apply the aux bus config (Phase 5 S2/S3): `enabled` routes the aux
+    /// Apply the aux bus config: `enabled` routes the aux
     /// return into the master before the post-mix chain; `return_gain` in
     /// [0, 1] scales the return. Disabled = bit-exact.
     pub fn apply_aux(&mut self, enabled: bool, return_gain: f32) {
@@ -214,7 +214,7 @@ impl AuxBusNode {
         self.return_gain = return_gain.clamp(0.0, 1.0);
     }
 
-    /// Configure the insert convolution (Phase 6). Control path — the IR
+    /// Configure the insert convolution. Control path — the IR
     /// file load happens here (allocation is legal). `ir_path: None` keeps
     /// the currently loaded IR (only enabled/wet change). A missing or
     /// unreadable IR file logs a warning and leaves the insert inactive
@@ -243,7 +243,7 @@ impl AuxBusNode {
         }
     }
 
-    /// Runtime toggle of the insert (Phase 6): enabled / wet only — the IR
+    /// Runtime toggle of the insert: enabled / wet only — the IR
     /// stays as configured (config-time load). No-op when no IR engine
     /// exists yet (nothing to process; stays bit-exact).
     pub fn set_aux_insert(&mut self, enabled: bool, wet_mix: f32) {
@@ -270,7 +270,7 @@ impl AuxBusNode {
             .unwrap_or(false)
     }
 
-    /// Set one slot's aux-send target (Phase 6: per-send automation). The
+    /// Set one slot's aux-send target (: per-send automation). The
     /// mix node taps the slot only while the target is non-zero; this node
     /// ramps its send gain toward the target.
     pub fn set_send(&mut self, slot: usize, gain: f32) {
@@ -331,7 +331,7 @@ impl AuxBusNode {
     /// Apply the aux return into the master planes' front pair (channels
     /// 0/1; an MC master receives the stereo aux on its front pair). The
     /// insert convolution processes the accumulator planes in place first
-    /// (Phase 6); the return itself is a bit-exact element-wise `+=`
+    /// ; the return itself is a bit-exact element-wise `+=`
     /// (SIMD-accelerated, see [`accumulate_scaled`]). Skipped when disabled,
     /// idle, or the return gain is zero.
     fn return_into(&mut self, planes: &mut [&mut [f32]], frames: usize) {
@@ -378,7 +378,7 @@ impl AuxBusNode {
         }
     }
 
-    /// Per-block peak/RMS metering over the accumulated planes (Phase 5 S3).
+    /// Per-block peak/RMS metering over the accumulated planes.
     fn compute_meters(&mut self, frames: usize) {
         if frames == 0 {
             return;

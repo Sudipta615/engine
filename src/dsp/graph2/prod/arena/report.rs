@@ -127,7 +127,7 @@ impl DspGraph {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Engine-facing telemetry (Phase 3 S3/S4): the pipeline's report surface
+// Engine-facing telemetry: the pipeline's report surface
 // rebuilt from the graph's node state, so the engine can own the graph
 // end-to-end without the pipeline.
 // ─────────────────────────────────────────────────────────────────────────────

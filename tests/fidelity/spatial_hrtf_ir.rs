@@ -1,5 +1,4 @@
-//! Acceptance suite for spectral HRTFs / elevation (spec Phase 18 / roadmap
-//! Phase 18, Part VII §47–48, §62).
+//! Acceptance suite for spectral HRTFs / elevation (spec Part VII §47–48, §62).
 //!
 //! The contract this suite pins down:
 //!
@@ -14,7 +13,7 @@
 //! - **Elevation cues** — both the dataset and the analytic fallback
 //!   (pinna notch) attenuate high frequencies as a source rises: a raised
 //!   source measures a deeper null at the notch frequency than a horizontal
-//!   one. 0° elevation is an exact passthrough (the Phase-9 head model is
+//!   one. 0° elevation is an exact passthrough (the baseline head model is
 //!   unchanged).
 //! - **Mirror symmetry** — mirroring a source swaps the ears exactly, in
 //!   the dataset path and the analytic path.

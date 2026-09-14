@@ -3,7 +3,7 @@ members = [".", "crates/config", "crates/plugin-abi", "crates/plugin-test-echo"]
 
 [package]
 name = "engine"
-version = "4.5.0"
+version = "4.5.1"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"
@@ -11,7 +11,7 @@ repository = "https://github.com/Sudipta615/engine"
 [features]
 default = ["audio-output", "resample", "all-codecs"]
 audio-output = ["cpal", "thread-priority"]
-# Phase 49: dynamic plugin library loading (dlopen / LoadLibrary). The
+# Dynamic plugin library loading (dlopen / LoadLibrary). The
 # static-registry path (`static:<uid>` sources) works without this
 # feature; enabling it adds the libloading-based loader.
 plugin-dylib = ["plugin-abi/host"]
@@ -120,12 +120,12 @@ thiserror = "2.0"
 num-traits = "0.2"
 num-complex = "0.4"
 realfft = "3.5"
-# Complex-domain FFT for the correction chain (Phase 7): deconvolution,
+# Complex-domain FFT for the correction chain: deconvolution,
 # cepstral minimum-phase, hybrid-phase rendering. Same crate realfft builds
 # on, so this adds no new compiled code.
 rustfft = "6.2"
 config = { path = "crates/config" }
-# Phase 49: the Rust-native plugin ABI + host. Default features off —
+# The Rust-native plugin ABI + host. Default features off —
 # the `plugin-dylib` engine feature pulls in the loader.
 plugin-abi = { path = "crates/plugin-abi", default-features = false }
 thread-priority = { version = "3.1", optional = true }
@@ -227,7 +227,7 @@ rusty-opus = "0.9.1"
 # wavicle's `encode` feature, used ONLY by tests to generate deterministic
 # `.wv` fixtures at test time (no committed binary assets).
 wavicle = { version = "0.1", features = ["encode"] }
-# Phase 49: the reference plugin (in-process, via the static registry).
+# The reference plugin (in-process, via the static registry).
 plugin-abi = { path = "crates/plugin-abi", default-features = false }
 plugin-test-echo = { path = "crates/plugin-test-echo", default-features = false }
 

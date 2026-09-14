@@ -75,7 +75,7 @@ pub struct AudioEngine {
     /// The active output transport (cpal, or the native WASAPI exclusive
     /// backend on Windows with `wasapi-native`).
     audio_output: Option<Box<dyn Output>>,
-    /// The production DSP signal path (Phase 48): the Graph2 engine owns
+    /// The production DSP signal path: the Graph2 engine owns
     /// the signal chain end-to-end — its generations carry plans **lowered
     /// from the Graph2 production topology** over the single arena node
     /// implementation (`graph2::prod::arena`).
@@ -123,7 +123,7 @@ pub struct AudioEngine {
     #[cfg(all(target_os = "windows", feature = "wasapi-native"))]
     capture: Option<ActiveCapture>,
 
-    /// Phase-7 S5 room measurement in flight (sweep playing + capture
+    /// Room measurement in flight (sweep playing + capture
     /// scheduled). Control-thread only; `None` when idle.
     pub(crate) measurement: Option<commands::PendingMeasurement>,
 
@@ -133,10 +133,10 @@ pub struct AudioEngine {
     pub(crate) loudness_scan: LoudnessScanState,
     pub(crate) recovery: RecoveryState,
     pub(crate) scratch: EngineScratch,
-    /// Auto-save/restore of the active spatial scene (Phase 21). Control
+    /// Auto-save/restore of the active spatial scene. Control
     /// thread only: restores at construction, writes on change + shutdown.
     pub(crate) spatial_persistence: spatial_persistence::SpatialPersistence,
-    /// Multi-track lane registry (Phase 4 S6): independent streams mixed
+    /// Multi-track lane registry: independent streams mixed
     /// onto bus slots ≥ 2. Control side adds/removes; the decode loop feeds
     /// active lanes at every block boundary.
     pub(crate) lanes: Vec<lanes::LaneTrack>,

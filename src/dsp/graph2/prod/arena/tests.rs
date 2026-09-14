@@ -165,7 +165,7 @@ fn graph_matches_pipeline_exact_block_outputs() {
     }
 }
 
-// ── Phase 2: queued control surface + live generation swap ─────────────────
+// ── Queued control surface + live generation swap ─────────────────
 
 #[test]
 fn graph_control_commands_defer_until_next_block() {
@@ -409,7 +409,7 @@ fn graph_two_thread_control_and_audio_stress() {
     );
 }
 
-// ── Phase 3 S1: mix-bus per-input control + transition envelope ────────────
+// ── Mix-bus per-input control + transition envelope ────────────
 
 #[test]
 fn mix_input_gain_balance_mute_apply_via_control_queue() {
@@ -543,7 +543,7 @@ fn mix_loudness_metadata_routes_to_inputs() {
     );
 }
 
-// ── Phase 3 S2: stream slots (N-input bus + multi-stream entry) ────────────
+// ── Stream slots (N-input bus + multi-stream entry) ────────────
 
 #[test]
 fn mix_stream_slots_sum_independently_and_detach() {
@@ -552,7 +552,7 @@ fn mix_stream_slots_sum_independently_and_detach() {
     let sr = 48000.0;
     let mut cfg = EngineConfig::default();
     cfg.crossfade.enabled = false; // begin_crossfade degrades to a gapless switch
-                                   // Phase 4 S1: the slot count is a generation parameter — a 3-slot bus.
+                                   // The slot count is a generation parameter — a 3-slot bus.
     cfg.mix_slots = 3;
     let mut graph = DspGraph::from_config(&cfg, sr);
     assert_eq!(graph.mix().inputs.len(), 3, "mix_slots must size the bus");
@@ -630,7 +630,7 @@ fn mix_stream_slots_sum_independently_and_detach() {
     }
 }
 
-// ── Phase 4 S1: slot-count parameter + per-slot user state ────────────────
+// ── Slot-count parameter + per-slot user state ────────────────
 
 #[test]
 fn mix_slot_count_is_clamped_to_the_bus_bound() {
@@ -713,7 +713,7 @@ fn per_slot_user_state_survives_reconfigure() {
     assert_eq!(graph.mix().inputs[1].gain.gain, 1.0, "default gain");
 }
 
-// ── Phase 4 S2: N-channel secondary planes + multichannel bus sum ─────────
+// ── N-channel secondary planes + multichannel bus sum ─────────
 
 #[test]
 fn multichannel_stream_slots_sum_channel_wise() {
@@ -783,7 +783,7 @@ fn multichannel_stream_slots_sum_channel_wise() {
     }
 }
 
-// ── Phase 4 S3: per-slot pan law + meters ─────────────────────────────────
+// ── Per-slot pan law + meters ─────────────────────────────────
 
 #[test]
 fn pan_shapes_front_pair_and_meters_publish() {
@@ -832,7 +832,7 @@ fn pan_shapes_front_pair_and_meters_publish() {
 
 #[test]
 fn duck_gates_target_slot_from_source_peak() {
-    // Phase 4 S4: program-gated ducking. Slot 1 (a loud secondary stream)
+    // Program-gated ducking. Slot 1 (a loud secondary stream)
     // gates slot 0: once engaged, slot 0's level drops by the depth. The
     // trigger is block-synchronous from the source slot's peak meter.
     let sr = 48000.0;
@@ -900,7 +900,7 @@ fn duck_gates_target_slot_from_source_peak() {
 
 #[test]
 fn automation_track_shapes_lane_slot_sample_accurate() {
-    // Phase 4 S5: a Gain automation track on a lane slot (>= 2) is applied
+    // A Gain automation track on a lane slot (>= 2) is applied
     // sample-accurately (linear interpolation between breakpoints), and the
     // runner's absolute position advances across blocks (edge values hold).
     let sr = 48000.0;
@@ -982,7 +982,7 @@ fn automation_track_shapes_lane_slot_sample_accurate() {
 
 #[test]
 fn automation_pan_track_moves_lane_front_pair() {
-    // Phase 4 S5 Pan target: the automation value replaces the static pan.
+    // Pan target: the automation value replaces the static pan.
     // With the Linear law, pan 1.0 kills the left channel and keeps right.
     let sr = 48000.0;
     let cfg = EngineConfig {
@@ -1021,7 +1021,7 @@ fn automation_pan_track_moves_lane_front_pair() {
 
 #[test]
 fn slot_trim_send_and_aux_bus_shape_the_master() {
-    // Phase 5 S1+S2+S3: per-slot channel trim, post-fader sends, and the
+    // Per-slot channel trim, post-fader sends, and the
     // aux bus accumulator. Slot 1 (a lane) gets a -6 dB L-channel trim, a
     // master-send of 0.5, and an aux-send of 1.0; the aux return joins the
     // master at unity. Disabled aux + unity sends must stay bit-exact with
@@ -1049,7 +1049,7 @@ fn slot_trim_send_and_aux_bus_shape_the_master() {
         "unity lane sums to ~-6 dB peak (0.5), got {base_peak}"
     );
 
-    // S1: -6 dB trim on slot 1's L channel halves the left contribution
+    // -6 dB trim on slot 1's L channel halves the left contribution
     // (0.5 -> 0.25), so the master peak drops to 0.25 (-12.04 dB).
     graph.set_slot_trim(2, 0, -6.0, false);
     graph.drain_queued_control();
@@ -1064,7 +1064,7 @@ fn slot_trim_send_and_aux_bus_shape_the_master() {
         "L trim -6 dB -> 0.25 peak (-12.04 dB), got {trim_peak}"
     );
 
-    // S2: master-send 0.5 halves both channels (L 0.5->0.25, R 0.25->0.125);
+    // Master-send 0.5 halves both channels (L 0.5->0.25, R 0.25->0.125);
     // the master peak tracks the louder L at 0.25 -> -12.04 dB.
     graph.set_slot_trim(2, 0, 0.0, false);
     graph.set_slot_send(2, 0.5, 0.0);
@@ -1080,7 +1080,7 @@ fn slot_trim_send_and_aux_bus_shape_the_master() {
         "master-send 0.5 -> L 0.25 peak (-12.04 dB), got {send_peak}"
     );
 
-    // S3: aux-send 1.0 with a unity return adds the post-fader signal back
+    // Aux-send 1.0 with a unity return adds the post-fader signal back
     // via the aux bus (master L 0.25 + aux L 0.5 = 0.75, -2.50 dB).
     graph.set_slot_send(2, 0.5, 1.0);
     graph.set_aux(true, 1.0);
@@ -1116,7 +1116,7 @@ fn slot_trim_send_and_aux_bus_shape_the_master() {
     );
 }
 
-// ── Phase 5 regressions (v3.6.1) ───────────────────────────────────────────
+// ── Regressions (v3.6.1) ───────────────────────────────────────────
 
 #[test]
 fn phase5_reconfigure_drains_queued_control_and_carries_duck_automation() {
@@ -1218,7 +1218,7 @@ fn phase5_config_mix_trims_sends_aux_wire_at_construction() {
     // Send: master 0.5 / aux 0.25.
     assert_eq!(mix.inputs[1].send.master_gain, 0.5, "master send wired");
     assert_eq!(mix.inputs[1].send.aux_gain, 0.25, "aux send wired");
-    // Aux bus: enabled + return 0.75 (Phase 6: the aux bus is its own node).
+    // Aux bus: enabled + return 0.75 (: the aux bus is its own node).
     assert!(graph.aux().enabled(), "aux enabled from config");
     assert_eq!(graph.aux().return_gain(), 0.75);
 }
@@ -1388,7 +1388,7 @@ fn write_impulse_wav(path: &std::path::Path, sample_rate: u32, n_frames: usize) 
 
 #[test]
 fn phase6_aux_insert_convolves_toggles_and_survives_swap() {
-    // Phase 6: the aux bus carries a global convolution insert between the
+    // The aux bus carries a global convolution insert between the
     // accumulator and the return. With a delta IR the send content should
     // pass through (modulo engine latency); the runtime toggle (enabled /
     // wet only) must gate it and survive a generation swap.
@@ -1528,7 +1528,7 @@ fn phase6_bit_exact_simd_accumulate_matches_scalar() {
 
 #[test]
 fn phase6_aux_bus_node_per_send_automation_and_independent_metering() {
-    // Phase 6: the aux bus is its own plan node. Each mix slot's send
+    // The aux bus is its own plan node. Each mix slot's send
     // ramps independently (per-send automation) and meters independently
     // (per-send peaks published to the control bus).
     let sr = 48000.0;

@@ -226,7 +226,7 @@ fn test_event_channel_isolation_no_leakage() {
     while main_events.try_recv().is_ok() {}
     while output_events.try_recv().is_ok() {}
 
-    // ── Phase 1: trigger a device switch and verify it only lands on the
+    // ──: trigger a device switch and verify it only lands on the
     //    output event channel, never on the main engine event channel.
     handle.set_output_device(Some("IsolationTestDAC".to_string()));
 
@@ -274,7 +274,7 @@ fn test_event_channel_isolation_no_leakage() {
         "no device-related event must leak into the main EngineEvent channel"
     );
 
-    // ── Phase 2: trigger a playback lifecycle event (open → play) and verify
+    // ──: trigger a playback lifecycle event (open → play) and verify
     //    it only lands on the main event channel, never on the output channel.
     let wav_bytes = generate_pcm_wav_bytes(48000, 2, 0.5, 440.0);
     let tmp = std::env::temp_dir().join("isolation_test_sine.wav");

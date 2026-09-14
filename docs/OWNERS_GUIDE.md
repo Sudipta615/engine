@@ -1949,10 +1949,9 @@ regressions (a clean release must report zero).
 
 ## 11.4 Where testing is weaker or less explicit
 
-- **Perceptual (listening) results** are not in CI — `docs/QUALITY.md`
-  defines a rigorous controlled-listening procedure (ABX/anchored,
-  blind, documented conditions) but it is a human-run protocol, not an
-  automated gate.
+- **Perceptual (listening) results** are not in CI — a rigorous
+  controlled-listening procedure (ABX/anchored, blind, documented
+  conditions) is a human-run protocol, not an automated gate.
 - **Hardware-dependent behavior** (exclusive-mode verification, hotplug,
   drift correction against real crystals, native DSD wire formats) is
   tested where the OS allows (CI compiles the native backends cross-
@@ -2721,8 +2720,8 @@ byte-identical capture → AelogCache (SHA-256 content address).
 - CI (`ci.yml`): fmt, clippy -D warnings, test matrix across Linux/macOS/
   Windows, cross-target compile of native backends.
 - Benchmarks: `cargo bench` (criterion). Fidelity thresholds are written
-  as assertions with committed numbers (see the Phase-7 acceptance list in
-  EVOLUTION.md for the style).
+  as assertions with committed numbers (see the fidelity acceptance tests
+  for the style).
 - Golden/reference discipline: deterministic stimuli, versioned vectors,
   content-addressed expectations (`eval`), golden captures (`aelog`).
 
@@ -2816,7 +2815,5 @@ green.
 
 *End of the Owner's Guide. For day-to-day rules, see `AGENTS.md`; for the
 module map, `docs/ARCHITECTURE.md`; for the exact sample path,
-`docs/SIGNAL_FLOW.md`; for embedding examples, `docs/EMBEDDING.md`; for the
-quality methodology, `docs/QUALITY.md`; for the design history,
-`docs/EVOLUTION.md`.*
+`docs/SIGNAL_FLOW.md`; for embedding examples, `docs/EMBEDDING.md`.*
 

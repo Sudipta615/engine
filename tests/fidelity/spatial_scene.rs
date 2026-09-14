@@ -1,5 +1,4 @@
-//! Acceptance suite for the scene-file format (spec Phase 19 / roadmap
-//! Phase 19): Serde-serializable scenes that are **content only** —
+//! Acceptance suite for the scene-file format : Serde-serializable scenes that are **content only** —
 //! listener, objects, beds, fields, room — independent of the output
 //! speaker layout and the renderer, which stay host choices.
 //!

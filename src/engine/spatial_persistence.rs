@@ -1,4 +1,4 @@
-//! Auto-save / restore of the active spatial scene (Phase 21).
+//! Auto-save / restore of the active spatial scene.
 //!
 //! The graph's [`SpatialNode`] owns the *active* spatial scene — the master
 //! enable flag, the virtual screen, the room, and the listener orientation.
@@ -92,7 +92,7 @@ fn snapshot(graph: &Graph2Engine) -> SpatialConfig {
         quality: Default::default(),
         voice: Default::default(),
         metering: Default::default(),
-        // Phase 52: the live cue bank round-trips with the scene.
+        // The live cue bank round-trips with the scene.
         cues: sp.scene_cues(),
     }
 }

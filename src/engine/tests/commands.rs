@@ -148,7 +148,7 @@ fn test_tick_without_start() {
 
 #[test]
 fn test_tick_publishes_spatial_telemetry() {
-    // Phase 17: the SpatialNode's output meters + voice plan land on the
+    // The SpatialNode's output meters + voice plan land on the
     // lock-free PlaybackInfo snapshot every telemetry tick (2 s cadence).
     let mut engine = AudioEngine::new_default().unwrap();
     // Force the telemetry window to be due so the publish block actually
@@ -176,7 +176,7 @@ fn test_tick_publishes_spatial_telemetry() {
 
 #[test]
 fn test_spatial_quality_and_voice_config_via_handle() {
-    // Phase 17: hosts configure SpatialQuality / VoicePriority through the
+    // Hosts configure SpatialQuality / VoicePriority through the
     // engine handle, and the commands reach the graph's SpatialNode.
     let mut engine = AudioEngine::new_default().unwrap();
     let handle = engine.handle();
@@ -956,7 +956,7 @@ fn test_engine_handle_controls_and_telemetry() {
 
 #[test]
 fn test_set_aux_insert_command_dispatches_and_publishes() {
-    // Phase 6: the aux-insert runtime toggle must flow engine command →
+    // The aux-insert runtime toggle must flow engine command →
     // graph control → mirrored control-bus state → PlaybackInfo telemetry
     // (the read path the FFI exposes to hosts).
     let ir_path = std::env::temp_dir().join(format!(

@@ -1,5 +1,4 @@
-//! Acceptance suite for head tracking (spec Phase 10 / roadmap Phase 15,
-//! §48, §136).
+//! Acceptance suite for head tracking (spec §48, §136).
 //!
 //! Head tracking is a control-side seam: a [`HeadTracker`] turns a stream
 //! of timestamped orientation samples into a smooth listener orientation

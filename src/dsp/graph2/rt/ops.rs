@@ -1,4 +1,4 @@
-//! Realtime executor ops (v3.50 Phase 45): the zero-allocation per-node
+//! Realtime executor ops (v3.50): the zero-allocation per-node
 //! renders and the plan publish / adopt / retire machinery.
 //!
 //! Every op here mirrors its offline counterpart
@@ -37,7 +37,7 @@ fn input_index(inputs: &[Vec<(u32, usize)>], idx: usize, port: u32) -> Option<us
 /// The control thread builds a plan (`RtPlan::build`), publishes it
 /// (`publish`), and the audio thread adopts it at the next block boundary
 /// (inside `render_block`). At most one swap is in flight; a publish while
-/// another is pending coalesces (latest wins) — the Phase-2 publish /
+/// Another is pending coalesces (latest wins) — the publish /
 /// swap / retire discipline, reused.
 pub struct RtExecutor {
     /// The live plan. Replaced only by adopting a published plan at a

@@ -1,10 +1,10 @@
-//! Room & headphone correction command handlers (Phase 7 S5).
+//! Room & headphone correction command handlers.
 //!
 //! The four-engine surface: `SetCorrectionEnabled` / `SetCorrectionDepth`
 //! are live toggles that ride the graph's SPSC control queue (a swap
 //! replays them via the sticky bus state); `LoadCorrectionIr` runs the
-//! S2→S4 chain on the control thread and lands a rendered IR set;
-//! `MeasureRoom` plays the S1 sweep on the primary stream, captures it
+//! IR conditioning to derivation chain on the control thread and lands a rendered IR set;
+//! `MeasureRoom` plays the sweep on the primary stream, captures it
 //! (WASAPI loopback on Windows; a generic input backend is Horizon), then
 //! deconvolves → conditions → derives → lands, with progress/completion
 //! events. Everything here is control-thread DSP — heap-happy by design;
@@ -23,7 +23,7 @@ use crate::events::EngineEvent;
 
 use super::AudioEngine;
 
-/// A room measurement in flight (Phase 7 S5): the sweep is playing and its
+/// A room measurement in flight: the sweep is playing and its
 /// loopback capture is scheduled to stop at `stop_at`. Control-thread only.
 pub(crate) struct PendingMeasurement {
     /// The sweep that was generated and played (needed to deconvolve the
@@ -53,7 +53,7 @@ impl AudioEngine {
         self.graph.set_correction_depth(depth);
     }
 
-    /// Load a measured IR file and derive the correction from it (S2 → S4,
+    /// Load a measured IR file and derive the correction from it (IR conditioning to derivation,
     /// using the config's target / boost clamp / smoothing / phase mode),
     /// then enable it. A missing or unreadable file keeps the previous
     /// correction (or none) — never a failure state.
@@ -72,8 +72,8 @@ impl AudioEngine {
         info!("correction: derived + enabled from '{}'", path.display());
     }
 
-    /// Phase-7 S5 measurement orchestration: generate the S1 sweep, play it
-    /// on the primary stream, capture it, and schedule the S1→S2→S4 landing
+    /// Room measurement orchestration: generate the sweep, play it
+    /// On the primary stream, capture it, and schedule the sweep-to-derivation landing
     /// (see [`AudioEngine::check_measurement`]).
     pub(super) fn handle_measure_room(&mut self, seconds: f32, pre_emphasis: f32) {
         if self.measurement.is_some() {
@@ -146,7 +146,7 @@ impl AudioEngine {
     }
 
     /// Tick hook: when the in-flight measurement's sweep has finished (+
-    /// margin), stop the capture and land the S1→S2→S4 result as the live
+    /// Margin), stop the capture and land the sweep-to-derivation result as the live
     /// correction. Control-thread only; called from the engine tick.
     pub(crate) fn check_measurement(&mut self) {
         let Some(meas) = self.measurement.take() else {
@@ -186,7 +186,7 @@ impl AudioEngine {
         let _ = std::fs::remove_file(&meas.sweep_wav);
     }
 
-    /// S2 condition + S4 derive over a measured IR WAV (control thread).
+    /// IR conditioning + correction derivation over a measured IR WAV (control thread).
     /// `snr_db` is the measurement's reported SNR (a config-driven load has
     /// no measurement and passes a confident default).
     fn derive_correction_from_wav(
@@ -217,7 +217,7 @@ impl AudioEngine {
         self.graph.set_correction_enabled(true);
     }
 
-    /// S1 deconvolution → S2 condition → S4 derive over the finished sweep
+    /// Sweep deconvolution → IR conditioning → correction derivation over the finished sweep
     /// recording, landing the result as the live correction. Returns the
     /// measurement SNR (dB).
     fn land_measurement(&mut self, meas: &PendingMeasurement) -> Result<f32, CorrectionError> {

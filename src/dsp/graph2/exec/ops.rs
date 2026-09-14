@@ -1,4 +1,4 @@
-//! Shared node-processing kernels (v3.50, Phase 45 S3).
+//! Shared node-processing kernels (v3.50).
 //!
 //! One set of per-node **processing kernels** — the sample math every
 //! Graph 2.0 node runs per block — used by *both* executors: the offline

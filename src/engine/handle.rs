@@ -379,14 +379,14 @@ impl EngineHandle {
         let _ = self.send_command(EngineCommand::SetEndpoints(endpoints));
     }
 
-    /// Runtime toggle of the Phase-6 aux insert (global convolution on the
+    /// Runtime toggle of the Aux insert (global convolution on the
     /// aux bus): `enabled` + `wet_mix` in [0, 1] only — the impulse response
     /// stays as configured. No-op when no IR engine exists yet.
     pub fn set_aux_insert(&self, enabled: bool, wet_mix: f32) {
         let _ = self.send_command(EngineCommand::SetAuxInsert { enabled, wet_mix });
     }
 
-    // ── Plugin host (Phase 49) ──────────────────────────────────────
+    // ── Plugin host ──────────────────────────────────────
 
     /// Runtime toggle of the plugin host insert (all configured plugin
     /// slots). Disabled = the plan step is skipped, bit-exact; the
@@ -402,7 +402,7 @@ impl EngineHandle {
         let _ = self.send_command(EngineCommand::SetPluginParams(pairs.to_vec()));
     }
 
-    // ── Room & headphone correction (Phase 7 S5) ─────────────────────────
+    // ── Room & headphone correction ─────────────────────────
 
     /// Live toggle of the correction stage (enabled only; the loaded IR
     /// stays). Disabled = the plan step is skipped, bit-exact.
@@ -410,7 +410,7 @@ impl EngineHandle {
         let _ = self.send_command(EngineCommand::SetCorrectionEnabled(enabled));
     }
 
-    // ── Spatial master (Phase 17) ────────────────────────────────────
+    // ── Spatial master ────────────────────────────────────
 
     /// Set the spatial master's renderer quality tier (spec §86).
     pub fn set_spatial_quality(&self, q: config::SpatialQuality) {
@@ -458,7 +458,7 @@ impl EngineHandle {
         let _ = self.send_command(EngineCommand::SetSpatialAutomationTime(seconds));
     }
 
-    /// Phase-51 listener motion: set the target listener pose (world-space
+    /// Listener motion: set the target listener pose (world-space
     /// orientation + position). The spatial master glides toward it every
     /// processed block per its tracking policy — the runtime-editable
     /// listener rotation/position surface (v4.3.0).
@@ -473,31 +473,31 @@ impl EngineHandle {
         });
     }
 
-    /// Phase-52 scene animation (v4.4.0): replace the spatial master's
+    /// Scene animation (v4.4.0): replace the spatial master's
     /// cue bank. The runtime curves are built on the control thread and
     /// then only read on the audio path.
     pub fn set_spatial_cues(&self, cues: Vec<config::SpatialCueConfig>) {
         let _ = self.send_command(EngineCommand::SetSpatialCues(cues));
     }
 
-    /// Phase-52 scene animation: fire the named cue at the next block
+    /// Scene animation: fire the named cue at the next block
     /// boundary (evaluated relative to the firing instant).
     pub fn trigger_spatial_cue(&self, name: &str) {
         let _ = self.send_command(EngineCommand::TriggerSpatialCue(name.to_string()));
     }
 
-    /// Phase-52 scene animation: stop the active cue on `target`
+    /// Scene animation: stop the active cue on `target`
     /// (program object 0 = L, 1 = R).
     pub fn stop_spatial_cue(&self, target: usize) {
         let _ = self.send_command(EngineCommand::StopSpatialCue(target));
     }
 
-    /// Phase-52 scene animation: stop every active cue.
+    /// Scene animation: stop every active cue.
     pub fn stop_all_spatial_cues(&self) {
         let _ = self.send_command(EngineCommand::StopAllSpatialCues);
     }
 
-    /// Phase-51 listener motion: set the glide's smoothing policy (one-pole
+    /// Listener motion: set the glide's smoothing policy (one-pole
     /// time constant ms, `0` snaps; angular rate limit deg/s, `0`
     /// unlimited).
     pub fn set_spatial_listener_tracking(&self, smoothing_ms: f32, max_rate_deg_s: f32) {
@@ -512,7 +512,7 @@ impl EngineHandle {
         let _ = self.send_command(EngineCommand::SetCorrectionDepth(depth));
     }
 
-    /// Load a measured IR file and derive the correction from it (S2 → S4,
+    /// Load a measured IR file and derive the correction from it (IR conditioning to derivation,
     /// using the config's target / boost clamp / smoothing / phase mode),
     /// then enable it. A missing or unreadable file keeps the previous
     /// correction (or none) — never a failure state.
@@ -520,7 +520,7 @@ impl EngineHandle {
         let _ = self.send_command(EngineCommand::LoadCorrectionIr(path.into()));
     }
 
-    /// Run a room measurement: play the S1 exponential sine sweep and, where
+    /// Run a room measurement: play the exponential sine sweep and, where
     /// a capture backend exists (WASAPI loopback on Windows), deconvolve the
     /// recording into a correction and land it. Progress / completion
     /// surface as `MeasurementProgress` / `MeasurementComplete` events.

@@ -707,7 +707,7 @@ impl VbapRenderer {
                         .distance_gain(img.dist, obj.reference_distance);
                     // v3.47: colour the reflection with its surface's
                     // spectral low-pass when the baked path carries one.
-                    // Phase 50: on the live path, fold the scene-wide air
+                    // On the live path, fold the scene-wide air
                     // model's distance corner into the image's corner so
                     // realtime reflections darken with distance exactly as
                     // the offline kernels do (baked cells arrive
@@ -775,7 +775,7 @@ impl VbapRenderer {
                 // Room: store this frame in the object's reflection ring,
                 // fire the delayed taps, and accumulate the late-field send.
                 if room_on {
-                    // Phase 50 item 3: late-field distance roll-off (see
+                    // Item 3: late-field distance roll-off (see
                     // the panner's identical branch); off = legacy send.
                     let send = if room.late_distance {
                         gain * obj.room_send * dist_gain

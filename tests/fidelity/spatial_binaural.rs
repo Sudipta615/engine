@@ -1,5 +1,4 @@
-//! Acceptance suite for the binaural renderer (spec Phase 9 / roadmap
-//! Phase 14, Part VII §47–48, §62, §136).
+//! Acceptance suite for the binaural renderer (spec Part VII §47–48, §62, §136).
 //!
 //! The contract this suite pins down:
 //!

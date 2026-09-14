@@ -1,5 +1,4 @@
-//! Acceptance suite for higher-order ambisonics (spec Phase 16 / roadmap
-//! Phase 16, Part VI §32–37, §55).
+//! Acceptance suite for higher-order ambisonics (spec Part VI §32–37, §55).
 //!
 //! The contract this suite pins down:
 //!

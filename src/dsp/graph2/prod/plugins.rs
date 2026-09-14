@@ -1,4 +1,4 @@
-//! Phase 49: plugin source resolution — config string → loaded
+//! Plugin source resolution — config string → loaded
 //! [`PluginHost`].
 //!
 //! A slot's `source` is either:

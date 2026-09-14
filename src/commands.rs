@@ -21,7 +21,7 @@ pub enum EngineCommand {
     /// Prepare the next audio source for gapless / crossfade transition.
     PrepareNext(AudioSource),
 
-    // ── Multi-track lanes (Phase 4 S6) ───────────────────────────────────
+    // ── Multi-track lanes ───────────────────────────────────
     /// Add a track as an independent lane on the first free mix-bus slot
     /// ≥ 2, playing alongside the primary stream.
     AddTrack(AudioSource),
@@ -37,20 +37,20 @@ pub enum EngineCommand {
         slot: u8,
         pan: f32,
     },
-    /// Set a lane's post-fader master-send gain in [0, 1] (Phase 5 S2):
+    /// Set a lane's post-fader master-send gain in [0, 1]:
     /// scales the lane's contribution to the master sum. Independent of the
     /// user gain.
     SetTrackMasterGain {
         slot: u8,
         gain: f32,
     },
-    /// Set a lane's post-fader aux-send gain in [0, 1] (Phase 5 S2): taps
+    /// Set a lane's post-fader aux-send gain in [0, 1]: taps
     /// the lane's signal into the aux bus accumulator.
     SetTrackSend {
         slot: u8,
         gain: f32,
     },
-    /// Configure program-gated ducking across lanes (Phase 4 S4): when the
+    /// Configure program-gated ducking across lanes (derivation): when the
     /// `source_slot`'s peak rises above `threshold_db`, the `targets` slots
     /// are attenuated by `depth_db`. `None`-style disabling is done with an
     /// empty `targets` list.
@@ -90,24 +90,24 @@ pub enum EngineCommand {
     UpsertEndpoint(config::EndpointConfig),
     #[cfg(feature = "audio-output")]
     RemoveEndpoint(String),
-    /// Runtime toggle of the Phase-6 aux insert (the global convolution on
+    /// Runtime toggle of the Aux insert (the global convolution on
     /// the aux bus): `enabled` + `wet_mix` only — the impulse response stays
     /// as configured. No-op when no IR engine exists yet.
     SetAuxInsert {
         enabled: bool,
         wet_mix: f32,
     },
-    /// Phase-49 plugin host: live enable toggle for the whole plugin
+    /// Plugin host: live enable toggle for the whole plugin
     /// insert (all slots). Disabled = the plan step is skipped,
     /// bit-exact; attached plugin instances stay loaded.
     SetPluginEnabled(bool),
-    /// Phase-49 plugin host: live parameter batch. Indices are the
+    /// Plugin host: live parameter batch. Indices are the
     /// plugin's declared parameter indices; the batch is plain data and
     /// is applied atomically at the next block boundary.
     SetPluginParams(Vec<(u32, f32)>),
-    /// Phase-17 spatial master: renderer quality tier (spec §86).
+    /// Spatial master: renderer quality tier (spec §86).
     SetSpatialQuality(config::SpatialQuality),
-    /// Phase-17 spatial master: voice budget (spec §76). `enabled == false`
+    /// Spatial master: voice budget (spec §76). `enabled == false`
     /// clears it (full admission).
     SetSpatialVoice {
         enabled: bool,
@@ -115,7 +115,7 @@ pub enum EngineCommand {
         full_quality_capacity: usize,
         policy: config::VoicePriority,
     },
-    /// Phase-17 spatial master: attach/clear a scalar automation curve
+    /// Spatial master: attach/clear a scalar automation curve
     /// (gain or spread) to a program object (0 = L, 1 = R), and set the
     /// scene automation clock to `time_secs`. The curve is built off the
     /// audio thread and evaluated allocation-free at block rate (spec §47).
@@ -125,9 +125,9 @@ pub enum EngineCommand {
         curve: Option<std::sync::Arc<crate::spatial::automation::CurveScalar>>,
         time_secs: f32,
     },
-    /// Phase-17 spatial master: drive program-object automation at `seconds`.
+    /// Spatial master: drive program-object automation at `seconds`.
     SetSpatialAutomationTime(f32),
-    /// Phase-51 listener motion (v4.3.0): set the target listener pose —
+    /// Listener motion (v4.3.0): set the target listener pose —
     /// world-space orientation (quaternion) + position (metres). The
     /// spatial master glides toward it every processed block (shortest-arc
     /// nlerp on orientation, one-pole on position) per its tracking
@@ -136,41 +136,41 @@ pub enum EngineCommand {
         orientation: crate::spatial::math::Quat,
         position: crate::spatial::math::Vec3,
     },
-    /// Phase-51 listener motion: the glide's smoothing policy (one-pole
+    /// Listener motion: the glide's smoothing policy (one-pole
     /// time constant in ms — `0` snaps; optional angular rate limit in
     /// deg/s — `0` unlimited).
     SetSpatialListenerTracking {
         smoothing_ms: f32,
         max_angular_rate_deg_s: f32,
     },
-    /// Phase-52 scene animation (v4.4.0): replace the spatial master's
+    /// Scene animation (v4.4.0): replace the spatial master's
     /// cue bank from the scene-file model (the `whoosh` / `door` presets
     /// live on `config::SpatialCueConfig`). Control path; the bank is
     /// rebuilt off the audio thread and then only read.
     SetSpatialCues(Vec<config::SpatialCueConfig>),
-    /// Phase-52 scene animation: fire the named cue at the block
+    /// Scene animation: fire the named cue at the block
     /// boundary (evaluated relative to the firing instant).
     TriggerSpatialCue(String),
-    /// Phase-52 scene animation: stop the active cue on `target`
+    /// Scene animation: stop the active cue on `target`
     /// (program object 0 = L, 1 = R).
     StopSpatialCue(usize),
-    /// Phase-52 scene animation: stop every active cue.
+    /// Scene animation: stop every active cue.
     StopAllSpatialCues,
-    /// Phase-7 S5 correction: live enabled toggle (the loaded IR stays;
+    /// Room/headphone correction: live enabled toggle (the loaded IR stays;
     /// disabled = the plan step is skipped, bit-exact).
     SetCorrectionEnabled(bool),
-    /// Phase-7 S5 correction: live wet/dry depth in [0, 1] (1.0 = fully
+    /// Room/headphone correction: live wet/dry depth in [0, 1] (1.0 = fully
     /// corrected).
     SetCorrectionDepth(f32),
-    /// Phase-7 S5 correction: load a measured IR file and derive the
-    /// correction from it (S2 condition → S4 regularized inverse → S3 phase
+    /// Room/headphone correction: load a measured IR file and derive the
+    /// Correction from it (IR conditioning → derivation regularized inverse → phase
     /// render, using the config's target / boost clamp / smoothing / phase
     /// mode), then enable it. A missing or unreadable file keeps the
     /// previous correction (or none) — never a failure state.
     LoadCorrectionIr(std::path::PathBuf),
-    /// Phase-7 S5 measurement orchestration: generate the S1 exponential
+    /// Room measurement orchestration: generate the exponential
     /// sine sweep, play it on the primary stream, capture it (WASAPI
-    /// loopback on Windows), then run S1 deconvolution → S2 → S4 and land
+    /// Loopback on Windows), then run sweep deconvolution → IR conditioning to derivation and land
     /// the result as the live correction. Progress / completion surface as
     /// `MeasurementProgress` / `MeasurementComplete { path, snr_db }`;
     /// without a capture backend the sweep still plays and

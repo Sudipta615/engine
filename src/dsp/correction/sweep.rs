@@ -1,4 +1,4 @@
-//! S1 — sweep measurement kit: Farina exponential sine sweep, deconvolution,
+//! Sweep measurement kit: Farina exponential sine sweep, deconvolution,
 //! harmonic separation, and measurement SNR.
 //!
 //! The measurement model ([Farina 2000]): play an ESS, record it, and divide
@@ -263,8 +263,8 @@ impl ImpulseResponse {
 
     /// The physical (linear-response) impulse response as real samples:
     /// the real part of the fundamental window in circular buffer order.
-    /// This is the S2 conditioner's input when a live measurement lands
-    /// (Phase 7 S5 `MeasureRoom`); the conditioner detects the onset
+    /// This is the conditioner's input when a live measurement lands
+    /// (`MeasureRoom`); the conditioner detects the onset
     /// itself, so no pre-rotation is needed.
     pub fn real_ir(&self) -> Vec<f64> {
         let (w0, w1) = self.ir_window;

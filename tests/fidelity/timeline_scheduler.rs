@@ -1,6 +1,6 @@
 //! Fidelity tests — Timeline and Scheduler (v3.28, roadmap v3.28).
 //!
-//! Evolution thresholds (`docs/EVOLUTION.md` Phase 26):
+//! Fidelity thresholds:
 //! * a [`Timeline`] driving the Graph 2.0 [`OfflineExecutor`] renders
 //!   **sample-accurately**: a gain step scheduled at a musical beat lands
 //!   exactly on the requested sample (silence up to that sample, then the

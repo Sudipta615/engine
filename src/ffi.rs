@@ -392,9 +392,9 @@ pub extern "C" fn engine_playlist_len(handle: *mut EngineHandleFFI) -> i64 {
     h.handle.playlist_len() as i64
 }
 
-// ── Aux insert (Phase 6) ───────────────────────────────────────────────────
+// ── Aux insert ───────────────────────────────────────────────────
 
-/// Toggle the Phase-6 aux insert (the global convolution on the aux bus):
+/// Toggle the Aux insert (the global convolution on the aux bus):
 /// `enabled` != 0 turns it on, `wet_mix` in [0, 1] sets the wet/dry balance.
 /// The impulse response stays as configured; this is a no-op when no IR
 /// engine exists yet.
@@ -416,7 +416,7 @@ pub extern "C" fn engine_set_aux_insert(
     EngineStatus::Ok as i32
 }
 
-/// Read the live Phase-6 aux insert state. On success writes `enabled`
+/// Read the live Aux insert state. On success writes `enabled`
 /// (0/1) and `wet_mix` and returns `EngineStatus::Ok`; returns
 /// `EngineStatus::InvalidArgument` if either out-pointer is NULL.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -441,7 +441,7 @@ pub extern "C" fn engine_aux_insert_state(
     EngineStatus::Ok as i32
 }
 
-// ── Room & headphone correction (Phase 7 S5) ───────────────────────────────
+// ── Room & headphone correction ───────────────────────────────
 
 /// Live toggle of the correction stage (`enabled` != 0 turns it on; the
 /// loaded IR stays). Disabled = the plan step is skipped, bit-exact.
@@ -472,7 +472,7 @@ pub extern "C" fn engine_set_correction_depth(handle: *mut EngineHandleFFI, dept
     EngineStatus::Ok as i32
 }
 
-/// Load a measured IR WAV and derive the correction from it (S2 → S4 with
+/// Load a measured IR WAV and derive the correction from it (IR conditioning to derivation with
 /// the configured target / boost clamp / smoothing / phase mode), then
 /// enable it. `path` must be a non-empty C string; a missing or unreadable
 /// file keeps the previous correction (or none) — never a failure state.
@@ -497,7 +497,7 @@ pub extern "C" fn engine_load_correction_ir(
     EngineStatus::Ok as i32
 }
 
-/// Read the live Phase-7 S5 correction state. On success writes
+/// Read the live Room/headphone correction state. On success writes
 /// `enabled` (0/1), `depth`, `ir_len_samples`, `latency_ms`,
 /// `max_gain_db`, and `phase_mode` (0 = none, 1 = minimum, 2 = linear,
 /// 3 = hybrid) and returns `EngineStatus::Ok`; returns
@@ -544,7 +544,7 @@ pub extern "C" fn engine_correction_info(
     EngineStatus::Ok as i32
 }
 
-/// Read the spatial master output telemetry (Phase 17): the binaural
+/// Read the spatial master output telemetry: the binaural
 /// output's left/right-ear peak & RMS (dBFS) and the live voice-budget
 /// admission counts (spec §76). Mirrored from the lock-free `PlaybackInfo`
 /// snapshot on the telemetry cadence.
@@ -553,9 +553,9 @@ pub extern "C" fn engine_correction_info(
 /// `voice_degraded_voices`, `voice_dropped_voices` (i32), and `peak_db_l`,
 /// `peak_db_r`, `rms_db_l`, `rms_db_r` (f32).
 ///
-/// Phase 51: prefer [`engine_spatial_listener_pose`] for the live
+/// Prefer [`engine_spatial_listener_pose`] for the live
 /// listener pose (yaw/pitch/roll + position) — this function keeps its
-/// Phase-17 signature unchanged.
+/// Signature unchanged.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_spatial_info(
@@ -612,7 +612,7 @@ pub extern "C" fn engine_spatial_info(
 }
 
 /// Read the live listener pose from the spatial master telemetry
-/// (Phase 51 listener motion, v4.3.0): yaw/pitch/roll in degrees and the
+/// (listener motion, v4.3.0): yaw/pitch/roll in degrees and the
 /// world-space position (metres) — the post-glide state the renderers
 /// read, mirrored on the telemetry cadence.
 ///
@@ -657,7 +657,7 @@ pub extern "C" fn engine_spatial_listener_pose(
     EngineStatus::Ok as i32
 }
 
-/// Set the target listener pose (Phase 51 listener motion): world-space
+/// Set the target listener pose (listener motion): world-space
 /// orientation as a quaternion `(x, y, z, w)` + position `(x, y, z)`
 /// metres. The spatial master glides toward it every processed block
 /// (nlerp on orientation, one-pole on position) per its tracking policy.
@@ -698,7 +698,7 @@ pub extern "C" fn engine_set_spatial_listener_pose(
     EngineStatus::Ok as i32
 }
 
-/// Set the listener-motion glide policy (Phase 51): one-pole smoothing
+/// Set the listener-motion glide policy: one-pole smoothing
 /// time constant in ms (`0` snaps exactly) and an optional angular rate
 /// limit in deg/s (`0` unlimited). Negative values are rejected.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -793,7 +793,7 @@ pub extern "C" fn engine_spatial_health(
     EngineStatus::Ok as i32
 }
 
-/// Set the spatial master renderer quality tier (Phase 17, spec §86).
+/// Set the spatial master renderer quality tier (spec §86).
 /// `quality` uses `EngineSpatialQuality` (0 = Low, 1 = Medium, 2 = High,
 /// 3 = Ultra).
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -814,7 +814,7 @@ pub extern "C" fn engine_set_spatial_quality(handle: *mut EngineHandleFFI, quali
     EngineStatus::Ok as i32
 }
 
-/// Set the spatial master's voice budget (Phase 17, spec §76):
+/// Set the spatial master's voice budget (spec §76):
 /// `enabled != 0` applies `capacity` (concurrent voices) with
 /// `full_quality_capacity` full-quality voices, ranked by `policy`
 /// (`EngineVoicePriority`: 0 = Fixed, 1 = DistanceWeighted,
@@ -852,8 +852,7 @@ pub extern "C" fn engine_set_spatial_voice(
     EngineStatus::Ok as i32
 }
 
-/// Set a scalar automation curve on a spatial program object (Phase 17,
-/// spec §47). `object` 0 = Left, 1 = Right; `kind` 0 = gain, 1 = spread.
+/// Set a scalar automation curve on a spatial program object (spec §47). `object` 0 = Left, 1 = Right; `kind` 0 = gain, 1 = spread.
 /// `points_count` keyframes are given as parallel `times` (seconds) and
 /// `values` (linear) arrays (clamped to a bounded count); the scene
 /// automation clock is set to `time_secs`. Pass `points_count == 0` to clear
@@ -915,7 +914,7 @@ pub extern "C" fn engine_set_spatial_automation(
 }
 
 /// Drive the spatial master's program-object automation at `seconds`
-/// (Phase 17, spec §47).
+/// (spec §47).
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_set_spatial_automation_time(
@@ -930,7 +929,7 @@ pub extern "C" fn engine_set_spatial_automation_time(
     EngineStatus::Ok as i32
 }
 
-/// Phase-52 scene animation (v4.4.0): fire the named cue on the spatial
+/// Scene animation (v4.4.0): fire the named cue on the spatial
 /// master. The cue's parameter curves apply relative to the firing
 /// instant, evaluated at the block boundary.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -954,7 +953,7 @@ pub extern "C" fn engine_trigger_spatial_cue(
     EngineStatus::Ok as i32
 }
 
-/// Phase-52 scene animation: stop the active cue on `target` (0 = L,
+/// Scene animation: stop the active cue on `target` (0 = L,
 /// 1 = R).
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
@@ -967,7 +966,7 @@ pub extern "C" fn engine_stop_spatial_cue(handle: *mut EngineHandleFFI, target: 
     EngineStatus::Ok as i32
 }
 
-/// Phase-53 spatial diagnostics (v4.5.0): the spatial stage's modeled
+/// Spatial diagnostics (v4.5.0): the spatial stage's modeled
 /// render cost and budget state, mirrored from telemetry. Out-params:
 /// `cost_units` (cost units per block; 0.0 when disabled),
 /// `utilization` (fraction of the block budget; `> 1.0` = over budget),
@@ -1000,7 +999,7 @@ pub extern "C" fn engine_spatial_render_cost(
     EngineStatus::Ok as i32
 }
 
-/// Phase-52 scene animation: stop every active cue.
+/// Scene animation: stop every active cue.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn engine_stop_all_spatial_cues(handle: *mut EngineHandleFFI) -> i32 {
@@ -1531,7 +1530,7 @@ mod tests {
             EngineStatus::InvalidHandle as i32
         );
 
-        // Phase-51 listener motion: non-finite / negative inputs are
+        // Listener motion: non-finite / negative inputs are
         // rejected; the pose read tolerates NULL out-params.
         assert_eq!(
             engine_set_spatial_listener_pose(ptr, f32::NAN, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
@@ -1654,7 +1653,7 @@ mod tests {
 
     #[test]
     fn ffi_spatial_listener_pose_round_trips() {
-        // Phase 51: the pose target lands on the engine handle channel and
+        // The pose target lands on the engine handle channel and
         // the telemetry read mirrors the live pose (the FFI tick thread
         // drains commands and publishes telemetry on its 5 ms cadence).
         use crate::spatial::math::Quat;

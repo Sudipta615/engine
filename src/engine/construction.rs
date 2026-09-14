@@ -69,7 +69,7 @@ impl AudioEngine {
         let output_sample_rate = DEFAULT_SAMPLE_RATE;
         let configured_endpoints = config.endpoints.clone();
         let mut graph = Graph2Engine::from_config(&config, output_sample_rate as f32);
-        // Phase 21: restore the last session's active spatial scene (screen,
+        // Restore the last session's active spatial scene (screen,
         // room, listener, enable) over the configured defaults. Best-effort
         // — a missing/corrupt auto-save simply keeps the config defaults.
         let mut spatial_persistence =

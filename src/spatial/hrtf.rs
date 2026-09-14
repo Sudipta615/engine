@@ -21,7 +21,7 @@
 //!   acoustically transparent at low frequencies, as in reality.
 //!
 //! Everything here is a *function of the horizontal azimuth* (the classic
-//! model carries no elevation cues), extended in Phase 18 with:
+//! Model carries no elevation cues), extended in with:
 //!
 //! - **Elevation cues** — [`ElevationNotch`], a documented pinna-notch
 //!   biquad whose center frequency rises with elevation
@@ -242,7 +242,7 @@ pub fn read_delayed(ring: &[f32], cursor: usize, delay_samples: f32, len: usize)
     let d = delay_samples.clamp(0.0, l - 1.0);
     let i = d.floor() as usize;
     let f = d - i as f32;
-    // Phase 22: one modulo instead of two — `b` is one ring slot behind `a`
+    // One modulo instead of two — `b` is one ring slot behind `a`
     // (mod `len`), so the wrap is a branch, not a division.
     let a_idx = (cursor + len - i) % len;
     let b_idx = if a_idx == 0 { len - 1 } else { a_idx - 1 };
@@ -1211,7 +1211,7 @@ mod tests {
 
     #[test]
     fn elevation_notch_passthrough_at_zero_elevation() {
-        // 0° elevation → depth 0 → exact passthrough (the Phase-9 head
+        // 0° elevation → depth 0 → exact passthrough (the baseline head
         // model behavior is unchanged).
         let mut n = ElevationNotch::new();
         n.prepare(48_000.0);

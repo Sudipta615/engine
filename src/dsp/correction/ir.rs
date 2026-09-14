@@ -1,12 +1,12 @@
-//! S2 — IR import and conditioning.
+//! IR import and conditioning.
 //!
 //! One code path conditions every correction IR, whether it came out of the
-//! S1 sweep deconvolution (real part of the fundamental window) or was
+//! Sweep deconvolution (real part of the fundamental window) or was
 //! imported from a WAV file (REW / Dirac / manufacturer exports). The chain
 //! is control-path only:
 //!
 //! 1. **Rate gate** — an IR at the wrong sample rate is rejected, not
-//!    silently resampled; the engine integration (S5) owns rate alignment
+//!    silently resampled; the engine integration owns rate alignment
 //!    through the existing rate machinery.
 //! 2. **DC/rumble high-pass** — a single 2nd-order Butterworth biquad
 //!    (reusing `dsp::biquad`, Q = 1/√2) so imported IRs with DC offsets or

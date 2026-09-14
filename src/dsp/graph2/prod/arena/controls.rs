@@ -1,6 +1,6 @@
 //! Symmetric control surface for [`DspGraph`] — now queued.
 //!
-//! Phase 2: control methods enqueue a plain-data [`NodeCmd`] into a per-node
+//! Control methods enqueue a plain-data [`NodeCmd`] into a per-node
 //! SPSC queue ([`ControlBus`]) instead of mutating nodes directly. The audio
 //! thread drains every queue at the block boundary
 //! ([`DspGraph::control_tick`]), so a command applies deterministically at
@@ -36,7 +36,7 @@ const CONTROL_QUEUE_CAPACITY: usize = 64;
 ///
 /// Plain data only (`Copy`, no heap, no `Vec`/`String`): heap-bearing
 /// operations belong to the generation-swap path, never to a queue.
-/// Variants mirror the Phase-1 symmetric control surface one-to-one.
+/// Variants mirror the symmetric control surface one-to-one.
 #[derive(Clone, Copy, Debug)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum NodeCmd {
@@ -59,26 +59,26 @@ pub(crate) enum NodeCmd {
         cmd: MixInputCmd,
     },
     MixTransition(MixTransitionCmd),
-    /// Program-gated ducking config (Phase 4 S4); `None` disables.
+    /// Program-gated ducking config; `None` disables.
     SetDuck(Option<DuckState>),
-    /// Aux bus config (Phase 5 S2/S3): enabled + return gain.
+    /// Aux bus config: enabled + return gain.
     SetAux {
         enabled: bool,
         return_gain: f32,
     },
-    /// Phase-6 aux insert: runtime toggle of the global convolution
+    /// Aux insert: runtime toggle of the global convolution
     /// (enabled / wet only; the IR stays as configured).
     SetAuxInsert {
         enabled: bool,
         wet_mix: f32,
     },
-    /// Phase-7 S5 correction: live enabled toggle (the loaded IR stays).
+    /// Room/headphone correction: live enabled toggle (the loaded IR stays).
     SetCorrectionEnabled(bool),
-    /// Phase-7 S5 correction: live wet/dry depth in [0, 1].
+    /// Room/headphone correction: live wet/dry depth in [0, 1].
     SetCorrectionDepth(f32),
-    /// Phase-17 spatial master: live enable toggle.
+    /// Spatial master: live enable toggle.
     SetSpatialEnabled(bool),
-    /// Phase-17 spatial master: virtual-screen geometry
+    /// Spatial master: virtual-screen geometry
     /// `(center_azimuth_deg, half_width_deg, elevation_deg, gain)`.
     SetSpatialScreen {
         center_azimuth_deg: f32,
@@ -86,7 +86,7 @@ pub(crate) enum NodeCmd {
         elevation_deg: f32,
         gain: f32,
     },
-    /// Phase-17 spatial master: room
+    /// Spatial master: room
     /// `(enabled, width, depth, height, absorption, reflection_order,
     /// rt60_ms, late_mix, late_distance, wet)`.
     SetSpatialRoom {
@@ -101,18 +101,18 @@ pub(crate) enum NodeCmd {
         late_distance: bool,
         wet: f32,
     },
-    /// Phase-50 acoustic agreement: the scene-wide air-absorption model
+    /// Acoustic agreement: the scene-wide air-absorption model
     /// applied to live room reflections (the model object carries
     /// `enabled`, `per_meter`, `base_cutoff_hz`, `rolloff_model`).
     SetSpatialAir(crate::spatial::level::AirAbsorption),
-    /// Phase-17 spatial master: listener orientation
+    /// Spatial master: listener orientation
     /// `(yaw_deg, pitch_deg, roll_deg)`.
     SetSpatialListener {
         yaw_deg: f32,
         pitch_deg: f32,
         roll_deg: f32,
     },
-    /// Phase-51 listener motion: target listener pose (world-space
+    /// Listener motion: target listener pose (world-space
     /// orientation + position) the node glides toward per block.
     SetSpatialListenerPose {
         /// Quaternion bit pattern `(x, y, z, w)` — `Quat` is plain data
@@ -125,22 +125,22 @@ pub(crate) enum NodeCmd {
         py: f32,
         pz: f32,
     },
-    /// Phase-51 listener motion: smoothing / rate-limit policy for the
+    /// Listener motion: smoothing / rate-limit policy for the
     /// listener glide.
     SetSpatialListenerTracking {
         smoothing_ms: f32,
         max_angular_rate_deg_s: f32,
     },
-    /// Phase-52 scene animation (v4.4.0): fire the cue at `cue_index`
+    /// Scene animation (v4.4.0): fire the cue at `cue_index`
     /// (resolved from the bank by name on the control side) at the
     /// current cue clock.
     TriggerSpatialCue(usize),
-    /// Phase-52 scene animation: stop the active cue on `target`
+    /// Scene animation: stop the active cue on `target`
     /// (program object 0 = L, 1 = R).
     StopSpatialCue(usize),
-    /// Phase-52 scene animation: stop every active cue.
+    /// Scene animation: stop every active cue.
     StopAllSpatialCues,
-    /// Runtime crossfade config (Phase 3 S3): curve / enabled / duration
+    /// Runtime crossfade config: curve / enabled / duration
     /// mirror the pipeline's `TrackMixer` setters the engine calls on
     /// `handle_set_crossfade_config`.
     SetMixCurve(config::CrossfadeCurve),
@@ -200,7 +200,7 @@ pub(crate) enum NodeCmd {
         stereo_link: bool,
     },
 
-    // ── Plugin host (Phase 49) ────────────────────────────────────────────
+    // ── Plugin host ────────────────────────────────────────────
     /// Live plugin host enable toggle (all slots).
     SetPluginEnabled(bool),
     /// Live plugin parameter batch (plain data — allocation-free over
@@ -244,7 +244,7 @@ pub(crate) struct ControlBus {
     user_balance: AtomicU32,
     user_speed: AtomicU32,
     user_fade_ms: AtomicU32,
-    /// Per-slot user state (Phase 4 S1): one entry per possible mix-bus slot,
+    /// Per-slot user state: one entry per possible mix-bus slot,
     /// sized to [`MAX_MIX_SLOTS`]. The audio side mirrors each slot's
     /// gain / balance / mute / active at drain; the control side seeds a
     /// fresh generation from them so a reconfig never snaps lane settings.
@@ -253,55 +253,55 @@ pub(crate) struct ControlBus {
     user_slot_pan: Vec<AtomicU32>,
     user_slot_mute: Vec<AtomicU8>,
     user_slot_active: Vec<AtomicU8>,
-    /// Per-slot metering (Phase 4 S3): peak / RMS dBFS, audio-written once
+    /// Per-slot metering: peak / RMS dBFS, audio-written once
     /// per block, control-read for telemetry.
     user_slot_peak_db: Vec<AtomicU32>,
     user_slot_rms_db: Vec<AtomicU32>,
-    /// Per-slot send levels (Phase 5 S2): packed `master << 32 | aux` bit
+    /// Per-slot send levels: packed `master << 32 | aux` bit
     /// patterns, mirrored like gain/pan so sends survive a generation swap.
     user_slot_send: Vec<AtomicU64>,
-    /// Per-slot per-channel trim gains (Phase 5 S1): one `AtomicU32` (bit
+    /// Per-slot per-channel trim gains: one `AtomicU32` (bit
     /// pattern) per channel, plus a packed invert bitmask.
     user_slot_trim_gain: Vec<[AtomicU32; MAX_CHANNELS]>,
     user_slot_trim_invert: Vec<AtomicU32>,
-    /// Aux bus user state (Phase 5 S2/S3): enabled flag + return gain,
+    /// Aux bus user state: enabled flag + return gain,
     /// mirrored like the per-slot state.
     user_aux_enabled: AtomicU8,
     user_aux_return_gain: AtomicU32,
-    /// Phase-6 aux insert: mirrored enabled / wet-mix so a generation swap
+    /// Aux insert: mirrored enabled / wet-mix so a generation swap
     /// preserves a live runtime toggle (same contract as `user_aux_*`).
     user_aux_insert_enabled: AtomicU8,
     user_aux_insert_wet_mix: AtomicU32,
-    /// Aux metering (Phase 5 S3): peak / RMS dBFS of the accumulated sends.
+    /// Aux metering: peak / RMS dBFS of the accumulated sends.
     user_aux_peak_db: AtomicU32,
     user_aux_rms_db: AtomicU32,
-    /// Phase 6: per-send aux peaks (dBFS), one per mix slot — independent
+    /// Per-send aux peaks (dBFS), one per mix slot — independent
     /// metering for the aux bus's per-slot automation.
     user_aux_send_peak_db: [AtomicU32; MAX_MIX_SLOTS],
-    /// Phase 7 S5: live correction enabled / depth, mirrored like the aux
+    /// Room/headphone correction: live correction enabled / depth, mirrored like the aux
     /// state so a runtime toggle survives a generation swap.
     user_correction_enabled: AtomicU8,
     user_correction_depth: AtomicU32,
-    /// Phase 7 S5: the rendered correction IR set. Written ONLY on the
+    /// Room/headphone correction: the rendered correction IR set. Written ONLY on the
     /// control thread (the `LoadCorrectionIr` / `MeasureRoom` handler and
     /// generation seeding); the audio thread never touches it, so the mutex
     /// is never contended on a hot path — it exists only to keep the bus
     /// `Sync` (the audio side touches other fields of the same struct).
     user_correction_ir: Mutex<Option<Arc<CorrectionIrSet>>>,
-    /// Phase 17: spatial master enabled flag, mirrored like the aux state so
+    /// Spatial master enabled flag, mirrored like the aux state so
     /// a live runtime toggle survives a generation swap.
     user_spatial_enabled: AtomicU8,
-    /// Phase 52: the spatial master's cue bank (serde model), mirrored
+    /// The spatial master's cue bank (serde model), mirrored
     /// like `user_correction_ir` — control-thread writes only (the
     /// `SetSpatialCues` handler + generation seeding), never touched by
     /// the audio thread, so the mutex is never contended on a hot path.
     /// `None` = no live bank (the config's `cues` are authoritative).
     user_cue_bank: Mutex<Option<Arc<Vec<config::SpatialCueConfig>>>>,
-    /// Phase 52: the per-target active-cue indices (one per program
+    /// The per-target active-cue indices (one per program
     /// object slot), mirrored as plain atomics so a live trigger survives
     /// a generation swap. `u32::MAX` = idle.
     user_active_cues: [AtomicU32; crate::spatial::cue::MAX_ACTIVE_CUES],
-    /// Phase 49: plugin host enabled flag + the last live parameter
+    /// Plugin host enabled flag + the last live parameter
     /// batch (plain data in a mutex written control-side only; never
     /// contended on the audio path — same contract as
     /// `user_correction_ir`).
@@ -484,7 +484,7 @@ impl ControlBus {
         }
     }
 
-    /// Mirror the aux bus state (Phase 5 S2/S3), audio side at drain.
+    /// Mirror the aux bus state, audio side at drain.
     pub(super) fn set_aux_user_state(&self, enabled: bool, return_gain: f32) {
         self.user_aux_enabled
             .store(enabled as u8, Ordering::Relaxed);
@@ -492,7 +492,7 @@ impl ControlBus {
             .store(return_gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
-    /// Mirror the Phase-6 aux insert state, audio side at drain.
+    /// Mirror the Aux insert state, audio side at drain.
     pub(super) fn set_aux_insert_user_state(&self, enabled: bool, wet_mix: f32) {
         self.user_aux_insert_enabled
             .store(enabled as u8, Ordering::Relaxed);
@@ -516,7 +516,7 @@ impl ControlBus {
         )
     }
 
-    /// Mirror the Phase-7 S5 correction toggle / depth, audio side at drain.
+    /// Mirror the Room/headphone correction toggle / depth, audio side at drain.
     pub(super) fn set_correction_user_state(&self, enabled: bool, depth: f32) {
         self.user_correction_enabled
             .store(enabled as u8, Ordering::Relaxed);
@@ -532,7 +532,7 @@ impl ControlBus {
         )
     }
 
-    /// Mirror the Phase-17 spatial master enable flag, audio side at drain.
+    /// Mirror the Spatial master enable flag, audio side at drain.
     pub(super) fn set_spatial_user_state(&self, enabled: bool) {
         self.user_spatial_enabled
             .store(enabled as u8, Ordering::Relaxed);
@@ -543,7 +543,7 @@ impl ControlBus {
         self.user_spatial_enabled.load(Ordering::Relaxed) != 0
     }
 
-    /// Mirror the Phase-52 cue bank (control side: the `SetSpatialCues`
+    /// Mirror the cue bank (control side: the `SetSpatialCues`
     /// handler and `set_cue_bank` write; generation seeding reads back).
     /// The audio thread never touches this — see the field's docs.
     pub(super) fn set_cue_bank_user_state(&self, cues: Option<Arc<Vec<config::SpatialCueConfig>>>) {
@@ -578,7 +578,7 @@ impl ControlBus {
         (v != u32::MAX).then_some(v as usize)
     }
 
-    /// Mirror the Phase-49 plugin host enable flag, audio side at drain.
+    /// Mirror the Plugin host enable flag, audio side at drain.
     pub(super) fn set_plugin_user_state(&self, enabled: bool) {
         self.user_plugin_enabled
             .store(enabled as u8, Ordering::Relaxed);
@@ -589,7 +589,7 @@ impl ControlBus {
         self.user_plugin_enabled.load(Ordering::Relaxed) != 0
     }
 
-    /// Mirror the Phase-49 live plugin parameter batch, audio side at
+    /// Mirror the live plugin parameter batch, audio side at
     /// drain (a plain-data copy — allocation-free).
     pub(super) fn set_plugin_params_user_state(&self, batch: plugin_abi::PluginParams) {
         let mut guard = self
@@ -631,7 +631,7 @@ impl ControlBus {
             .clone()
     }
 
-    /// Publish the aux meters (Phase 5 S3), audio side once per block.
+    /// Publish the aux meters, audio side once per block.
     pub(super) fn publish_aux_meters(&self, peak_db: f32, rms_db: f32) {
         self.user_aux_peak_db
             .store(peak_db.to_bits(), Ordering::Relaxed);
@@ -647,7 +647,7 @@ impl ControlBus {
         )
     }
 
-    /// Publish the per-send aux peaks (Phase 6), audio side once per block.
+    /// Publish the per-send aux peaks, audio side once per block.
     pub(super) fn publish_aux_send_peaks(&self, peaks: &[f32; MAX_MIX_SLOTS]) {
         for (slot, cell) in self.user_aux_send_peak_db.iter().enumerate() {
             cell.store(peaks[slot].to_bits(), Ordering::Relaxed);
@@ -735,7 +735,7 @@ impl GraphControlHandle {
         self.bus.enqueue(slot, cmd);
     }
 
-    /// Read a slot's latest metering as `(peak_db, rms_db)` (Phase 4 S3).
+    /// Read a slot's latest metering as `(peak_db, rms_db)`.
     /// Audio-written once per block; safe from any thread.
     pub fn slot_meters(&self, slot: usize) -> (f32, f32) {
         self.bus.slot_meters(slot)
@@ -982,7 +982,7 @@ impl GraphControlHandle {
         self.enqueue(node_id::MIX, NodeCmd::MixInput { input: 1, cmd });
     }
 
-    // ── Mix bus: per-input control (Phase 3 S1) ───────────────────────────
+    // ── Mix bus: per-input control ───────────────────────────
 
     pub fn set_input_gain(&self, input: u8, gain: f32) {
         self.enqueue(
@@ -1014,7 +1014,7 @@ impl GraphControlHandle {
         );
     }
 
-    /// Set the per-input pan in [-1, 1] (Phase 4 S3). Shapes the front L/R
+    /// Set the per-input pan in [-1, 1]. Shapes the front L/R
     /// pair through the slot's pan law; channels >= 2 pass at unity.
     pub fn set_input_pan(&self, input: u8, pan: f32) {
         self.enqueue(
@@ -1026,7 +1026,7 @@ impl GraphControlHandle {
         );
     }
 
-    /// Set the per-input pan law (Phase 4 S3).
+    /// Set the per-input pan law.
     pub fn set_input_pan_law(&self, input: u8, law: PanLaw) {
         self.enqueue(
             node_id::MIX,
@@ -1037,7 +1037,7 @@ impl GraphControlHandle {
         );
     }
 
-    /// Set one channel's trim (Phase 5 S1): gain in dB + polarity inversion.
+    /// Set one channel's trim: gain in dB + polarity inversion.
     /// Applied on the slot's own planes between its pre-mix chains and the
     /// sum; all-unity = inactive = bit-exact.
     pub fn set_slot_trim(&self, input: u8, channel: usize, gain_db: f32, invert: bool) {
@@ -1054,7 +1054,7 @@ impl GraphControlHandle {
         );
     }
 
-    /// Set the slot's send levels (Phase 5 S2): post-fader master-send and
+    /// Set the slot's send levels: post-fader master-send and
     /// aux-send gains in [0, 1]. The master-send scales the slot's
     /// contribution to the master sum; the aux-send taps the post-fader
     /// signal into the aux accumulator.
@@ -1071,9 +1071,9 @@ impl GraphControlHandle {
         );
     }
 
-    /// Configure the aux bus (Phase 5 S2/S3): `enabled` routes the aux
+    /// Configure the aux bus: `enabled` routes the aux
     /// return into the master before the post-mix chain; `return_gain` in
-    /// [0, 1] scales the return. Disabled = bit-exact. Phase 6: applied to
+    /// [0, 1] scales the return. Disabled = bit-exact.: applied to
     /// the aux bus node, whose send taps the mix node gates on the shared
     /// bus's `enabled`.
     pub fn set_aux(&self, enabled: bool, return_gain: f32) {
@@ -1086,7 +1086,7 @@ impl GraphControlHandle {
         );
     }
 
-    /// Runtime toggle of the Phase-6 aux insert (global convolution):
+    /// Runtime toggle of the Aux insert (global convolution):
     /// `enabled` + `wet_mix` only; the IR stays as configured. No-op when
     /// no IR engine exists yet.
     pub fn set_aux_insert(&self, enabled: bool, wet_mix: f32) {
@@ -1098,13 +1098,13 @@ impl GraphControlHandle {
         self.bus.user_aux()
     }
 
-    /// Control-side read of the mirrored Phase-6 aux insert state
+    /// Control-side read of the mirrored Aux insert state
     /// (enabled, wet mix).
     pub fn aux_insert_state(&self) -> (bool, f32) {
         self.bus.user_aux_insert()
     }
 
-    // ── Correction (Phase 7 S5) ─────────────────────────────────────────
+    // ── Correction ─────────────────────────────────────────
 
     /// Live toggle of the correction stage (enabled only; the loaded IR
     /// stays). Disabled = the plan step is skipped, bit-exact.
@@ -1129,7 +1129,7 @@ impl GraphControlHandle {
         self.bus.user_correction()
     }
 
-    // ── Spatial master (Phase 17) ────────────────────────────────────────
+    // ── Spatial master ────────────────────────────────────────
 
     /// Live toggle of the spatial master output stage. Disabled = the plan
     /// step is skipped, bit-exact.
@@ -1137,13 +1137,13 @@ impl GraphControlHandle {
         self.enqueue(node_id::SPATIAL, NodeCmd::SetSpatialEnabled(enabled));
     }
 
-    /// Live toggle of the plugin host insert (Phase 49). Disabled = the
+    /// Live toggle of the plugin host insert. Disabled = the
     /// plan step is skipped, bit-exact (attached instances stay).
     pub fn set_plugin_enabled(&self, enabled: bool) {
         self.enqueue(node_id::PLUGIN, NodeCmd::SetPluginEnabled(enabled));
     }
 
-    /// Live plugin parameter batch (Phase 49): plain data over the SPSC
+    /// Live plugin parameter batch: plain data over the SPSC
     /// queue, applied at the next block boundary.
     pub fn set_plugin_params(&self, batch: plugin_abi::PluginParams) {
         self.enqueue(node_id::PLUGIN, NodeCmd::SetPluginParams(batch));
@@ -1205,7 +1205,7 @@ impl GraphControlHandle {
     }
 
     /// Configure the scene-wide air-absorption model applied to live room
-    /// reflections (Phase 50). Mirrors `DspGraph::set_spatial_air`.
+    /// Reflections. Mirrors `DspGraph::set_spatial_air`.
     pub fn set_spatial_air(&self, air: crate::spatial::level::AirAbsorption) {
         self.enqueue(node_id::SPATIAL, NodeCmd::SetSpatialAir(air));
     }
@@ -1223,7 +1223,7 @@ impl GraphControlHandle {
         );
     }
 
-    /// Phase-51 listener motion: set the target listener pose (world-space
+    /// Listener motion: set the target listener pose (world-space
     /// orientation quaternion + position). The spatial node glides toward
     /// it every processed block (nlerp + one-pole per its tracking policy),
     /// so a moving listener sweeps the image smoothly instead of snapping.
@@ -1246,7 +1246,7 @@ impl GraphControlHandle {
         );
     }
 
-    /// Phase-51 listener motion: set the listener glide's smoothing policy
+    /// Listener motion: set the listener glide's smoothing policy
     /// (one-pole time constant ms; `0` snaps; angular rate limit deg/s,
     /// `0` unlimited).
     pub fn set_spatial_listener_tracking(&self, smoothing_ms: f32, max_angular_rate_deg_s: f32) {
@@ -1259,20 +1259,20 @@ impl GraphControlHandle {
         );
     }
 
-    /// Phase-52 scene animation: fire cue `cue_index` (resolved by name
+    /// Scene animation: fire cue `cue_index` (resolved by name
     /// against the active bank — see [`DspGraph::trigger_spatial_cue`])
     /// at the block boundary. Out-of-range indices no-op on drain.
     pub fn trigger_spatial_cue(&self, cue_index: usize) {
         self.enqueue(node_id::SPATIAL, NodeCmd::TriggerSpatialCue(cue_index));
     }
 
-    /// Phase-52 scene animation: stop the active cue on `target` (0 = L,
+    /// Scene animation: stop the active cue on `target` (0 = L,
     /// 1 = R) at the block boundary.
     pub fn stop_spatial_cue(&self, target: usize) {
         self.enqueue(node_id::SPATIAL, NodeCmd::StopSpatialCue(target));
     }
 
-    /// Phase-52 scene animation: stop every active cue at the block
+    /// Scene animation: stop every active cue at the block
     /// boundary.
     pub fn stop_all_spatial_cues(&self) {
         self.enqueue(node_id::SPATIAL, NodeCmd::StopAllSpatialCues);
@@ -1284,19 +1284,19 @@ impl GraphControlHandle {
     }
 
     /// Control-side read of the mirrored plugin host enable flag
-    /// (Phase 49).
+    /// .
     pub fn plugin_enabled(&self) -> bool {
         self.bus.user_plugin()
     }
 
     /// Control-side read of the aux meters (peak_db, rms_db), published once
-    /// per audio block (Phase 5 S3).
+    /// Per audio block.
     pub fn aux_meters(&self) -> (f32, f32) {
         self.bus.aux_meters()
     }
 
     /// Control-side read of one mix slot's aux-send peak (dBFS) — the
-    /// independent per-send metering of the aux bus node (Phase 6).
+    /// Independent per-send metering of the aux bus node.
     pub fn aux_send_peak(&self, slot: usize) -> f32 {
         self.bus.aux_send_peak(slot)
     }
@@ -1311,7 +1311,7 @@ impl GraphControlHandle {
         );
     }
 
-    /// Detach / re-attach a mix-bus slot (Phase 3 S2 stream slots). A
+    /// Detach / re-attach a mix-bus slot (stream slots). A
     /// detached slot contributes nothing and its chains do not advance.
     /// Slot 0 (the primary stream) cannot be detached.
     pub fn set_input_active(&self, input: u8, active: bool) {
@@ -1324,14 +1324,14 @@ impl GraphControlHandle {
         );
     }
 
-    /// Configure program-gated ducking (Phase 4 S4). `None` disables and the
+    /// Configure program-gated ducking. `None` disables and the
     /// sum returns to bit-exact. `Some` config rides the queue as `Copy` data
     /// and is applied atomically on the audio side.
     pub fn set_duck(&self, cfg: Option<DuckState>) {
         self.enqueue(node_id::MIX, NodeCmd::SetDuck(cfg));
     }
 
-    /// Replace a slot's automation track (Phase 4 S5). `points` are clamped
+    /// Replace a slot's automation track. `points` are clamped
     /// to [`MAX_AUTOMATION_POINTS`]; an empty slice clears the track. The
     /// points must be monotonically non-decreasing in `frame`; values are
     /// linearly interpolated on the audio side.
@@ -1360,7 +1360,7 @@ impl GraphControlHandle {
         );
     }
 
-    /// Remove a slot's automation track (Phase 4 S5).
+    /// Remove a slot's automation track.
     pub fn clear_slot_automation(&self, input: u8) {
         self.enqueue(
             node_id::MIX,
@@ -1513,7 +1513,7 @@ impl DspGraph {
                     _ => {}
                 }
                 apply_node_cmd(&mut self.active.nodes[i], cmd);
-                // Phase 4 S1: mirror the slot's *post-apply* state so the
+                // Mirror the slot's *post-apply* state so the
                 // sticky snapshot carries the linear target even for
                 // dB/ramped commands (the node state is the source of truth).
                 if let NodeCmd::MixInput { input, .. } = cmd {
@@ -1527,8 +1527,8 @@ impl DspGraph {
                         }
                     }
                 }
-                // Phase 5 S3: mirror the aux bus state post-apply so a
-                // generation swap preserves enabled / return gain. Phase 6:
+                // Mirror the aux bus state post-apply so a
+                // Generation swap preserves enabled / return gain.:
                 // the aux bus is its own plan node now.
                 if let NodeCmd::SetAux { .. } = cmd {
                     if let GraphNode::Aux(aux) = &self.active.nodes[i] {
@@ -1536,7 +1536,7 @@ impl DspGraph {
                             .set_aux_user_state(aux.enabled(), aux.return_gain());
                     }
                 }
-                // Phase 6: mirror the aux insert state post-apply (a live
+                // Mirror the aux insert state post-apply (a live
                 // runtime toggle survives generation swaps, like SetAux).
                 if let NodeCmd::SetAuxInsert { .. } = cmd {
                     if let GraphNode::Aux(aux) = &self.active.nodes[i] {
@@ -1544,7 +1544,7 @@ impl DspGraph {
                         self.bus.set_aux_insert_user_state(enabled, wet);
                     }
                 }
-                // Phase 7 S5: mirror the correction toggle / depth post-apply
+                // Room/headphone correction: mirror the correction toggle / depth post-apply
                 // so a live runtime toggle survives generation swaps.
                 if matches!(
                     cmd,
@@ -1554,14 +1554,14 @@ impl DspGraph {
                         self.bus.set_correction_user_state(c.enabled(), c.depth());
                     }
                 }
-                // Phase 17: mirror the spatial master enable post-apply so a
+                // Mirror the spatial master enable post-apply so a
                 // live runtime toggle survives generation swaps.
                 if matches!(cmd, NodeCmd::SetSpatialEnabled(_)) {
                     if let GraphNode::Spatial(s) = &self.active.nodes[i] {
                         self.bus.set_spatial_user_state(s.enabled());
                     }
                 }
-                // Phase 52: mirror cue triggers/stops post-apply so live
+                // Mirror cue triggers/stops post-apply so live
                 // cue state survives generation swaps.
                 if matches!(
                     cmd,
@@ -1576,7 +1576,7 @@ impl DspGraph {
                         }
                     }
                 }
-                // Phase 49: mirror the plugin host enable + params
+                // Mirror the plugin host enable + params
                 // post-apply so live runtime changes survive swaps.
                 if matches!(cmd, NodeCmd::SetPluginEnabled(_)) {
                     if let GraphNode::PluginHost(p) = &self.active.nodes[i] {
@@ -1708,7 +1708,7 @@ fn apply_node_cmd(node: &mut GraphNode, cmd: &NodeCmd) {
             smoothing_ms: *smoothing_ms,
             max_angular_rate_deg_s: *max_angular_rate_deg_s,
         }),
-        // ── Phase 52: scene animation cues ──
+        // ── Scene animation cues ──
         (GraphNode::Spatial(n), NodeCmd::TriggerSpatialCue(i)) => {
             n.trigger_cue(*i);
         }
@@ -1802,7 +1802,7 @@ fn apply_node_cmd(node: &mut GraphNode, cmd: &NodeCmd) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DspGraph control surface — now &self enqueues (API-compatible with the
-// Phase-1 surface; callers holding &mut continue to work).
+// Surface; callers holding &mut continue to work).
 // ─────────────────────────────────────────────────────────────────────────────
 
 impl DspGraph {
@@ -2005,7 +2005,7 @@ impl DspGraph {
         self.control_handle().set_loudness_mode(mode);
     }
 
-    // ── Mix bus: per-input control + transitions (Phase 3 S1) ─────────────
+    // ── Mix bus: per-input control + transitions ─────────────
 
     pub fn set_input_gain(&self, input: u8, gain: f32) {
         self.control_handle().set_input_gain(input, gain);
@@ -2027,29 +2027,29 @@ impl DspGraph {
         self.control_handle().set_input_pan_law(input, law);
     }
 
-    /// Set one channel's trim (Phase 5 S1): gain in dB + polarity.
+    /// Set one channel's trim: gain in dB + polarity.
     pub fn set_slot_trim(&self, input: u8, channel: usize, gain_db: f32, invert: bool) {
         self.control_handle()
             .set_slot_trim(input, channel, gain_db, invert);
     }
 
-    /// Set the slot's send levels (Phase 5 S2): master-send + aux tap.
+    /// Set the slot's send levels: master-send + aux tap.
     pub fn set_slot_send(&self, input: u8, master_gain: f32, aux_gain: f32) {
         self.control_handle()
             .set_slot_send(input, master_gain, aux_gain);
     }
 
-    /// Configure the aux bus (Phase 5 S3): enabled + return gain.
+    /// Configure the aux bus: enabled + return gain.
     pub fn set_aux(&self, enabled: bool, return_gain: f32) {
         self.control_handle().set_aux(enabled, return_gain);
     }
 
-    /// Runtime toggle of the Phase-6 aux insert (enabled / wet only).
+    /// Runtime toggle of the Aux insert (enabled / wet only).
     pub fn set_aux_insert(&self, enabled: bool, wet_mix: f32) {
         self.control_handle().set_aux_insert(enabled, wet_mix);
     }
 
-    // ── Correction (Phase 7 S5) ──────────────────────────────────────────
+    // ── Correction ──────────────────────────────────────────
 
     /// Live toggle of the correction stage (enabled only; the loaded IR
     /// stays). Disabled = the plan step is skipped, bit-exact.
@@ -2062,7 +2062,7 @@ impl DspGraph {
         self.control_handle().set_correction_depth(depth);
     }
 
-    // ── Spatial master (Phase 17) ────────────────────────────────────────
+    // ── Spatial master ────────────────────────────────────────
 
     /// Live toggle of the spatial master output stage.
     pub fn set_spatial_enabled(&self, enabled: bool) {
@@ -2127,7 +2127,7 @@ impl DspGraph {
             .set_spatial_listener(yaw_deg, pitch_deg, roll_deg);
     }
 
-    /// Phase-51 listener motion: set the target listener pose (see
+    /// Listener motion: set the target listener pose (see
     /// [`GraphControlHandle::set_spatial_listener_pose`]).
     pub fn set_spatial_listener_pose(
         &self,
@@ -2138,14 +2138,14 @@ impl DspGraph {
             .set_spatial_listener_pose(orientation, position);
     }
 
-    /// Phase-51 listener motion: set the listener glide's smoothing policy
+    /// Listener motion: set the listener glide's smoothing policy
     /// (see [`GraphControlHandle::set_spatial_listener_tracking`]).
     pub fn set_spatial_listener_tracking(&self, smoothing_ms: f32, max_rate_deg_s: f32) {
         self.control_handle()
             .set_spatial_listener_tracking(smoothing_ms, max_rate_deg_s);
     }
 
-    /// Phase-52 scene animation (v4.4.0): fire the named cue on the
+    /// Scene animation (v4.4.0): fire the named cue on the
     /// spatial master at the block boundary — resolves the name against
     /// the active bank and enqueues the index. Returns `false` when the
     /// bank holds no cue of that name (the trigger then never reaches
@@ -2158,19 +2158,19 @@ impl DspGraph {
         true
     }
 
-    /// Phase-52 scene animation: stop the active cue on `target` (see
+    /// Scene animation: stop the active cue on `target` (see
     /// [`GraphControlHandle::stop_spatial_cue`]).
     pub fn stop_spatial_cue(&self, target: usize) {
         self.control_handle().stop_spatial_cue(target);
     }
 
-    /// Phase-52 scene animation: stop every active cue (see
+    /// Scene animation: stop every active cue (see
     /// [`GraphControlHandle::stop_all_spatial_cues`]).
     pub fn stop_all_spatial_cues(&self) {
         self.control_handle().stop_all_spatial_cues();
     }
 
-    /// Phase-52 scene animation: replace the spatial master's cue bank
+    /// Scene animation: replace the spatial master's cue bank
     /// from the scene-file model (direct-`DspGraph` control path — the
     /// mutation twin of the queued trigger surface). The bank is also
     /// mirrored onto the sticky user state so a live swap survives a
@@ -2181,7 +2181,7 @@ impl DspGraph {
         self.spatial_mut().set_cues(&arc);
     }
 
-    /// Phase-52 scene animation: fire cue `cue_index` (already resolved
+    /// Scene animation: fire cue `cue_index` (already resolved
     /// by name) immediately (direct-`DspGraph` hosts/tests). Mirrors the
     /// active-cue state onto the sticky user state.
     pub fn trigger_spatial_cue_by_index(&mut self, cue_index: usize) {
@@ -2194,7 +2194,7 @@ impl DspGraph {
         }
     }
 
-    /// Phase-52 scene animation: stop every active cue immediately
+    /// Scene animation: stop every active cue immediately
     /// (direct-`DspGraph` hosts/tests). Mirrors the cleared state.
     pub fn stop_all_cue_bank(&mut self) {
         self.spatial_mut().stop_all_cues();
@@ -2208,7 +2208,7 @@ impl DspGraph {
         self.control_handle().spatial_enabled()
     }
 
-    // ── Plugin host (Phase 49) ────────────────────────────────────────
+    // ── Plugin host ────────────────────────────────────────
 
     /// Live toggle of the plugin host insert (all slots). Disabled = the
     /// plan step is skipped, bit-exact.
@@ -2246,12 +2246,12 @@ impl DspGraph {
         self.control_handle().set_input_active(input, active);
     }
 
-    /// Configure program-gated ducking (Phase 4 S4).
+    /// Configure program-gated ducking.
     pub fn set_duck(&self, cfg: Option<DuckState>) {
         self.control_handle().set_duck(cfg);
     }
 
-    /// Replace a slot's automation track (Phase 4 S5).
+    /// Replace a slot's automation track.
     pub fn set_slot_automation(
         &self,
         input: u8,
@@ -2262,7 +2262,7 @@ impl DspGraph {
             .set_slot_automation(input, target, points);
     }
 
-    /// Remove a slot's automation track (Phase 4 S5).
+    /// Remove a slot's automation track.
     pub fn clear_slot_automation(&self, input: u8) {
         self.control_handle().clear_slot_automation(input);
     }

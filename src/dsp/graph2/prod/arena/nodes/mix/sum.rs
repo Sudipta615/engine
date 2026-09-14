@@ -41,10 +41,10 @@ impl MixBusNode {
         let (in1_l, in1_r) = (&in1.planes[0][..frames], &in1.planes[1][..frames]);
         let (g0, bal0, mute0) = (&mut in0.gain, in0.balance, in0.mute);
         let (g1, bal1, mute1) = (&mut in1.gain, in1.balance, in1.mute);
-        // Phase 5 S2 send levels for the pair: the master-send scales the
+        // Send levels for the pair: the master-send scales the
         // slot's contribution to the master sum; the aux-send is a post-fader
         // tap into the shared send bus (the aux bus node applies the send
-        // gains itself — Phase 6). Both at defaults (m = 1.0, aux inactive)
+        // Gains itself — ). Both at defaults (m = 1.0, aux inactive)
         // and/or the aux disabled → the tap branch is skipped and every
         // expression below is the original bit-exact one.
         let m0 = in0.send.master_gain;
@@ -176,10 +176,10 @@ impl MixBusNode {
         self.state = state;
         self.crossfade_pos = pos;
 
-        // Phase 3 S2 stream slots: inputs >= 2 are independent streams summed
+        // Stream slots: inputs >= 2 are independent streams summed
         // after the pair envelope (the envelope governs slots 0/1 only). Only
         // present when a generation carries more than two inputs — the
-        // canonical Phase-3 layout is exactly two, so this tail never runs in
+        // Canonical layout is exactly two, so this tail never runs in
         // the bit-exact-equivalence domain.
         if self.inputs.len() > 2 {
             self.sum_extra_slots(out_l, out_r, frames);
@@ -193,7 +193,7 @@ impl MixBusNode {
     /// spelling, so needless_range_loop is allowed (mirrored on the f64 twin).
     #[allow(clippy::needless_range_loop)]
     pub(super) fn sum_extra_slots(&mut self, out_l: &mut [f32], out_r: &mut [f32], frames: usize) {
-        // Duck gains per slot (Phase 4 S4), computed before the inputs are
+        // Duck gains per slot, computed before the inputs are
         // borrowed. 1.0 when disabled / not a target. NOTE: the duck envelope
         // must advance exactly ONCE per block — the caller (`mix_stereo` /
         // `mix_multichannel`) already ran `duck_tick`; ticking again here
@@ -240,7 +240,7 @@ impl MixBusNode {
                 }
                 continue;
             }
-            // Phase 5 S2: a slot whose master / aux sends are at defaults
+            // A slot whose master / aux sends are at defaults
             // takes the original expressions untouched (bit-exact); otherwise
             // the contribution is captured once and scaled into both
             // destinations (post-fader tap into the shared send bus — the
@@ -354,10 +354,10 @@ impl MixBusNode {
         let (in1_l, in1_r) = (&in1.planes[0][..frames], &in1.planes[1][..frames]);
         let (g0, bal0, mute0) = (&mut in0.gain, in0.balance, in0.mute);
         let (g1, bal1, mute1) = (&mut in1.gain, in1.balance, in1.mute);
-        // Phase 5 S2: master-send + post-fader aux tap for the pair (see the
+        // Master-send + post-fader aux tap for the pair (see the
         // f32 twin for the disabled-exact contract). The tap is gated on the
         // shared send bus's `send_active` and writes WITHOUT the send gain —
-        // the aux bus node (Phase 6) applies the per-send automation ramps.
+        // The aux bus node applies the per-send automation ramps.
         let m0 = in0.send.master_gain;
         let m1 = in1.send.master_gain;
         let sb = self.send_bus.data();
@@ -480,7 +480,7 @@ impl MixBusNode {
 
         self.state = state;
         self.crossfade_pos = pos;
-        // Phase 5 S2: the pair wrote its taps into the shared send bus (the
+        // The pair wrote its taps into the shared send bus (the
         // aux node sets its own `written` flag from `send_active`).
 
         if self.inputs.len() > 2 {
@@ -533,7 +533,7 @@ impl MixBusNode {
                 }
                 continue;
             }
-            // Phase 5 S2: tap gated on the shared send bus (see the f32
+            // Tap gated on the shared send bus (see the f32
             // twin); the post-fader signal lands WITHOUT the send gain — the
             // aux node applies per-slot automation.
             let tap = self.send_bus.data().enabled && self.send_bus.data().send_active[k];
@@ -619,7 +619,7 @@ impl MixBusNode {
         }
     }
 
-    /// Multichannel master path (Phase 4 S2): input 0 passes through after
+    /// Multichannel master path: input 0 passes through after
     /// its user gain (bit-identical to the old `OutPreamp`/`OutLoudness`
     /// steps at unity), then the secondary inputs are summed **channel-wise**
     /// into the master planes at their per-input gain / balance / mute.
@@ -638,7 +638,7 @@ impl MixBusNode {
         let channels = planes.len();
         let frames = planes[0].len();
         // Input 0: pre-mixed in place, scaled by its own gain / balance
-        // (Phase 5 S2: the master-send fold applies to the pair here too, and
+        // (the master-send fold applies to the pair here too, and
         // slot 0's post-fader aux tap joins the accumulator like every other
         // slot's — pre master-send, gated on `aux_gain != 0 && aux.enabled`
         // so the default path keeps its exact expressions).
@@ -769,8 +769,8 @@ impl MixBusNode {
                 }
             }
             let g = &mut input.gain;
-            // Phase 5 S2: master-send fold + aux tap on the front pair,
-            // gated on the shared send bus (Phase 6: per-slot send targets).
+            // Master-send fold + aux tap on the front pair,
+            // Gated on the shared send bus (: per-slot send targets).
             let tap = self.send_bus.data().enabled && self.send_bus.data().send_active[k];
             if m == 1.0 && !tap {
                 for i in 0..frames {
@@ -878,7 +878,7 @@ impl MixBusNode {
         let channels = planes.len();
         let frames = planes[0].len();
         // Input 0: pre-mixed in place, scaled by its own gain / balance
-        // (Phase 5 S2: the master-send fold applies to the pair here too, and
+        // (the master-send fold applies to the pair here too, and
         // slot 0's post-fader aux tap joins the accumulator like every other
         // slot's — pre master-send, gated on `aux_gain != 0 && aux.enabled`
         // so the default path keeps its exact expressions).
@@ -1099,8 +1099,7 @@ impl MixBusNode {
         }
     }
 
-    /// Run the secondary inputs' pre-mix chains on their own planes (Phase 4
-    /// S2: channel-major — every active channel of the slot's planes is
+    /// Run the secondary inputs' pre-mix chains on their own planes (channel-major — every active channel of the slot's planes is
     /// pre-mixed, not just the stereo front pair). Detached slots are skipped
     /// entirely (their chains do not advance). Preamp and loudness are
     /// channel-agnostic gain stages, so they run per plane over up to

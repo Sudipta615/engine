@@ -1,5 +1,4 @@
-//! Acceptance suite for room acoustics (spec Phase 8 / roadmap Phase 13,
-//! §49, §43–44, §55).
+//! Acceptance suite for room acoustics (spec §49, §43–44, §55).
 //!
 //! The contract this suite pins down:
 //!

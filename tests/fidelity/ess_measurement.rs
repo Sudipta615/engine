@@ -1,6 +1,6 @@
-//! Fidelity tests — S1 sweep measurement (Phase 7 acceptance).
+//! Fidelity tests — sweep measurement (acceptance).
 //!
-//! Evolution thresholds (`docs/EVOLUTION.md` Phase 7):
+//! Fidelity thresholds:
 //! * a synthetic room (min-phase peaks/dips + pure delay) probed by the
 //!   sweep is recovered within **±0.1 dB, 20 Hz–20 kHz**; delay recovered
 //!   within **1 sample** @ 48 kHz;
@@ -84,8 +84,8 @@ fn ess_recovers_room_magnitude_and_delay() {
 
     // The deconvolved response is finite and the compact room produces a
     // clear direct-sound peak in the advertised fundamental window. Detailed
-    // response-vector comparisons are covered by the control-path S4 suite;
-    // this S1 test pins the measurement geometry and latency contract.
+    // Response-vector comparisons are covered by the control-path suite;
+    // This test pins the measurement geometry and latency contract.
     let (w0, w1) = ir.ir_window();
     assert!(w1 > w0);
     assert!(ir.samples[w0..w1]

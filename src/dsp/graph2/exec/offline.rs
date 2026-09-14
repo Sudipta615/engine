@@ -1,10 +1,10 @@
-//! The offline executor's node ops (v3.50 Phase 45 — moved from `exec.rs`).
+//! The offline executor's node ops (v3.50 — moved from `exec.rs`).
 //!
 //! One `run_*` method per [`NodeKind`], dispatched from
 //! [`OfflineExecutor::process_block`]. The math each op runs is the shared
 //! kernels in [`super::ops`] (gain, mix, delay, source, convolution,
 //! IR-taps), so the realtime executor (`crate::dsp::graph2::rt`) renders
-//! through the exact same arithmetic — the Phase-45 sharing contract.
+//! Through the exact same arithmetic — the sharing contract.
 //! This impl block is the **offline** form: planes are freshly allocated
 //! `Vec`s (the offline contract allows growth); the realtime executor
 //! preallocates its planes and calls the same kernels.
@@ -26,7 +26,7 @@ impl OfflineExecutor {
         };
         let st = self.sources.entry(id).or_default();
         let mut plane = vec![0.0f32; self.block];
-        // The shared signal kernel (Phase-45 contract).
+        // The shared signal kernel (contract).
         super::ops::kernel_source(
             &mut plane,
             &p,
@@ -122,7 +122,7 @@ impl OfflineExecutor {
         };
         let mut out = vec![0.0f32; self.block];
         // The shared kernel decides step/automation/static application and
-        // returns the persisted base gain (Phase-45 sharing contract: the
+        // Returns the persisted base gain ( sharing contract: the
         // realtime executor calls the same function).
         let stepped = step.is_some();
         let next = super::ops::kernel_gain(
@@ -174,7 +174,7 @@ impl OfflineExecutor {
         }
         let mut out = vec![0.0f32; self.block];
         let st = self.delays.entry(id).or_default();
-        // The shared read-before-write ring kernel (Phase-45 contract).
+        // The shared read-before-write ring kernel (contract).
         super::ops::kernel_delay(&in_plane, &mut out, &mut st.buf, &mut st.pos);
         self.broadcast(id, PortId::OUT, &out);
     }

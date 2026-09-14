@@ -1,16 +1,16 @@
-//! Unified quality-evaluation harness (Phase 2) integration test.
+//! Unified quality-evaluation harness integration test.
 //!
 //! Runs every registered DSP/spatial suite through [`engine::eval::run_quality`]
 //! and asserts the report is all-PASS, machine-readable (JSON round-trips),
 //! human-readable, deterministically re-runnable, and versioned (every component
 //! cites a `{id}@{version}` content-addressed reference vector). This is the
-//! CI-facing boundary of the harness documented in `docs/EVOLUTION.md`.
+//! CI-facing boundary of the quality-evaluation harness.
 
 use engine::eval::{ComponentReport, EvaluationReport, ReferenceVectorRegistry};
 
 /// The current number of component suites the harness registers.
 /// Keep in sync with `ReferenceVectorRegistry::build` + `run_quality`.
-const EXPECTED_SUITES: usize = 9;
+const EXPECTED_SUITES: usize = 10;
 
 #[test]
 fn quality_report_passes_every_component_and_round_trips() {

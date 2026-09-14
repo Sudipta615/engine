@@ -138,8 +138,7 @@ impl Vec3 {
         self.z.atan2(horiz)
     }
 
-    /// Linear interpolation toward `other` at `t ∈ [0, 1]` (Phase 51
-    /// listener-motion position tracking; `t = 0` returns `self`, `t = 1`
+    /// Linear interpolation toward `other` at `t ∈ [0, 1]` (listener-motion position tracking; `t = 0` returns `self`, `t = 1`
     /// returns `other`).
     #[inline]
     pub fn lerp(self, other: Self, t: f32) -> Self {
@@ -234,7 +233,7 @@ impl Quat {
     /// `from_euler_rad`'s convention (positive = right turn). At gimbal
     /// lock (pitch ±90°, where yaw and roll fold into one angle) roll is
     /// reported as 0 and the combined angle as yaw. Used by the spatial
-    /// master's listener-motion introspection (Phase 51).
+    /// Master's listener-motion introspection.
     pub fn to_euler_rad(self) -> (f32, f32, f32) {
         let (x, y, z, w) = (self.x, self.y, self.z, self.w);
         // R[1][2] = 2(yz − wx) = −sin(pitch)
@@ -457,7 +456,7 @@ mod tests {
         // from_euler_rad → to_euler_rad recovers angles that produce the
         // identical rotation (values may differ by a 2π wrap or fold, so
         // the check is on the rotation, not the raw angles — the
-        // property Phase 51 introspection needs).
+        // Property introspection needs).
         let cases = [
             (0.0f32, 0.0f32, 0.0f32),
             (0.3, 0.2, 0.1),

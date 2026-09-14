@@ -15,7 +15,7 @@
 //!
 //! The sample count is fixed (4 solves max, 12 speaker entries max), so the
 //! render path stays bounded and deterministic. True diffuse *fields*
-//! (rain, crowd) are the Phase 6 domain; this is the extended-source model
+//! (rain, crowd) are the domain; this is the extended-source model
 //! the spec puts at `small→large` spread.
 
 use super::math::Vec3;

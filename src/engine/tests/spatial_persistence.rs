@@ -1,5 +1,5 @@
 //! Engine-lifecycle integration tests for spatial scene persistence
-//! (Phase 21): the active spatial scene auto-saves on change and at
+//! The active spatial scene auto-saves on change and at
 //! shutdown, and restores across engine sessions.
 
 use config::EngineConfig;

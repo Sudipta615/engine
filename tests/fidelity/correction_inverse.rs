@@ -1,6 +1,6 @@
-//! Fidelity tests — S4 correction derivation (Phase 7 acceptance).
+//! Fidelity tests — correction derivation (acceptance).
 //!
-//! Evolution thresholds (`docs/EVOLUTION.md` Phase 7):
+//! Fidelity thresholds:
 //! * a synthetic ±6 dB room corrected to a flat target leaves a residual
 //!   within **±0.5 dB, 40 Hz–16 kHz**;
 //! * where injected SNR < 10 dB the inverse clamps to `max_boost_db`; no
@@ -26,7 +26,7 @@ fn room_mag_db(f: f64) -> f64 {
     let bump = |fc: f64, amp: f64, sigma_oct: f64| {
         amp * (-((f / fc).log2().powi(2)) / (2.0 * sigma_oct * sigma_oct)).exp()
     };
-    // Broad room features are intentional: S4's default smoothing is
+    // Broad room features are intentional: default smoothing is
     // one-sixth octave, so this oracle does not demand impossible recovery
     // of narrower-than-smoothing structure.
     bump(180.0, 6.0, 0.75) + bump(1400.0, -6.0, 0.75)
@@ -47,8 +47,8 @@ fn room_half_magnitude() -> Vec<f64> {
 }
 
 /// Conditioned one-channel measurement of the synthetic room. This fixture
-/// is already a clean, aligned measurement, so it enters S4 directly and
-/// does not introduce the S2 tail/lead conditioning window into the oracle.
+/// Is already a clean, aligned measurement, so it enters directly and
+/// Does not introduce the tail/lead conditioning window into the oracle.
 fn conditioned_room() -> ConditionedIr {
     let mag = room_half_magnitude();
     let spec = Spectrum::from_magnitude_db(&mag, N, FS).unwrap();

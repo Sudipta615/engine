@@ -1,7 +1,7 @@
 //! Fidelity tests — Graph-wide latency and alignment (v3.30, roadmap
 //! v3.30, Direction 2).
 //!
-//! Evolution thresholds (`docs/EVOLUTION.md` Phase 28):
+//! Fidelity thresholds:
 //! * [`analyze`] propagates cumulative upstream latency along the edge set:
 //!   a `Mix` fed by a dry branch and a 300-tap delay branch reports 300 at
 //!   its output, and the graph total equals the deepest path;

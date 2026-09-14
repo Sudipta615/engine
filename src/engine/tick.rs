@@ -109,13 +109,13 @@ impl AudioEngine {
         // none when no stream is playing). Multi-threaded hosts use the
         // graph's block-boundary tick instead.
         self.graph.drain_queued_control();
-        // Phase 21: persist the active spatial scene when it changed (writes
+        // Persist the active spatial scene when it changed (writes
         // once per change; the steady path is a plain field compare).
         self.spatial_persistence.maybe_save(&self.graph);
         #[cfg(feature = "audio-output")]
         self.poll_device_monitor();
         self.drain_capture();
-        // Phase 7 S5: land a finished room measurement (deconvolve →
+        // Room/headphone correction: land a finished room measurement (deconvolve →
         // condition → derive) once its sweep has played out.
         self.check_measurement();
 
@@ -398,7 +398,7 @@ impl AudioEngine {
 
             let is_bp = stats.bit_perfect;
 
-            // ── Lane telemetry (Phase 4 S6) ────────────────────────────
+            // ── Lane telemetry ────────────────────────────
             let lanes = self
                 .lanes
                 .iter()
@@ -428,12 +428,12 @@ impl AudioEngine {
                 next.nan_count = next.nan_count.saturating_add(new_nans as u64);
                 next.engine_stats = Some(stats.clone());
                 next.lanes = lanes.clone();
-                // Phase 6: mirror the aux insert toggle so hosts (FFI
+                // Mirror the aux insert toggle so hosts (FFI
                 // included) can read the live state like any other telemetry.
                 let (ins_enabled, ins_wet) = self.graph.control_handle().aux_insert_state();
                 next.aux_insert_enabled = ins_enabled;
                 next.aux_insert_wet_mix = ins_wet;
-                // Phase 7 S5: mirror the correction node state (the FFI
+                // Room/headphone correction: mirror the correction node state (the FFI
                 // `engine_correction_info` read path).
                 let corr = self.graph.correction().info();
                 next.correction = crate::playback_info::CorrectionInfo {
@@ -444,7 +444,7 @@ impl AudioEngine {
                     latency_ms: corr.latency_ms,
                     max_gain_db: corr.max_gain_db,
                 };
-                // Phase 17: mirror the spatial master's output meters and
+                // Mirror the spatial master's output meters and
                 // voice-budget admission counts onto the lock-free snapshot.
                 next.spatial = Some(self.graph.spatial().spatial_telemetry());
                 // Spatial health (spec §103 extension): explainable per-source
@@ -555,7 +555,7 @@ impl AudioEngine {
     }
 
     pub fn set_config(&mut self, config: config::EngineConfig) {
-        // Phase 5: bus-topology config (slot count, per-slot trims/sends,
+        // Bus-topology config (slot count, per-slot trims/sends,
         // aux) cannot be applied in place — the slot count sizes the
         // generation's bus and the trims/sends/aux ride the generation. Route
         // those through the glitch-free rebuild; everything else applies in
@@ -853,7 +853,7 @@ impl Drop for AudioEngine {
         // scene reflects what the host last requested (drop is the last
         // chance to observe it — no further tick will run).
         self.graph.drain_queued_control();
-        // Phase 21: persist the final spatial scene state so the next
+        // Persist the final spatial scene state so the next
         // session restores exactly what was active at shutdown.
         self.spatial_persistence.save_now(&self.graph);
     }

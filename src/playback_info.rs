@@ -112,7 +112,7 @@ pub struct PlaybackInfo {
     pub playlist_index: Option<usize>,
     /// Number of entries in the playback queue.
     pub playlist_length: usize,
-    /// Multi-track lane telemetry (Phase 4 S6): one entry per active lane,
+    /// Multi-track lane telemetry: one entry per active lane,
     /// refreshed every engine tick from the lane registry + the mix bus's
     /// per-slot meters.
     pub lanes: Vec<LaneInfo>,
@@ -122,15 +122,15 @@ pub struct PlaybackInfo {
     /// Configured endpoint identifiers and current endpoint stats.
     #[cfg(feature = "audio-output")]
     pub endpoints: Vec<EndpointInfo>,
-    /// Phase-6 aux insert state, mirrored from the mix bus control plane on
+    /// Aux insert state, mirrored from the mix bus control plane on
     /// the telemetry cadence: enabled / wet-mix of the global convolution.
     pub aux_insert_enabled: bool,
     pub aux_insert_wet_mix: f32,
-    /// Phase-7 S5 correction state, mirrored from the correction node on the
+    /// Room/headphone correction state, mirrored from the correction node on the
     /// telemetry cadence (enabled, phase mode, IR length, added latency,
     /// per-channel max gain, depth).
     pub correction: CorrectionInfo,
-    /// Spatial master output telemetry (Phase 17): the `SpatialNode`'s
+    /// Spatial master output telemetry: the `SpatialNode`'s
     /// per-ear output meters (peak/RMS dBFS) and its live voice-budget plan
     /// (full / degraded / dropped voice counts), mirrored on the telemetry
     /// cadence. `None` until the first refresh.
@@ -143,8 +143,7 @@ pub struct PlaybackInfo {
     pub spatial_health: Option<crate::spatial::health::SpatialHealthSnapshot>,
 }
 
-/// Spatial master output telemetry (Phase 17; listener pose added in
-/// Phase 51). Mirrored from the [`crate::dsp::graph2::prod::SpatialNode`]
+/// Spatial master output telemetry (with listener pose). Mirrored from the [`crate::dsp::graph2::prod::SpatialNode`]
 /// on the telemetry cadence: the binaural output's left/right-ear peak &
 /// RMS (dBFS), the per-block voice-budget admission counts (spec §76),
 /// and the live listener pose (yaw/pitch/roll degrees + world position).
@@ -169,7 +168,7 @@ pub struct SpatialTelemetry {
     pub rms_db_l: f32,
     /// Right-ear output RMS, dBFS.
     pub rms_db_r: f32,
-    /// Live listener yaw (degrees; Phase 51 listener motion).
+    /// Live listener yaw (degrees; Listener motion).
     pub listener_yaw_deg: f32,
     /// Live listener pitch (degrees).
     pub listener_pitch_deg: f32,
@@ -177,20 +176,20 @@ pub struct SpatialTelemetry {
     pub listener_roll_deg: f32,
     /// Live listener world position (metres).
     pub listener_position: crate::spatial::math::Vec3,
-    /// Phase 53: the modeled per-block render cost of the spatial stage
+    /// The modeled per-block render cost of the spatial stage
     /// in cost units (see `spatial::diagnostics`); 0.0 when disabled.
     pub render_cost_units: f32,
-    /// Phase 53: the modeled cost budget utilization fraction
+    /// The modeled cost budget utilization fraction
     /// (`render_cost_units / budget`; `> 1.0` = over budget).
     pub cost_utilization: f32,
-    /// Phase 53: the render tail budget in blocks — how many blocks of
+    /// The render tail budget in blocks — how many blocks of
     /// headroom remain before the spatial stage's cost exceeds the
     /// configured block budget (a large value = comfortable; reaching 0
     /// means the next reconfig should shed work).
     pub tail_blocks_remaining: f32,
 }
 
-/// Phase-7 S5 room/headphone correction telemetry.
+/// Room/headphone correction telemetry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CorrectionInfo {
     /// Whether the correction stage is enabled.
@@ -240,7 +239,7 @@ pub struct EndpointInfo {
     pub drift_ppm: i64,
 }
 
-/// Telemetry for one playback lane (Phase 4 S6).
+/// Telemetry for one playback lane.
 #[derive(Debug, Clone)]
 pub struct LaneInfo {
     /// Mix-bus slot (≥ 2).
@@ -254,11 +253,11 @@ pub struct LaneInfo {
     /// Whether the lane is contributing audio (false once its stream ends).
     pub active: bool,
     /// Peak level (dBFS) of the lane's bus slot (max over its channels),
-    /// from the graph's per-slot meters (Phase 4 S3).
+    /// From the graph's per-slot meters.
     pub level_db: f32,
-    /// Post-fader master-send gain in [0, 1] (Phase 5 S2).
+    /// Post-fader master-send gain in [0, 1].
     pub send_master_gain: f32,
-    /// Post-fader aux-send gain in [0, 1] (Phase 5 S2).
+    /// Post-fader aux-send gain in [0, 1].
     pub send_aux_gain: f32,
     /// Decoded position in seconds.
     pub position_secs: f32,

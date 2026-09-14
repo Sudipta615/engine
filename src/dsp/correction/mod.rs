@@ -1,23 +1,23 @@
-//! Room & headphone correction — measurement-to-correction chain (Phase 7,
-//! control-path S1–S4).
+//! Room & headphone correction — measurement-to-correction chain (,
+//! Control-path measurement-to-correction).
 //!
-//! This module is the **control-thread half** of the Phase 7 evolution
-//! ([`docs/EVOLUTION.md`](../../../docs/EVOLUTION.md)): it turns a sweep
+//! This module is the **control-thread half** of the evolution
+//! pipeline: it turns a sweep
 //! measurement (or an imported IR file) into a phase-rendered correction
 //! impulse response. The sub-stage map:
 //!
 //! ```text
-//! S1 sweep    Farina exponential sine sweep: generation, deconvolution,
+//! Sweep Farina exponential sine sweep: generation, deconvolution,
 //!             harmonic-distortion separation, measurement SNR
-//! S2 ir       WAV IR import + conditioning (rumble HPF, tail truncation,
+//! Ir WAV IR import + conditioning (rumble HPF, tail truncation,
 //!             peak normalization)
-//! S3 phase    minimum / linear / hybrid phase rendering, group delay
-//! S4 derive   smoothed, SNR-weighted, boost-clamped regularized inverse
+//! Phase minimum / linear / hybrid phase rendering, group delay
+//! Correction derivation smoothed, SNR-weighted, boost-clamped regularized inverse
 //! ```
 //!
 //! Everything here runs **on the control thread**: it is heap-happy, `f64`
 //! DSP executed once per measurement or configuration change. Nothing in
-//! this module is on the realtime audio path — the S5 `CorrectionNode`
+//! This module is on the realtime audio path — the `CorrectionNode`
 //! (`src/dsp/graph/nodes/correction_node.rs`) consumes the pre-rendered
 //! IRs from these functions, so the hot-path contract (no allocation, no
 //! locks) is untouched by design.
@@ -25,7 +25,7 @@
 //! Acceptance suites (spec-first, thresholds pinned in the roadmap):
 //! `tests/fidelity/ess_measurement.rs`, `tests/fidelity/minimal_phase.rs`,
 //! `tests/fidelity/correction_inverse.rs`, and the graph-level
-//! `tests/fidelity/room_correction_pipeline.rs` (S5).
+//! `tests/fidelity/room_correction_pipeline.rs`.
 
 pub mod derive;
 pub mod ir;
@@ -72,7 +72,7 @@ pub enum CorrectionError {
         message: String,
     },
     /// The IR sample rate does not match the session rate. Resample first —
-    /// the engine integration (S5) owns rate alignment via the existing rate
+    /// The engine integration owns rate alignment via the existing rate
     /// machinery.
     #[error("IR sample rate {ir_hz} Hz does not match session rate {session_hz} Hz; resample before conditioning")]
     RateMismatch {
@@ -136,8 +136,8 @@ impl Cfft {
     }
 }
 
-/// Map a config-side correction config into S4 derivation parameters
-/// (Phase 7 S5). `snr_db` is the measurement's reported SNR: config-driven
+/// Map a config-side correction config into correction derivation parameters
+/// . `snr_db` is the measurement's reported SNR: config-driven
 /// derives (no live measurement) pass a confident default; `MeasureRoom`
 /// passes the deconvolved `estimate_snr_db` so boosts collapse where the
 /// measurement was unreliable.

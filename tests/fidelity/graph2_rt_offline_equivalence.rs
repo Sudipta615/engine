@@ -1,7 +1,7 @@
 //! Fidelity suite — Graph2 **realtime vs offline** executor equivalence
-//! (Phase 45, v3.50.0).
+//! (v3.50.0).
 //!
-//! The Phase-45 sharing contract, pinned: the realtime executor
+//! The sharing contract, pinned: the realtime executor
 //! (`engine::dsp::graph2::rt`) and the offline executor
 //! (`engine::dsp::graph2::exec`) render through the **same per-node
 //! kernels**, so a topology must render bit-exactly the same both ways.
@@ -300,8 +300,7 @@ fn resampler_ratio_one_matches_bit_exactly() {
 #[test]
 fn resampler_ratio_above_one_is_rejected_by_rt_plan() {
     // Documented divergence: the fixed-grid reader's reachable history
-    // grows for ratio > 1, so the RT plan refuses the node (Phase 46
-    // ports the production streaming resampler).
+    // grows for ratio > 1, so the RT plan refuses the node (ports the production streaming resampler).
     let mut g = Graph2::new();
     let src = g.add_source("tone");
     let r = g.add_resampler("r", 2.0);
@@ -472,9 +471,9 @@ fn rt_plan_publish_swap_retire_is_lossless() {
     // The generation-swap discipline on the RT executor: publishing a
     // fresh plan mid-render adopts at exactly the next block boundary.
     //
-    // Documented Phase-45 divergence: the new plan's node state starts
+    // Documented divergence: the new plan's node state starts
     // **fresh** (source phase, buffer cursors, delay rings) — state carry
-    // across swaps lands with the Phase-46 control-surface port (per-node
+    // Across swaps lands with the control-surface port (per-node
     // queues + sticky mirrors, replayed on generation swap). Until then a
     // swap is equivalent to re-starting the render at the swap boundary:
     // RT(blocks 0..4) ++ RT_fresh(blocks 4..8) must equal this test's
