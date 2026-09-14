@@ -873,11 +873,7 @@ impl HrtfDataset {
         let a10 = &self.irs[base(ia2, ie)..base(ia2, ie) + self.taps];
         let a01 = &self.irs[base(ia, ie2)..base(ia, ie2) + self.taps];
         let a11 = &self.irs[base(ia2, ie2)..base(ia2, ie2) + self.taps];
-        for k in 0..self.taps {
-            let lo = a00[k] + fa * (a10[k] - a00[k]);
-            let hi = a01[k] + fa * (a11[k] - a01[k]);
-            out[k] = lo + fe * (hi - lo);
-        }
+        crate::dsp::simd::vector_bilinear(out, a00, a10, a01, a11, fa, fe, self.taps);
     }
 }
 

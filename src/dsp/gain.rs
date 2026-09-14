@@ -101,6 +101,16 @@ impl<T: AudioFloat> GainProcessor<T> {
     #[inline]
     pub fn process_planes(&mut self, planes: &mut [Vec<f32>], channels: usize, frames: usize) {
         let ch = channels.min(planes.len());
+        if self.is_settled() && self.gain == self.target_gain {
+            let g = self.gain.to_f32();
+            if (g - 1.0).abs() < 1e-6 {
+                return;
+            }
+            for plane in planes.iter_mut().take(ch) {
+                crate::dsp::simd::scale_slice(plane, g, frames);
+            }
+            return;
+        }
         for i in 0..frames {
             self.gain += (self.target_gain - self.gain) * self.slew_rate;
             if (self.gain - self.target_gain).abs() < T::from_f64(1e-6) {
@@ -160,6 +170,15 @@ impl GainProcessor<f32> {
     #[inline]
     pub fn process_block_stereo_f64(&mut self, left: &mut [f64], right: &mut [f64]) {
         let n = left.len().min(right.len());
+        if self.is_settled() && self.gain == self.target_gain {
+            let g = self.gain as f64;
+            if (g - 1.0).abs() < 1e-9 {
+                return;
+            }
+            crate::dsp::simd::scale_slice_f64(left, g, n);
+            crate::dsp::simd::scale_slice_f64(right, g, n);
+            return;
+        }
         for i in 0..n {
             let (l, r) = self.process_stereo_f64(left[i], right[i]);
             left[i] = l;

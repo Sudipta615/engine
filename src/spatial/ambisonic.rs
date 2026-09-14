@@ -793,6 +793,18 @@ impl AmbisonicRenderer {
     pub fn order(&self) -> u8 {
         self.decoder.order()
     }
+
+    /// Set the ambisonic order and re-initialize the decoder.
+    pub fn set_order(&mut self, order: u8) {
+        let policy = self.decoder.policy();
+        self.decoder = AmbisonicDecoder::with_order(policy, order.clamp(1, MAX_AMBISONIC_ORDER));
+        self.prepared = false;
+    }
+
+    /// Set quality tier, mapping to HOA order (Order 1 for Low/Medium, Order 2 for High, Order 3 for Ultra).
+    pub fn set_quality(&mut self, quality: super::quality::SpatialQuality) {
+        self.set_order(quality.ambisonic_order());
+    }
 }
 
 impl Default for AmbisonicRenderer {

@@ -33,6 +33,7 @@ pub enum RendererKind {
     Vbap,
     Ambisonic,
     Binaural,
+    Hybrid,
 }
 
 /// Typed render error (spec §106). Invalid geometry must surface as an error

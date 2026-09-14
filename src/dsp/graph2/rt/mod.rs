@@ -184,6 +184,10 @@ pub struct RtPlan {
     pub(crate) scratch_conv: Vec<f32>,
     /// An all-zero plane read as "silence" for unconnected inputs.
     pub(crate) zero_plane: Vec<f32>,
+    /// Monotonic epoch counter for buffer written-state tracking.
+    pub(crate) current_epoch: u64,
+    /// Per-plane last-written epoch marker.
+    pub(crate) plane_epochs: Vec<u64>,
 }
 
 impl RtPlan {
@@ -227,6 +231,8 @@ impl RtPlan {
             scratch_in: vec![0.0; block],
             scratch_conv: vec![0.0; block],
             zero_plane: vec![0.0; block],
+            current_epoch: 1,
+            plane_epochs: vec![0; edge_count],
         };
 
         // ── Wire table + adjacency (edge order = EdgeId order) ──

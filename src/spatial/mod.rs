@@ -145,6 +145,7 @@
 pub mod acoustic;
 pub mod ambisonic;
 pub mod automation;
+pub mod bass;
 pub mod bed;
 pub mod binaural;
 pub mod cue;
@@ -154,6 +155,7 @@ pub mod doppler;
 pub mod field;
 pub mod health;
 pub mod hrtf;
+pub mod hybrid_renderer;
 pub mod level;
 pub mod math;
 pub mod metering;
@@ -189,6 +191,10 @@ pub use automation::{
     AutomationMode, CurveQuat, CurveScalar, CurveVec3, SpatialAudioAutomationFrame,
     SpatialAutomation,
 };
+pub use bass::{
+    BassManager, CrossoverFilter, SpatialBassEngine, SubwooferDelay, SubwooferPhase,
+    MAX_BASS_CHANNELS, MAX_SUB_DELAY_SAMPLES,
+};
 pub use bed::{BedId, SpatialBed, SpatialBedStore, MAX_BEDS};
 pub use binaural::{BinauralRenderer, VIRTUAL_RING_SPEAKERS};
 pub use cue::{CueBank, CueOverlay, SpatialCue, MAX_ACTIVE_CUES};
@@ -208,6 +214,7 @@ pub use hrtf::{
     ElevationNotch, HeadShadow, HrtfCorpus, HrtfDataset, HrtfLoadError, HrtfLoadOptions,
     HrtfMeasurement, HrtfNormalize, DEFAULT_HEAD_RADIUS, DEFAULT_SPEED_OF_SOUND, MAX_HRTF_TAPS,
 };
+pub use hybrid_renderer::HybridSpatialRenderer;
 pub use level::{AbsorptionState, AirAbsorption, AirRolloffModel, DistanceModel};
 pub use math::{Quat, Vec3};
 pub use metering::{SpatialMeterState, SpatialMeters};

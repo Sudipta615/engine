@@ -905,6 +905,7 @@ fn test_multichannel_commands_dispatch_correctly() {
         mains_highpass_enabled: true,
         crossover_hz: 80.0,
         q: std::f32::consts::FRAC_1_SQRT_2,
+        ..Default::default()
     };
     engine.send_command(EngineCommand::SetBassManagement(bass_cfg.clone()));
     engine.tick();

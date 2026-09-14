@@ -587,6 +587,50 @@ pub struct ChannelEqConfig {
 /// high-pass. The existing [`LfeConfig::crossover_hz`] independently controls
 /// the LFE low-pass, so either half of a bass-management setup can be used
 /// deliberately rather than silently inserting a filter.
+/// Crossover filter steepness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CrossoverSlope {
+    /// 2nd order (12 dB/octave).
+    Db12,
+    /// 4th order (24 dB/octave). Canonical default.
+    #[default]
+    Db24,
+    /// 8th order (48 dB/octave). Steep brickwall crossover.
+    Db48,
+}
+
+impl CrossoverSlope {
+    /// Return the filter slope in dB per octave.
+    pub fn db_per_octave(&self) -> u32 {
+        match self {
+            Self::Db12 => 12,
+            Self::Db24 => 24,
+            Self::Db48 => 48,
+        }
+    }
+
+    /// Return the filter order (poles count).
+    pub fn order(&self) -> usize {
+        match self {
+            Self::Db12 => 2,
+            Self::Db24 => 4,
+            Self::Db48 => 8,
+        }
+    }
+}
+
+/// Crossover filter alignment topology.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CrossoverFilterType {
+    /// Butterworth topology (3 dB down at crossover).
+    Butterworth,
+    /// Linkwitz-Riley topology (6 dB down at crossover, flat magnitude sum).
+    #[default]
+    LinkwitzRiley,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BassManagementConfig {
     pub enabled: bool,
@@ -594,12 +638,27 @@ pub struct BassManagementConfig {
     #[serde(default = "default_true")]
     pub mains_highpass_enabled: bool,
     /// Crossover frequency shared by the mains high-pass and, when configured,
-    /// the LFE low-pass. Validated/clamped by the DSP stage.
+    /// the LFE low-pass. Validated/clamped by the DSP stage (60 Hz .. 120 Hz standard range).
     #[serde(default = "default_bass_crossover_hz")]
     pub crossover_hz: f32,
     /// Filter Q; 1/sqrt(2) is the Butterworth default.
     #[serde(default = "default_bass_q")]
     pub q: f32,
+    /// Crossover roll-off slope (12, 24, or 48 dB/oct).
+    #[serde(default)]
+    pub slope: CrossoverSlope,
+    /// Crossover filter topology (Linkwitz-Riley or Butterworth).
+    #[serde(default)]
+    pub filter_type: CrossoverFilterType,
+    /// Subwoofer delay compensation in milliseconds (0.0 .. 50.0 ms).
+    #[serde(default)]
+    pub sub_delay_ms: f32,
+    /// Subwoofer phase alignment in degrees (0.0 .. 180.0°).
+    #[serde(default)]
+    pub sub_phase_degrees: f32,
+    /// Subwoofer polarity inversion (false = normal, true = inverted).
+    #[serde(default)]
+    pub sub_polarity_invert: bool,
 }
 
 fn default_true() -> bool {
@@ -621,6 +680,11 @@ impl Default for BassManagementConfig {
             mains_highpass_enabled: true,
             crossover_hz: default_bass_crossover_hz(),
             q: default_bass_q(),
+            slope: CrossoverSlope::default(),
+            filter_type: CrossoverFilterType::default(),
+            sub_delay_ms: 0.0,
+            sub_phase_degrees: 0.0,
+            sub_polarity_invert: false,
         }
     }
 }

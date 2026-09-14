@@ -34,6 +34,7 @@ fn mains_highpass_rejects_dc_but_lfe_path_is_separate() {
             mains_highpass_enabled: true,
             crossover_hz: 100.0,
             q: std::f32::consts::FRAC_1_SQRT_2,
+            ..Default::default()
         },
         48_000.0,
     );

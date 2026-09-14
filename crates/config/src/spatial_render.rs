@@ -46,6 +46,8 @@ pub enum VoicePriority {
     GainWeighted,
     /// Host-provided priority order (highest `priority()` wins).
     UserDefined,
+    /// Psychoacoustic audibility weighting: (gain * importance) / distance.max(0.1).
+    AdaptiveAudibility,
 }
 
 fn default_voice_capacity() -> usize {
@@ -99,6 +101,75 @@ pub struct SpatialMeterConfig {
 impl Default for SpatialMeterConfig {
     fn default() -> Self {
         Self { enabled: true }
+    }
+}
+
+/// Operating mode for the spatial bass engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpatialBassMode {
+    /// Pure bit-perfect pass-through of LFE and bass channels.
+    #[default]
+    Pure,
+    /// Bass-managed: direct steering to subwoofer according to crossover.
+    BassManaged,
+    /// Bass immersion: dynamic low-shelf + psychoacoustic harmonic reinforcement.
+    BassImmersion,
+}
+
+fn default_immersion_amount() -> f32 {
+    0.5
+}
+
+fn default_bass_crossover_hz() -> f32 {
+    80.0
+}
+
+/// Configuration for the spatial bass engine.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpatialBassConfig {
+    /// Operating mode.
+    #[serde(default)]
+    pub mode: SpatialBassMode,
+    /// Crossover frequency in Hz (60.0 .. 120.0 Hz, default 80.0 Hz).
+    #[serde(default = "default_bass_crossover_hz")]
+    pub crossover_hz: f32,
+    /// Crossover slope (12, 24, or 48 dB/oct).
+    #[serde(default)]
+    pub slope: super::CrossoverSlope,
+    /// Crossover filter topology (Linkwitz-Riley or Butterworth).
+    #[serde(default)]
+    pub filter_type: super::CrossoverFilterType,
+    /// Subwoofer delay compensation in milliseconds (0.0 .. 50.0 ms).
+    #[serde(default)]
+    pub sub_delay_ms: f32,
+    /// Subwoofer phase alignment in degrees (0.0 .. 180.0°).
+    #[serde(default)]
+    pub sub_phase_degrees: f32,
+    /// Subwoofer polarity inversion.
+    #[serde(default)]
+    pub sub_polarity_invert: bool,
+    /// Psychoacoustic harmonic reinforcement amount [0.0, 1.0] in BassImmersion mode.
+    #[serde(default = "default_immersion_amount")]
+    pub harmonic_amount: f32,
+    /// Dynamic low-shelf boost [0.0, 12.0] dB in BassImmersion mode.
+    #[serde(default)]
+    pub dynamic_boost_db: f32,
+}
+
+impl Default for SpatialBassConfig {
+    fn default() -> Self {
+        Self {
+            mode: SpatialBassMode::default(),
+            crossover_hz: default_bass_crossover_hz(),
+            slope: super::CrossoverSlope::default(),
+            filter_type: super::CrossoverFilterType::default(),
+            sub_delay_ms: 0.0,
+            sub_phase_degrees: 0.0,
+            sub_polarity_invert: false,
+            harmonic_amount: default_immersion_amount(),
+            dynamic_boost_db: 0.0,
+        }
     }
 }
 

@@ -30,6 +30,8 @@ pub enum VoicePriority {
     GainWeighted,
     /// Host-provided priority order (highest `priority()` wins).
     UserDefined,
+    /// Psychoacoustic audibility weighting: (gain * importance) / distance.max(0.1).
+    AdaptiveAudibility,
 }
 
 /// One object's admission decision for a block.
@@ -71,7 +73,20 @@ pub struct BudgetCandidate {
     pub index: usize,
     pub gain: f32,
     pub distance: f32,
-    pub priority: u32, // host authored priority (UserDefined)
+    pub priority: u32,   // host authored priority (UserDefined)
+    pub importance: f32, // host authored or dynamic importance factor, defaults to 1.0
+}
+
+impl BudgetCandidate {
+    pub const fn new(index: usize, gain: f32, distance: f32, priority: u32) -> Self {
+        Self {
+            index,
+            gain,
+            distance,
+            priority,
+            importance: 1.0,
+        }
+    }
 }
 
 /// A control-path voice budget scheduler.
@@ -105,6 +120,15 @@ impl VoiceBudget {
             VoicePriority::DistanceWeighted => (0u32, -p.distance),
             VoicePriority::GainWeighted => (0u32, p.gain),
             VoicePriority::UserDefined => (0u32, p.priority as f32),
+            VoicePriority::AdaptiveAudibility => {
+                let imp = if p.importance > 0.0 {
+                    p.importance
+                } else {
+                    1.0
+                };
+                let audibility = (p.gain.abs() * imp) / p.distance.max(0.1);
+                (0u32, audibility)
+            }
         };
         (group, score, p.index)
     }
@@ -240,6 +264,24 @@ impl VoiceBudget {
             gain,
             distance: listener_space_pos.length(),
             priority: user_priority,
+            importance: 1.0,
+        }
+    }
+
+    /// Rank an object by positional policy and psychoacoustic importance factor.
+    pub fn candidate_with_importance(
+        index: usize,
+        gain: f32,
+        listener_space_pos: Vec3,
+        user_priority: u32,
+        importance: f32,
+    ) -> BudgetCandidate {
+        BudgetCandidate {
+            index,
+            gain,
+            distance: listener_space_pos.length(),
+            priority: user_priority,
+            importance,
         }
     }
 }
@@ -255,24 +297,28 @@ mod tests {
                 gain: 0.2,
                 distance: 10.0,
                 priority: 1,
+                importance: 1.0,
             },
             BudgetCandidate {
                 index: 1,
                 gain: 0.9,
                 distance: 1.0,
                 priority: 5,
+                importance: 1.0,
             },
             BudgetCandidate {
                 index: 2,
                 gain: 0.5,
                 distance: 3.0,
                 priority: 2,
+                importance: 1.0,
             },
             BudgetCandidate {
                 index: 3,
                 gain: 0.1,
                 distance: 8.0,
                 priority: 3,
+                importance: 1.0,
             },
         ]
     }
@@ -342,6 +388,11 @@ mod tests {
                 full_quality_capacity: 2,
                 policy: VoicePriority::UserDefined,
             },
+            VoiceBudget {
+                capacity: 2,
+                full_quality_capacity: 1,
+                policy: VoicePriority::AdaptiveAudibility,
+            },
         ];
         let cs = cands();
         for b in &budgets {
@@ -372,5 +423,24 @@ mod tests {
         assert_eq!(plan.admission[3], VoiceAdmission::Full);
         assert_eq!(plan.admission[0], VoiceAdmission::Dropped);
         assert_eq!(plan.admission[2], VoiceAdmission::Dropped);
+    }
+
+    #[test]
+    fn adaptive_audibility_ranks_by_distance_gain_importance() {
+        let b = VoiceBudget {
+            capacity: 2,
+            full_quality_capacity: 1,
+            policy: VoicePriority::AdaptiveAudibility,
+        };
+        // cands():
+        // 0: 0.2 * 1.0 / 10.0 = 0.02
+        // 1: 0.9 * 1.0 / 1.0  = 0.9
+        // 2: 0.5 * 1.0 / 3.0  = 0.1667
+        // 3: 0.1 * 1.0 / 8.0  = 0.0125
+        let plan = b.plan(&cands(), 4);
+        assert_eq!(plan.admission[1], VoiceAdmission::Full);
+        assert_eq!(plan.admission[2], VoiceAdmission::Degraded);
+        assert_eq!(plan.admission[0], VoiceAdmission::Dropped);
+        assert_eq!(plan.admission[3], VoiceAdmission::Dropped);
     }
 }

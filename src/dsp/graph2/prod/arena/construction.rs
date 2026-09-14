@@ -600,7 +600,7 @@ impl GraphGeneration {
 
         // Low-power mode disables the expensive nodes (folded in from the
         // former `apply_performance_mode`).
-        if config.performance_mode == PerformanceMode::LowPower {
+        if config.performance_mode.is_low_power() {
             let stereo = gen_node!(self, node_id::STEREO, Stereo);
             stereo.enhancer.set_enabled(false);
             let crossfeed = gen_node!(self, node_id::CROSSFEED, Crossfeed);

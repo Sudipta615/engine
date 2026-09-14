@@ -2,6 +2,39 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.7.0] — 2026-09-15
+
+### Added
+
+- **SIMD-Accelerated Hot DSP Kernels (`dsp::simd`)**:
+  - Specialized vectorization kernels for gain scaling, channel mixing, biquad IIR filtering, true-peak limiting, and bilinear interpolation using explicit x86 SSE2 / aarch64 NEON with exact scalar fallback.
+  - Integration into `dsp::gain` and `spatial::hrtf::vector_bilinear`.
+- **Graph 2.0 Realtime Buffer Zeroing Optimization**:
+  - Epoch-based plane validity tracking in `RtPlan`, eliminating redundant O(planes * block_size) zero-fill operations per audio block while preserving bit-exact silence on unassigned planes.
+- **Hot Path Zero-Allocation Polish**:
+  - Removed redundant `Arc::clone` invocations in `dsp::convolution` frequency-domain workspace processing via direct borrowed references.
+- **Adaptive Spatial Voice Scaling & CPU Budgeting (`spatial::voice`)**:
+  - Added `VoicePriority::AdaptiveAudibility` policy ranking voices via psychoacoustic audibility `(gain * importance) / distance.max(0.1)`.
+  - Added `importance` factor to `BudgetCandidate` and `SpatialAudioObject`.
+- **Legacy Low-Power Performance Profile**:
+  - Added `PerformanceMode::LegacyLowPower` and `EnginePreset::LegacyLowPower` for power-constrained environments and vintage hardware.
+- **Dedicated Spatial Bass Management Layer (`spatial::bass`)**:
+  - `BassManager` supporting multi-slope crossovers (12, 24, 48 dB/oct) with Linkwitz-Riley (LR2, LR4, LR8) and Butterworth topologies.
+  - Subwoofer delay compensation (0..50 ms) and continuous phase alignment (0..180° with polarity inversion).
+  - Mains high-pass and bass redirection to subwoofer / LFE.
+- **Spatial Bass Engine (`spatial::bass::SpatialBassEngine`)**:
+  - Three operational modes: `Pure` (bit-perfect passthrough), `BassManaged` (active crossover steering), and `BassImmersion` (psychoacoustic missing fundamental 2nd/3rd harmonic synthesis and dynamic low-shelf EQ).
+- **Per-Object Bass Intent**:
+  - `BassIntent` enum supporting `FullRangeManaged`, `DirectLfe`, `SubBassOnly`, and `Bypass` modes, serialized in `SpatialObjectConfig`.
+- **Hybrid Spatial Renderer (`spatial::hybrid_renderer`)**:
+  - Unified pipeline integrating Objects, Beds, Fields, Room Modal Acoustics, Spatial Bass Management, and flexible output panning (VBAP, Ambisonics HOA, Binaural HRTF).
+- **Higher-Order Ambisonics (HOA) Quality Tiers**:
+  - Explicit mapping of `SpatialQuality` tiers to ambisonic orders: Tier 1 (Low/Medium, Order 1 / 4 ch), Tier 2 (High, Order 2 / 9 ch), Tier 3 (Ultra, Order 3 / 16 ch).
+- **Bass-Aware Room Modeling (`spatial::acoustic::bass_room`)**:
+  - `ModalBassRoom` modeling rectangular room standing waves below the Schroeder cutoff frequency ($f_s \approx 2000\sqrt{RT_{60}/V}$) with spatial source-listener eigenfunction coupling and resonant peaking biquad filters.
+- **Licensing & Algorithmic Attribution Audit**:
+  - Published `docs/LICENSES_AND_ATTRIBUTION.md` documenting 100% pure Rust design, absence of proprietary Dolby/DTS blobs, Apache-2.0 compliance, and academic citations.
+
 ## [4.6.0] — 2026-09-15
 
 ### Added

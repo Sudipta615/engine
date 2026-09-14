@@ -545,6 +545,7 @@ impl Default for EngineConfig {
 pub enum EnginePreset {
     Consumer,
     Fidelity,
+    LegacyLowPower,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -916,6 +917,28 @@ impl EngineConfig {
                 dither_enabled: false,
                 resampler_quality: ResamplerQuality::HighQuality,
                 transition_mode: TransitionMode::Gapless,
+                ..Default::default()
+            },
+            EnginePreset::LegacyLowPower => Self {
+                performance_mode: PerformanceMode::LegacyLowPower,
+                resampler_quality: ResamplerQuality::Fast,
+                precision_mode: PrecisionMode::Performance,
+                convolution: ConvolutionConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+                multiband_compressor: MultibandCompressorConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+                stereo_enhancer: StereoEnhancerConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+                crossfeed: CrossfeedConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         }

@@ -214,6 +214,9 @@ impl SpatialScene {
             obj.spread = o.spread;
             obj.room_send = o.room_send;
             obj.lfe_send = o.lfe_send;
+            obj.bass_send = o.bass_send;
+            obj.bass_intent = o.bass_intent;
+            obj.importance = o.importance;
             obj.enabled = o.enabled;
             let a = &o.automation;
             obj.automation = SpatialAutomation {
@@ -314,6 +317,9 @@ impl SpatialScene {
                     spread: o.spread,
                     room_send: o.room_send,
                     lfe_send: o.lfe_send,
+                    bass_send: o.bass_send,
+                    bass_intent: o.bass_intent,
+                    importance: o.importance,
                     automation: config::SpatialAutomationConfig {
                         position: o
                             .automation

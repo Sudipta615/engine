@@ -79,6 +79,25 @@ impl SpatialQuality {
             SpatialQuality::Ultra => 4,
         }
     }
+
+    /// Ambisonic HOA order mapped to this quality tier (spec §86).
+    /// Low / Medium = Order 1 (FOA, 4 channels)
+    /// High = Order 2 (SOA, 9 channels)
+    /// Ultra = Order 3 (TOA, 16 channels)
+    pub fn ambisonic_order(&self) -> u8 {
+        match self {
+            SpatialQuality::Low => 1,
+            SpatialQuality::Medium => 1,
+            SpatialQuality::High => 2,
+            SpatialQuality::Ultra => 3,
+        }
+    }
+
+    /// Ambisonic HOA channel count for this quality tier ((order + 1)^2).
+    pub fn ambisonic_channels(&self) -> usize {
+        let order = self.ambisonic_order() as usize + 1;
+        order * order
+    }
 }
 
 #[cfg(test)]

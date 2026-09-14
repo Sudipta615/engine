@@ -656,7 +656,7 @@ impl DspPipeline {
     }
 
     fn apply_performance_mode(&mut self) {
-        if self.performance_mode == PerformanceMode::LowPower {
+        if self.performance_mode.is_low_power() {
             // Battery-saver mode: disable the most CPU-hungry DSP stages.
             // Dither is NOT disabled here — the actual quantization-time
             // dither happens in the output callbacks and is driven by

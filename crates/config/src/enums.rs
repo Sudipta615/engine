@@ -99,6 +99,15 @@ pub enum PerformanceMode {
     #[default]
     Normal,
     LowPower,
+    /// Aggressive power-saving and low-CPU profile for legacy hardware or battery constraints.
+    LegacyLowPower,
+}
+
+impl PerformanceMode {
+    /// Returns true if this mode represents reduced CPU / power consumption.
+    pub fn is_low_power(&self) -> bool {
+        matches!(self, Self::LowPower | Self::LegacyLowPower)
+    }
 }
 
 /// Configurable quality and latency tuning profile.

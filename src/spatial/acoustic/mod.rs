@@ -49,6 +49,7 @@
 //! allocation, no locks.
 
 pub mod bake;
+pub mod bass_room;
 pub mod geometry;
 pub mod material;
 pub mod path;
@@ -58,6 +59,7 @@ pub use bake::{
     spectral_taps, AcousticBaker, BakePolicy, BakedObject, BakedPath, BakedScene, ACOUSTIC_IR_LEN,
     DEFAULT_BAKE_CELL_M,
 };
+pub use bass_room::{ModalBassRoom, ModeKind, RoomMode, MAX_MODAL_RESONATORS};
 pub use geometry::{
     portal_diffraction_edges, AcousticRoom, DiffractionEdge, Portal, Wall, WallSurface, ALL_WALLS,
 };

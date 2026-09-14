@@ -467,6 +467,7 @@ impl AudioEngine {
                     config::VoicePriority::DistanceWeighted => Vp::DistanceWeighted,
                     config::VoicePriority::GainWeighted => Vp::GainWeighted,
                     config::VoicePriority::UserDefined => Vp::UserDefined,
+                    config::VoicePriority::AdaptiveAudibility => Vp::AdaptiveAudibility,
                 };
                 self.graph.with_graph(|g| {
                     g.spatial_mut()

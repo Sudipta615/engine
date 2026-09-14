@@ -24,6 +24,7 @@ pub mod pipeline;
 #[cfg(feature = "resample")]
 pub mod resampler;
 pub mod resampler_handle;
+pub mod simd;
 pub mod stereo;
 pub mod timeline;
 pub mod timestretch;

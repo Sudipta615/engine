@@ -16,8 +16,9 @@ pub use dsp_config::{
     BandConfig, BassManagementConfig, ChannelEqConfig, ChannelEqEntry, ChannelMixConfig,
     ChannelMixTemplate, ChannelRoutingConfig, ChannelTrimConfig, ChannelTrimEntry,
     ConvolutionConfig, CorrectionConfig, CorrectionPhaseMode, CorrectionTarget, CrossfadeConfig,
-    CrossfeedConfig, EqBandConfig, EqConfig, EqPreset, GraphicEqConfig, GraphicEqLayout, LfeConfig,
-    LimiterConfig, LoudnessConfig, MultibandCompressorConfig, StereoEnhancerConfig,
+    CrossfeedConfig, CrossoverFilterType, CrossoverSlope, EqBandConfig, EqConfig, EqPreset,
+    GraphicEqConfig, GraphicEqLayout, LfeConfig, LimiterConfig, LoudnessConfig,
+    MultibandCompressorConfig, StereoEnhancerConfig,
 };
 pub use engine_config::{
     AuxBusConfig, ConfigIssue, ConfigIssueKind, ConfigSeverity, ConfigValidation, EndpointConfig,
@@ -33,11 +34,14 @@ pub use enums::{
 };
 pub use rate_policy::{apply_fallback, base_rate, clock_family, nearest_rate, SampleRatePolicy};
 pub use scene_config::{
-    is_valid_role, CurveQuatConfig, CurveScalarConfig, CurveVec3Config, SceneListenerConfig,
-    SpatialAutomationConfig, SpatialBedConfig, SpatialCueConfig, SpatialFieldConfig,
-    SpatialObjectConfig, SpatialSceneConfig,
+    is_valid_role, BassIntent, CurveQuatConfig, CurveScalarConfig, CurveVec3Config,
+    SceneListenerConfig, SpatialAutomationConfig, SpatialBedConfig, SpatialCueConfig,
+    SpatialFieldConfig, SpatialObjectConfig, SpatialSceneConfig,
 };
-pub use spatial_render::{SpatialMeterConfig, SpatialQuality, SpatialVoiceConfig, VoicePriority};
+pub use spatial_render::{
+    SpatialBassConfig, SpatialBassMode, SpatialMeterConfig, SpatialQuality, SpatialVoiceConfig,
+    VoicePriority,
+};
 pub use versioned::{migrate_step, ConfigLoadError, VersionedConfig, CONFIG_VERSION};
 
 pub mod types {

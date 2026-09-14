@@ -103,6 +103,12 @@ pub struct SpatialAudioObject {
     /// Send level into the LFE effects path (spec §56–57). Additive, never
     /// a pan target.
     pub lfe_send: f32,
+    /// Dedicated bass send level `[0,1]`.
+    pub bass_send: f32,
+    /// Per-object bass intent mode (DirectLfe, SubBassOnly, FullRangeManaged, Bypass).
+    pub bass_intent: config::BassIntent,
+    /// Psychoacoustic importance factor for adaptive CPU scaling.
+    pub importance: f32,
     pub enabled: bool,
     pub source_type: SpatialSourceType,
 }
@@ -127,6 +133,9 @@ impl SpatialAudioObject {
             reference_distance: 1.0,
             room_send: 0.0,
             lfe_send: 0.0,
+            bass_send: 0.0,
+            bass_intent: config::BassIntent::default(),
+            importance: 1.0,
             enabled: true,
             source_type: SpatialSourceType::Point,
         }

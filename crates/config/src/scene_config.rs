@@ -48,6 +48,21 @@ impl Default for SceneListenerConfig {
     }
 }
 
+/// Authoring intent for object bass routing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BassIntent {
+    /// Full-range object managed by the global crossover.
+    #[default]
+    FullRangeManaged,
+    /// Direct LFE routing: bypasses mains crossover, routed directly to LFE/sub.
+    DirectLfe,
+    /// Sub-bass only: band-limited to subwoofer path.
+    SubBassOnly,
+    /// Bypass bass management entirely (unfiltered in mains).
+    Bypass,
+}
+
 /// A point/extended source (spec §13.2): position in metres, gain, spread,
 /// and its sends into the room / LFE paths.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -67,12 +82,25 @@ pub struct SpatialObjectConfig {
     /// LFE effects send in [0, 1].
     #[serde(default)]
     pub lfe_send: f32,
+    /// Dedicated bass send in [0, 1].
+    #[serde(default)]
+    pub bass_send: f32,
+    /// Per-object bass intent mode.
+    #[serde(default)]
+    pub bass_intent: BassIntent,
+    /// Psychoacoustic importance factor for adaptive CPU scaling.
+    #[serde(default = "default_importance")]
+    pub importance: f32,
     /// Optional per-object parameter automation (position/orientation/gain/
     /// spread curves, spec §47).
     #[serde(default)]
     pub automation: SpatialAutomationConfig,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+}
+
+fn default_importance() -> f32 {
+    1.0
 }
 
 fn default_gain() -> f32 {
@@ -249,6 +277,9 @@ impl Default for SpatialObjectConfig {
             spread: 0.0,
             room_send: 0.0,
             lfe_send: 0.0,
+            bass_send: 0.0,
+            bass_intent: BassIntent::default(),
+            importance: 1.0,
             automation: SpatialAutomationConfig::default(),
             enabled: true,
         }

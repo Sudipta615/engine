@@ -32,6 +32,29 @@ fn input_index(inputs: &[Vec<(u32, usize)>], idx: usize, port: u32) -> Option<us
         .map(|(_, plane)| *plane)
 }
 
+/// Read input plane if valid for the current epoch; otherwise fall back to silence.
+#[inline]
+fn read_input_plane<'a>(
+    inputs: &[Vec<(u32, usize)>],
+    idx: usize,
+    port: u32,
+    planes: &'a [Vec<f32>],
+    plane_epochs: &[u64],
+    current_epoch: u64,
+    zero_plane: &'a [f32],
+) -> &'a [f32] {
+    match input_index(inputs, idx, port) {
+        Some(i) => {
+            if plane_epochs.get(i).copied() == Some(current_epoch) {
+                &planes[i]
+            } else {
+                zero_plane
+            }
+        }
+        None => zero_plane,
+    }
+}
+
 /// Realtime executor: owns the active [`RtPlan`] and renders blocks.
 ///
 /// The control thread builds a plan (`RtPlan::build`), publishes it
@@ -141,10 +164,18 @@ impl RtExecutor {
         // block's samples.
         out.fill(0.0);
         self.sink_already_written = false;
-        // Zero the edge planes: stale samples never leak between blocks.
-        for plane in self.active.planes.iter_mut() {
-            plane.fill(0.0);
+
+        // Advance plan epoch: planes are overwritten on write or read as zero.
+        // Unnecessary full-plane clearing across every edge is eliminated.
+        self.active.current_epoch = self.active.current_epoch.wrapping_add(1);
+        if self.active.current_epoch == 0 {
+            for plane in self.active.planes.iter_mut() {
+                plane.fill(0.0);
+            }
+            self.active.plane_epochs.fill(0);
+            self.active.current_epoch = 1;
         }
+
         // Render every step in compiled order, enum-dispatched. Only the
         // NodeKind (Copy) is read out of the plan here — params are read
         // inside each op from the plan's own state tables.
@@ -189,6 +220,8 @@ impl RtExecutor {
             zero_plane,
             sample_rate,
             block,
+            current_epoch,
+            plane_epochs,
             ..
         } = plan;
         let Some((kind, params)) = &nodes[idx] else {
@@ -217,6 +250,7 @@ impl RtExecutor {
             }
             for plane in plane_list {
                 planes[*plane].copy_from_slice(&out);
+                plane_epochs[*plane] = *current_epoch;
             }
         }
         *scratch_out = out;
@@ -232,6 +266,9 @@ impl RtExecutor {
         let plan = &*self.active;
         let mut first_plane_of_this_sink = true;
         for (_, plane) in &plan.inputs[idx] {
+            if plan.plane_epochs.get(*plane).copied() != Some(plan.current_epoch) {
+                continue;
+            }
             if first_plane_of_this_sink && !self.sink_already_written {
                 // First plane of the first sink: copy, exactly like the
                 // offline capture stores the plane.
@@ -255,6 +292,8 @@ impl RtExecutor {
             planes,
             scratch_out,
             zero_plane,
+            current_epoch,
+            plane_epochs,
             ..
         } = plan;
         let Some((kind, params)) = &nodes[idx] else {
@@ -267,10 +306,15 @@ impl RtExecutor {
             super::super::node::NodeParams::Gain { gain } => *gain,
             _ => return,
         };
-        let src: &[f32] = match input_index(inputs, idx, PortId::IN.0) {
-            Some(i) => &planes[i],
-            None => &zero_plane[..],
-        };
+        let src: &[f32] = read_input_plane(
+            inputs,
+            idx,
+            PortId::IN.0,
+            planes,
+            plane_epochs,
+            *current_epoch,
+            zero_plane,
+        );
         let mut out = std::mem::take(scratch_out);
         kernel_gain(src, &mut out, gain, None, None);
         for (port, plane_list) in outputs[idx].iter() {
@@ -279,6 +323,7 @@ impl RtExecutor {
             }
             for plane in plane_list {
                 planes[*plane].copy_from_slice(&out);
+                plane_epochs[*plane] = *current_epoch;
             }
         }
         *scratch_out = out;
@@ -294,6 +339,8 @@ impl RtExecutor {
             scratch_out,
             scratch_in,
             zero_plane,
+            current_epoch,
+            plane_epochs,
             ..
         } = plan;
         let Some(st) = &mut delays[idx] else { return };
@@ -301,10 +348,15 @@ impl RtExecutor {
         // Copy the input into scratch first: `src` must not borrow `planes`
         // while the broadcast below writes into it.
         let mut work = std::mem::take(scratch_in);
-        let src: &[f32] = match input_index(inputs, idx, PortId::IN.0) {
-            Some(i) => &planes[i],
-            None => &zero_plane[..],
-        };
+        let src: &[f32] = read_input_plane(
+            inputs,
+            idx,
+            PortId::IN.0,
+            planes,
+            plane_epochs,
+            *current_epoch,
+            zero_plane,
+        );
         work.copy_from_slice(src);
         kernel_delay(&work, &mut out, &mut st.buf, &mut st.pos);
         for (port, plane_list) in outputs[idx].iter() {
@@ -313,6 +365,7 @@ impl RtExecutor {
             }
             for plane in plane_list {
                 planes[*plane].copy_from_slice(&out);
+                plane_epochs[*plane] = *current_epoch;
             }
         }
         *scratch_out = out;
@@ -326,6 +379,8 @@ impl RtExecutor {
             outputs,
             planes,
             scratch_out,
+            current_epoch,
+            plane_epochs,
             ..
         } = plan;
         let mut out = std::mem::take(scratch_out);
@@ -333,8 +388,10 @@ impl RtExecutor {
             *s = 0.0;
         }
         for (_, plane) in &inputs[idx] {
-            for (o, &s) in out.iter_mut().zip(planes[*plane].iter()) {
-                *o += s;
+            if plane_epochs.get(*plane).copied() == Some(*current_epoch) {
+                for (o, &s) in out.iter_mut().zip(planes[*plane].iter()) {
+                    *o += s;
+                }
             }
         }
         for (port, plane_list) in outputs[idx].iter() {
@@ -343,6 +400,7 @@ impl RtExecutor {
             }
             for plane in plane_list {
                 planes[*plane].copy_from_slice(&out);
+                plane_epochs[*plane] = *current_epoch;
             }
         }
         *scratch_out = out;
@@ -356,19 +414,27 @@ impl RtExecutor {
             planes,
             scratch_in,
             zero_plane,
+            current_epoch,
+            plane_epochs,
             ..
         } = plan;
         let mut work = std::mem::take(scratch_in);
         {
-            let src: &[f32] = match input_index(inputs, idx, PortId::IN.0) {
-                Some(i) => &planes[i],
-                None => &zero_plane[..],
-            };
+            let src: &[f32] = read_input_plane(
+                inputs,
+                idx,
+                PortId::IN.0,
+                planes,
+                plane_epochs,
+                *current_epoch,
+                zero_plane,
+            );
             work.copy_from_slice(src);
         }
         for (_, plane_list) in outputs[idx].iter() {
             for plane in plane_list {
                 planes[*plane].copy_from_slice(&work);
+                plane_epochs[*plane] = *current_epoch;
             }
         }
         *scratch_in = work;
@@ -382,6 +448,8 @@ impl RtExecutor {
             planes,
             buffer_cursors,
             block,
+            current_epoch,
+            plane_epochs,
             ..
         } = plan;
         let Some((clip, looping)) = &buffers[idx] else {
@@ -391,18 +459,19 @@ impl RtExecutor {
         // One shared cursor across all channels (lockstep planes) — the
         // offline semantics, replicated exactly: per frame, wrap the loop
         // cursor or stop (one-shot); port i reads clip channel i (silence
-        // when absent). Planes were zeroed at block start, so the frames
-        // past a one-shot end stay silent.
+        // when absent).
         let mut cursor = buffer_cursors[idx];
-        // Frame-index loop (not an iterator): the same frame `s` writes
-        // every output plane, so a range + explicit index is the honest
-        // shape.
         #[allow(clippy::needless_range_loop)]
         for s in 0..*block {
             if cursor >= max_len {
                 if *looping && max_len > 0 {
                     cursor = 0;
                 } else {
+                    for (_, plane_list) in outputs[idx].iter() {
+                        for plane in plane_list {
+                            planes[*plane][s..*block].fill(0.0);
+                        }
+                    }
                     break; // one-shot: the rest stays silent
                 }
             }
@@ -421,6 +490,11 @@ impl RtExecutor {
             cursor += 1;
         }
         buffer_cursors[idx] = cursor;
+        for (_, plane_list) in outputs[idx].iter() {
+            for plane in plane_list {
+                plane_epochs[*plane] = *current_epoch;
+            }
+        }
     }
 
     fn rt_convolution(&mut self, idx: usize) {
@@ -435,6 +509,8 @@ impl RtExecutor {
             scratch_in,
             zero_plane,
             block,
+            current_epoch,
+            plane_epochs,
             ..
         } = plan;
         let Some((kernel, st)) = convolutions[idx].as_mut() else {
@@ -443,10 +519,15 @@ impl RtExecutor {
         let kernel_len = kernel.len();
         let mut src_copy = std::mem::take(scratch_in);
         {
-            let src: &[f32] = match input_index(inputs, idx, PortId::IN.0) {
-                Some(i) => &planes[i],
-                None => &zero_plane[..],
-            };
+            let src: &[f32] = read_input_plane(
+                inputs,
+                idx,
+                PortId::IN.0,
+                planes,
+                plane_epochs,
+                *current_epoch,
+                zero_plane,
+            );
             src_copy.copy_from_slice(src);
         }
         let src: &[f32] = &src_copy;
@@ -455,6 +536,7 @@ impl RtExecutor {
             for (_, plane_list) in outputs[idx].iter() {
                 for plane in plane_list {
                     planes[*plane].copy_from_slice(src);
+                    plane_epochs[*plane] = *current_epoch;
                 }
             }
             *scratch_in = src_copy;
@@ -472,6 +554,7 @@ impl RtExecutor {
             }
             for plane in plane_list {
                 planes[*plane].copy_from_slice(&out);
+                plane_epochs[*plane] = *current_epoch;
             }
         }
         *scratch_conv = y;
@@ -491,6 +574,8 @@ impl RtExecutor {
             scratch_in,
             zero_plane,
             block,
+            current_epoch,
+            plane_epochs,
             ..
         } = plan;
         let Some((left, right, st)) = hrtfs[idx].as_mut() else {
@@ -499,10 +584,15 @@ impl RtExecutor {
         let delay = left.len().max(right.len());
         let mut src_copy = std::mem::take(scratch_in);
         {
-            let src: &[f32] = match input_index(inputs, idx, PortId::IN.0) {
-                Some(i) => &planes[i],
-                None => &zero_plane[..],
-            };
+            let src: &[f32] = read_input_plane(
+                inputs,
+                idx,
+                PortId::IN.0,
+                planes,
+                plane_epochs,
+                *current_epoch,
+                zero_plane,
+            );
             src_copy.copy_from_slice(src);
         }
         let src: &[f32] = &src_copy;
@@ -511,6 +601,7 @@ impl RtExecutor {
             for (_, plane_list) in outputs[idx].iter() {
                 for plane in plane_list {
                     planes[*plane].copy_from_slice(src);
+                    plane_epochs[*plane] = *current_epoch;
                 }
             }
             *scratch_in = src_copy;
@@ -541,6 +632,7 @@ impl RtExecutor {
                 }
                 for plane in plane_list {
                     planes[*plane].copy_from_slice(&out);
+                    plane_epochs[*plane] = *current_epoch;
                 }
             }
             *scratch_conv = y;
@@ -558,15 +650,22 @@ impl RtExecutor {
             resamplers,
             scratch_out,
             zero_plane,
+            current_epoch,
+            plane_epochs,
             ..
         } = plan;
         let Some(st) = &mut resamplers[idx] else {
             return;
         };
-        let src: &[f32] = match input_index(inputs, idx, PortId::IN.0) {
-            Some(i) => &planes[i],
-            None => &zero_plane[..],
-        };
+        let src: &[f32] = read_input_plane(
+            inputs,
+            idx,
+            PortId::IN.0,
+            planes,
+            plane_epochs,
+            *current_epoch,
+            zero_plane,
+        );
         let mut out = std::mem::take(scratch_out);
         st.render_block_into(src, &mut out);
         for (port, plane_list) in outputs[idx].iter() {
@@ -575,6 +674,7 @@ impl RtExecutor {
             }
             for plane in plane_list {
                 planes[*plane].copy_from_slice(&out);
+                plane_epochs[*plane] = *current_epoch;
             }
         }
         *scratch_out = out;
@@ -592,14 +692,21 @@ impl RtExecutor {
             scratch_in,
             zero_plane,
             block,
+            current_epoch,
+            plane_epochs,
             ..
         } = plan;
         let mut src_copy = std::mem::take(scratch_in);
         {
-            let src: &[f32] = match input_index(inputs, idx, PortId::IN.0) {
-                Some(i) => &planes[i],
-                None => &zero_plane[..],
-            };
+            let src: &[f32] = read_input_plane(
+                inputs,
+                idx,
+                PortId::IN.0,
+                planes,
+                plane_epochs,
+                *current_epoch,
+                zero_plane,
+            );
             src_copy.copy_from_slice(src);
         }
         let src: &[f32] = &src_copy;
@@ -608,6 +715,7 @@ impl RtExecutor {
             for (_, plane_list) in outputs[idx].iter() {
                 for plane in plane_list {
                     planes[*plane].copy_from_slice(src);
+                    plane_epochs[*plane] = *current_epoch;
                 }
             }
             *scratch_in = src_copy;
@@ -639,6 +747,7 @@ impl RtExecutor {
             }
             for plane in plane_list {
                 planes[*plane].copy_from_slice(&out);
+                plane_epochs[*plane] = *current_epoch;
             }
         }
         *scratch_out = out;

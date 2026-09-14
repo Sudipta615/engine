@@ -271,6 +271,7 @@ impl SpatialNode {
                     config::VoicePriority::DistanceWeighted => VoicePriority::DistanceWeighted,
                     config::VoicePriority::GainWeighted => VoicePriority::GainWeighted,
                     config::VoicePriority::UserDefined => VoicePriority::UserDefined,
+                    config::VoicePriority::AdaptiveAudibility => VoicePriority::AdaptiveAudibility,
                 },
             })
         } else {
@@ -521,6 +522,7 @@ impl SpatialNode {
             gain: 0.0,
             distance: 0.0,
             priority: 0,
+            importance: 1.0,
         }; MAX_SPATIAL_OBJECTS];
         let mut n = 0usize;
         for (slot, obj) in self.scene.objects.iter_enabled() {
@@ -532,6 +534,7 @@ impl SpatialNode {
                 gain: obj.gain,
                 distance: (obj.position - self.scene.listener.position).length(),
                 priority: 0,
+                importance: 1.0,
             };
             n += 1;
         }

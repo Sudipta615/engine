@@ -633,7 +633,7 @@ impl ConvolutionEngine {
         self.fft_workspace_input_right[..bs].copy_from_slice(&self.input_buffer_right[..bs]);
         self.fft_workspace_input_right[bs..fft_size].fill(0.0);
 
-        let fft_forward = Arc::clone(&self.fft_forward);
+        let fft_forward = self.fft_forward.as_ref();
         let _ = fft_forward.process(
             &mut self.fft_workspace_input_left,
             &mut self.fft_workspace_output_left,
@@ -678,7 +678,7 @@ impl ConvolutionEngine {
             }
         }
 
-        let fft_inverse = Arc::clone(&self.fft_inverse);
+        let fft_inverse = self.fft_inverse.as_ref();
         let copy_len = spec_len.min(self.ifft_workspace_spectrum_left.len());
         self.ifft_workspace_spectrum_left[..copy_len]
             .copy_from_slice(&self.acc_spectrum_left[..copy_len]);
@@ -731,7 +731,7 @@ impl ConvolutionEngine {
             .copy_from_slice(&self.input_buffer_right_f64[..bs]);
         self.fft_workspace_input_right_f64[bs..fft_size].fill(0.0);
 
-        let fft_forward = Arc::clone(&self.fft_forward_f64);
+        let fft_forward = self.fft_forward_f64.as_ref();
         let _ = fft_forward.process(
             &mut self.fft_workspace_input_left_f64,
             &mut self.fft_workspace_output_left_f64,
@@ -776,7 +776,7 @@ impl ConvolutionEngine {
             }
         }
 
-        let fft_inverse = Arc::clone(&self.fft_inverse_f64);
+        let fft_inverse = self.fft_inverse_f64.as_ref();
         let copy_len = spec_len.min(self.ifft_workspace_spectrum_left_f64.len());
         self.ifft_workspace_spectrum_left_f64[..copy_len]
             .copy_from_slice(&self.acc_spectrum_left_f64[..copy_len]);
