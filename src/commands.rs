@@ -143,6 +143,19 @@ pub enum EngineCommand {
         smoothing_ms: f32,
         max_angular_rate_deg_s: f32,
     },
+    /// Phase-52 scene animation (v4.4.0): replace the spatial master's
+    /// cue bank from the scene-file model (the `whoosh` / `door` presets
+    /// live on `config::SpatialCueConfig`). Control path; the bank is
+    /// rebuilt off the audio thread and then only read.
+    SetSpatialCues(Vec<config::SpatialCueConfig>),
+    /// Phase-52 scene animation: fire the named cue at the block
+    /// boundary (evaluated relative to the firing instant).
+    TriggerSpatialCue(String),
+    /// Phase-52 scene animation: stop the active cue on `target`
+    /// (program object 0 = L, 1 = R).
+    StopSpatialCue(usize),
+    /// Phase-52 scene animation: stop every active cue.
+    StopAllSpatialCues,
     /// Phase-7 S5 correction: live enabled toggle (the loaded IR stays;
     /// disabled = the plan step is skipped, bit-exact).
     SetCorrectionEnabled(bool),

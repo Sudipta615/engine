@@ -73,11 +73,34 @@ use std::sync::Arc;
 /// speaker presets' nominal radius.
 const SCREEN_RADIUS: f32 = 2.0;
 
+/// Phase 52: the program objects' authored parameters, snapshotted for
+/// the render that carries a cue overlay and restored afterwards (plain
+/// stack data — allocation-free on the audio path).
+#[derive(Default)]
+struct ProgramSnapshot {
+    applied: bool,
+    position: [Vec3; 2],
+    gain: [f32; 2],
+    spread: [f32; 2],
+}
+
 /// The SpatialNode (see the module docs).
 pub struct SpatialNode {
     enabled: bool,
     /// The node-private scene: two program objects + room + listener.
     scene: SpatialScene,
+    /// Phase 52: the scene-clock for cue evaluation (seconds, advanced
+    /// per block by `frames / sample_rate`). Owned by the node so cue
+    /// triggers are independent of the automation clock (which the host
+    /// may drive explicitly via `set_automation_time`).
+    cue_clock: f32,
+    /// Phase 53: modeled per-block render cost (cost units; refreshed
+    /// on the control path via `refresh_cost_diagnostics`).
+    last_cost_units: f32,
+    /// Phase 53: modeled budget utilization fraction.
+    last_cost_utilization: f32,
+    /// Phase 53: the render tail budget (blocks of headroom).
+    tail_budget_blocks: f32,
     /// The head-model renderer (2-channel path).
     binaural: BinauralRenderer,
     /// Front-pair program scratch (f32 planes).
@@ -143,6 +166,10 @@ impl SpatialNode {
         let mut node = Self {
             enabled: false,
             scene,
+            cue_clock: 0.0,
+            last_cost_units: 0.0,
+            last_cost_utilization: 0.0,
+            tail_budget_blocks: f32::INFINITY,
             binaural: BinauralRenderer::new(10.0),
             prog_l: vec![0.0; MAX_AUDIO_BLOCK_FRAMES],
             prog_r: vec![0.0; MAX_AUDIO_BLOCK_FRAMES],
@@ -273,6 +300,12 @@ impl SpatialNode {
             cfg.listener_pitch_deg,
             cfg.listener_roll_deg,
         );
+        // Phase 52: the declarative cue bank (control path — the runtime
+        // curves are built here, then only read).
+        self.set_cues(&cfg.cues);
+        // Phase 53: refresh the modeled cost / tail budget for the new
+        // configuration.
+        self.refresh_cost_diagnostics();
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
@@ -339,6 +372,123 @@ impl SpatialNode {
     /// Drive program-object automation at `seconds` (spec §47).
     pub fn set_automation_time(&mut self, seconds: f32) {
         self.binaural.set_automation_time(seconds);
+    }
+
+    // ── Phase 52: scene animation cues (v4.4.0) ──
+
+    /// Replace the node's cue bank from the scene-file model (control
+    /// path — allocates on the caller's thread, then only reads).
+    pub fn set_cues(&mut self, cues: &[config::SpatialCueConfig]) {
+        self.scene.set_cues(cues);
+    }
+
+    /// Fire the named cue at the block boundary (audio drain; the trigger
+    /// resolves the name to the bank index here — the queued command
+    /// carries the index). Returns `false` when the name is unknown.
+    pub fn trigger_cue(&mut self, cue_index: usize) -> bool {
+        let now = self.cue_clock;
+        if cue_index >= self.scene.cue_bank.len() {
+            return false;
+        }
+        self.scene.cue_bank.trigger(cue_index, now);
+        true
+    }
+    /// Stop the active cue on a program object (audio drain).
+    pub fn stop_cue(&mut self, target: usize) {
+        self.scene.cue_bank.stop(target);
+    }
+
+    /// Stop all active cues (audio drain).
+    pub fn stop_all_cues(&mut self) {
+        self.scene.cue_bank.stop_all();
+    }
+
+    /// The number of cues in the bank (control introspection).
+    pub fn cue_count(&self) -> usize {
+        self.scene.cue_bank.len()
+    }
+
+    /// The cue bank as the scene-file model (control path — the
+    /// persistence / round-trip surface).
+    pub fn scene_cues(&self) -> Vec<config::SpatialCueConfig> {
+        self.scene.cues()
+    }
+
+    /// Whether a target currently has an active cue (control
+    /// introspection / tests).
+    pub fn cue_active(&self, target: usize) -> bool {
+        self.scene.cue_bank.is_active(target)
+    }
+
+    /// The active cue's bank index on a target (control introspection /
+    /// the sticky mirror).
+    pub fn cue_active_index(&self, target: usize) -> Option<usize> {
+        self.scene.cue_bank.active_index(target)
+    }
+
+    /// Resolve a cue name to its bank index (control path).
+    pub fn cue_index_of(&self, name: &str) -> Option<usize> {
+        self.scene.cue_bank.index_of(name)
+    }
+
+    /// Advance the cue clock one block and retire finished cues (audio
+    /// path, allocation-free). Returns the block duration in seconds.
+    fn step_cues(&mut self, block_secs: f32) -> f32 {
+        self.cue_clock += block_secs;
+        self.scene.cue_bank.step(self.cue_clock);
+        block_secs
+    }
+
+    /// Apply the active cue overlays onto the two program objects'
+    /// effective parameters for this block's render, snapshotting the
+    /// authored values for [`Self::restore_program`] (audio path,
+    /// allocation-free — plain stack data; a no-op when no cue is
+    /// active, so the pre-Phase-52 render stays bit-exact).
+    fn apply_cues_for_render(&mut self) -> ProgramSnapshot {
+        let mut snap = ProgramSnapshot::default();
+        for target in 0..2 {
+            let mut overlay = crate::spatial::cue::CueOverlay::none();
+            self.scene
+                .cue_bank
+                .evaluate(target, self.cue_clock, &mut overlay);
+            if overlay.is_none() {
+                continue;
+            }
+            let id = if target == 0 { self.obj_l } else { self.obj_r };
+            let Some(obj) = self.scene.object_mut(id) else {
+                continue;
+            };
+            snap.applied = true;
+            snap.position[target] = obj.position;
+            snap.gain[target] = obj.gain;
+            snap.spread[target] = obj.spread;
+            if let Some(p) = overlay.position {
+                obj.position = p;
+            }
+            if let Some(g) = overlay.gain {
+                obj.gain = g;
+            }
+            if let Some(s) = overlay.spread {
+                obj.spread = s;
+            }
+        }
+        snap
+    }
+
+    /// Restore the program objects' authored parameters after a render
+    /// that carried a cue overlay (audio path, allocation-free).
+    fn restore_program(&mut self, snap: &ProgramSnapshot) {
+        if !snap.applied {
+            return;
+        }
+        for (target, &id) in [self.obj_l, self.obj_r].iter().enumerate() {
+            let Some(obj) = self.scene.object_mut(id) else {
+                continue;
+            };
+            obj.position = snap.position[target];
+            obj.gain = snap.gain[target];
+            obj.spread = snap.spread[target];
+        }
     }
 
     /// The output meters snapshot (control thread read; spec §70).
@@ -444,7 +594,61 @@ impl SpatialNode {
             listener_pitch_deg: self.listener_pitch_deg,
             listener_roll_deg: self.listener_roll_deg,
             listener_position: self.scene.listener.position,
+            render_cost_units: self.last_cost_units,
+            cost_utilization: self.last_cost_utilization,
+            tail_blocks_remaining: self.tail_budget_blocks,
         }
+    }
+
+    /// Phase 53: recompute the modeled render cost + tail budget (control
+    /// path — pure model math from the diagnostics module; call after
+    /// config/scene changes). The values mirror into telemetry.
+    pub fn refresh_cost_diagnostics(&mut self) {
+        let budget = self.voice.as_ref().map(|v| v.capacity as f32);
+        let report = crate::spatial::diagnostics::build_scene_cost_report(
+            &self.scene,
+            self.enabled,
+            self.binaural.quality(),
+            budget,
+        );
+        self.last_cost_units = report.total_cost;
+        self.last_cost_utilization = report.utilization;
+        // Tail budget: the remaining budget expressed in equivalent
+        // blocks at the current per-block cost (`∞` when idle, 0 when at
+        // or over budget).
+        self.tail_budget_blocks = if report.total_cost <= 0.0 {
+            f32::INFINITY
+        } else if report.utilization >= 1.0 {
+            0.0
+        } else {
+            (report.block_budget - report.total_cost) / report.total_cost
+        };
+    }
+
+    /// Phase 53: the modeled render-cost report (deterministic). The
+    /// budget defaults to the voice budget's capacity when configured.
+    pub fn scene_cost_report(
+        &self,
+        block_budget: Option<f32>,
+    ) -> crate::spatial::diagnostics::SceneCostReport {
+        let budget = block_budget.or_else(|| self.voice.as_ref().map(|v| v.capacity as f32));
+        crate::spatial::diagnostics::build_scene_cost_report(
+            &self.scene,
+            self.enabled,
+            self.binaural.quality(),
+            budget,
+        )
+    }
+
+    /// Phase 53: the configured voice budget's capacity (the cost budget
+    /// when a budget exists), for the engine-level report accessor.
+    pub fn voice_budget_capacity(&self) -> Option<f32> {
+        self.voice.as_ref().map(|v| v.capacity as f32)
+    }
+
+    /// Whether the spatial stage is enabled.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
     }
 
     /// Spatial-health snapshot (spec §103 extension): an explainable
@@ -695,6 +899,11 @@ impl SpatialNode {
         // block (allocation-free; no-op when converged / inactive).
         let block_secs = frames as f32 / self.sample_rate;
         self.glide_listener(block_secs);
+        // Phase 52: advance the cue clock and retire finished cues, then
+        // overlay any active cue onto the program objects for this block
+        // (allocation-free; no-op when the bank is idle).
+        self.step_cues(block_secs);
+        let snap = self.apply_cues_for_render();
         // Voice budget → admission (spec §76), allocation-free, this block.
         self.apply_voice_budget();
         self.prog_l[..frames].copy_from_slice(&planes[0][..frames]);
@@ -712,6 +921,9 @@ impl SpatialNode {
         let result =
             self.binaural
                 .process_hybrid_block(&self.scene, &inputs, frames, &mut self.out[..need]);
+        // Restore the program objects' authored parameters (cue overlays
+        // apply per block only).
+        self.restore_program(&snap);
         // After a successful prepare the render cannot fail; any error
         // leaves the block untouched (bit-exact passthrough) rather than
         // emitting garbage.
@@ -737,6 +949,11 @@ impl SpatialNode {
         // block (allocation-free; no-op when converged / inactive).
         let block_secs = frames as f32 / self.sample_rate;
         self.glide_listener(block_secs);
+        // Phase 52: advance the cue clock and retire finished cues, then
+        // overlay any active cue onto the program objects for this block
+        // (allocation-free; no-op when the bank is idle).
+        self.step_cues(block_secs);
+        let snap = self.apply_cues_for_render();
         // Voice budget → admission (spec §76), allocation-free, this block.
         self.apply_voice_budget();
         for (f, (&l, &r)) in planes[0]
@@ -761,6 +978,9 @@ impl SpatialNode {
         let result =
             self.binaural
                 .process_hybrid_block(&self.scene, &inputs, frames, &mut self.out[..need]);
+        // Restore the program objects' authored parameters (cue overlays
+        // apply per block only).
+        self.restore_program(&snap);
         if result.is_err() {
             return;
         }

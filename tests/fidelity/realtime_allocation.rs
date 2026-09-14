@@ -1596,3 +1596,83 @@ fn realtime_plugin_host_step_does_not_allocate() {
         "the plugin host plan step must not allocate (got {allocs})"
     );
 }
+
+/// Phase 52 (v4.4.0): the spatial master's cue path — bank step, overlay
+/// evaluation, program snapshot/restore — must be allocation-free on the
+/// audio thread while cues are actively evaluating (the worst case:
+/// looping cues on both program objects, so every block overlays).
+#[test]
+fn realtime_spatial_cue_overlay_does_not_allocate() {
+    use config::EngineConfig;
+
+    let cfg = EngineConfig {
+        spatial: config::SpatialConfig {
+            enabled: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut graph = DspGraph::from_config(&cfg, 48_000.0);
+    // A looping swell on both program objects: every block evaluates the
+    // overlay (gain + spread + position curves) — the steady worst case.
+    graph.set_cue_bank(&[
+        config::SpatialCueConfig {
+            name: "sway_l".to_string(),
+            target: 0,
+            gain: Some(config::CurveScalarConfig {
+                points: vec![(0.0, 0.1), (0.5, 0.9), (1.0, 0.1)],
+            }),
+            spread: Some(config::CurveScalarConfig {
+                points: vec![(0.0, 0.0), (1.0, 0.5)],
+            }),
+            position: Some(config::CurveVec3Config {
+                points: vec![(0.0, [-2.0, 2.0, 0.0]), (1.0, [2.0, 2.0, 0.0])],
+            }),
+            looping: true,
+            hold: false,
+        },
+        config::SpatialCueConfig {
+            name: "sway_r".to_string(),
+            target: 1,
+            gain: Some(config::CurveScalarConfig {
+                points: vec![(0.0, 0.9), (0.5, 0.1), (1.0, 0.9)],
+            }),
+            spread: Some(config::CurveScalarConfig {
+                points: vec![(0.0, 0.5), (1.0, 0.0)],
+            }),
+            position: Some(config::CurveVec3Config {
+                points: vec![(0.0, [2.0, 2.0, 0.0]), (1.0, [-2.0, 2.0, 0.0])],
+            }),
+            looping: true,
+            hold: false,
+        },
+    ]);
+    let l_idx = graph.spatial().cue_index_of("sway_l").unwrap();
+    let r_idx = graph.spatial().cue_index_of("sway_r").unwrap();
+    graph.trigger_spatial_cue_by_index(l_idx);
+    graph.trigger_spatial_cue_by_index(r_idx);
+
+    const FRAMES: usize = 256;
+    let tone: Vec<f32> = (0..FRAMES)
+        .map(|i| 0.4 * (2.0 * std::f32::consts::PI * 997.0 * i as f32 / 48_000.0).sin())
+        .collect();
+    let mut lo = tone.clone();
+    let mut ro = tone.clone();
+
+    // Warm up: one block through prepare + the first overlay before
+    // arming the allocator.
+    graph.process_block(&mut lo, &mut ro);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+    for _ in 0..1_000 {
+        graph.process_block(&mut lo, &mut ro);
+    }
+    ARMED.store(false, Ordering::Relaxed);
+    let allocations = THREAD_ALLOCS.with(|c| c.get());
+
+    assert_eq!(
+        allocations, 0,
+        "the cue overlay path allocated on the audio thread"
+    );
+}

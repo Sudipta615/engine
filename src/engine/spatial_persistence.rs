@@ -92,6 +92,8 @@ fn snapshot(graph: &Graph2Engine) -> SpatialConfig {
         quality: Default::default(),
         voice: Default::default(),
         metering: Default::default(),
+        // Phase 52: the live cue bank round-trips with the scene.
+        cues: sp.scene_cues(),
     }
 }
 

@@ -2,6 +2,78 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.5.0] — 2026-09-14
+
+### Added
+
+- **Spatial diagnostics (Phase 53, v4.5.0).** The spatial master gains a
+  **deterministic render-cost model** and per-block cost telemetry,
+  independent of wall-clock timing: a pure function of the scene, so a
+  cost report is reproducible, comparable across runs, and usable as a
+  regression gate.
+  - `spatial::diagnostics` grows `build_scene_cost_report` — per-object
+    cost rows (base = 1.0 + spread + room-send per object, scaled by the
+    quality tier: Low/Medium 1.0×, High 1.5×, Ultra 2.5×), the block
+    budget (the voice budget's capacity, or the 4.0-unit default), the
+    total, and the utilization fraction (`> 1.0` = over budget).
+  - **Telemetry**: `SpatialTelemetry` gains `render_cost_units`,
+    `cost_utilization`, and `tail_blocks_remaining` (the headroom in
+    equivalent blocks; `∞` when idle, 0 at/over budget), refreshed on
+    the control path (`SpatialNode::refresh_cost_diagnostics` /
+    `Graph2Engine::refresh_spatial_cost`) and read via the new C FFI
+    `engine_spatial_render_cost`.
+  - **Eval harness**: new `spatial_render_cost_units` /
+    `spatial_cost_utilization` metric kinds + the `spatial_cost`
+    reference vector (`spatial_cost@1`) — the default stereo program
+    gates at exactly 2.0 units / ≤ 0.6 utilization, so cost regressions
+    fail CI deterministically (no timers).
+  - `SpatialHealthSnapshot` now reports the cue bank size and the active
+    cue count (`cue_count` / `active_cue_count`).
+
+## [4.4.0] — 2026-09-14
+
+### Added
+
+- **Scene animation events (Phase 52, v4.4.0).** The spatial layer gains
+  **named trigger cues** and automation **playback modes** — the event
+  half of scene animation, sample-accurate at the block boundary and
+  allocation-free on the audio path (verified by a new
+  `realtime_allocation` case).
+  - **Cue bank**: scenes carry named `cues` (scene file +
+    `SpatialConfig.cues`); each cue targets a program object (0 = L,
+    1 = R) and drives gain / spread / position curves **relative to the
+    firing instant**, with `looping` (wrap the clock at the cue
+    duration) and `hold` (persist the final keyframe instead of
+    releasing) modes. The `whoosh` / `door` presets ship on
+    `config::SpatialCueConfig`.
+  - **Automation modes**: `SpatialAutomationConfig` (and the runtime
+    twin) gain `looping` / `hold` — object automation can repeat
+    forever, and a finished automation can release its parameters back
+    to the authored values (`hold = false`) or keep driving them.
+  - **Realtime semantics**: while a cue is active its curves override
+    the target's parameters (snapshot/restore around the render —
+    bit-exact when idle); last-wins per target; the cue clock advances
+    per block on the node.
+  - **Surface**: `EngineCommand::SetSpatialCues` / `TriggerSpatialCue` /
+    `StopSpatialCue` / `StopAllSpatialCues` (+ `EngineHandle`
+    equivalents + `Graph2Engine::set_spatial_cues` /
+    `trigger_spatial_cue` / stops, the queued
+    `NodeCmd::TriggerSpatialCue` / `StopSpatialCue` /
+    `StopAllSpatialCues`, and the C FFI `engine_trigger_spatial_cue` /
+    `engine_stop_spatial_cue` / `engine_stop_all_spatial_cues`). The
+    cue bank and active triggers mirror onto the sticky user state, so
+    a live cue survives a generation swap (re-fired at the new clock
+    origin, documented).
+  - **Timeline + aelog**: `EventPayload::SpatialCue { cue }` schedules
+    cue triggers on the timeline; the recorder gains
+    `record_spatial_cues` / `record_spatial_cue_trigger` and replay
+    reconstructs the bank + trigger timeline
+    (`ReplayOutcome::cue_bank` / `cue_triggers`).
+  - **Acceptance suite**: `tests/fidelity/spatial_events.rs` — bit-exact
+    idle bank, overlay-and-release, looping/hold, last-wins, unknown
+    name rejection, scene-file round-trip, and generation-swap
+    survival.
+
 ## [4.3.0] — 2026-09-13
 
 ### Added

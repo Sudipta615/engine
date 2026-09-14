@@ -473,6 +473,30 @@ impl EngineHandle {
         });
     }
 
+    /// Phase-52 scene animation (v4.4.0): replace the spatial master's
+    /// cue bank. The runtime curves are built on the control thread and
+    /// then only read on the audio path.
+    pub fn set_spatial_cues(&self, cues: Vec<config::SpatialCueConfig>) {
+        let _ = self.send_command(EngineCommand::SetSpatialCues(cues));
+    }
+
+    /// Phase-52 scene animation: fire the named cue at the next block
+    /// boundary (evaluated relative to the firing instant).
+    pub fn trigger_spatial_cue(&self, name: &str) {
+        let _ = self.send_command(EngineCommand::TriggerSpatialCue(name.to_string()));
+    }
+
+    /// Phase-52 scene animation: stop the active cue on `target`
+    /// (program object 0 = L, 1 = R).
+    pub fn stop_spatial_cue(&self, target: usize) {
+        let _ = self.send_command(EngineCommand::StopSpatialCue(target));
+    }
+
+    /// Phase-52 scene animation: stop every active cue.
+    pub fn stop_all_spatial_cues(&self) {
+        let _ = self.send_command(EngineCommand::StopAllSpatialCues);
+    }
+
     /// Phase-51 listener motion: set the glide's smoothing policy (one-pole
     /// time constant ms, `0` snaps; angular rate limit deg/s, `0`
     /// unlimited).

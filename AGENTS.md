@@ -74,6 +74,9 @@ lets non-Rust hosts drive the whole surface.
 │   │                           #   hrtf/ (Woodworth ITD + Duda-Martens head
 │   │                           #   shadow + pinna notch + spectral HrtfDataset)
 │   │                           #   + binaural/ (head-model renderer)
+│   │                           #   + cue/ (Phase 52: named trigger cues —
+│   │                           #   composable parameter-curve events,
+│   │                           #   looping/hold modes, the cue bank)
 │   │                           #   + tracking/ (head tracking: nlerp + one-pole
 │   │                           #   smoothing of IMU/VR orientation samples)
 │   │                           #   + scene-file format (Serde save/load) and a

@@ -121,6 +121,17 @@ pub struct UserState {
     /// Phase 17: the spatial master enable flag, mirrored like the aux
     /// state so a live runtime toggle survives a generation swap.
     pub spatial_enabled: bool,
+    /// Phase 52: the spatial master's cue bank (serde model), carried
+    /// across a rebuild so a runtime bank swap survives a generation
+    /// swap. `None` = no live bank (the config's `cues` are
+    /// authoritative).
+    pub spatial_cues: Option<Arc<Vec<config::SpatialCueConfig>>>,
+    /// Phase 52: the per-target active-cue indices carried across a
+    /// rebuild (a live trigger survives a generation swap). `MAX` =
+    /// idle. Cue clock t0 is NOT carried — a fresh generation restarts
+    /// the cue clock; the trigger survives as "re-fired at t = 0"
+    /// semantics.
+    pub spatial_active_cues: [Option<usize>; crate::spatial::cue::MAX_ACTIVE_CUES],
     /// Phase 49: the plugin host runtime enable flag, mirrored so a live
     /// toggle survives a generation swap.
     pub plugin_enabled: bool,
@@ -154,6 +165,8 @@ impl Default for UserState {
             correction_depth: 1.0,
             correction_ir: None,
             spatial_enabled: false,
+            spatial_cues: None,
+            spatial_active_cues: [None; crate::spatial::cue::MAX_ACTIVE_CUES],
             plugin_enabled: true,
             plugin_params: None,
             duck: None,

@@ -73,6 +73,15 @@ pub struct ReplayOutcome {
     /// tempo map) on the executor, so the gain sweeps match the recording
     /// byte-for-byte.
     pub gain_automation: Vec<(u32, CurveBeats)>,
+    /// Phase 52 (v4.4.0): the recorded **spatial cue bank** (the last
+    /// `SetSpatialCues`; empty if never recorded) — the named cues a
+    /// driver re-attaches to the spatial master before replaying
+    /// [`Self::cue_triggers`].
+    pub cue_bank: Vec<config::SpatialCueConfig>,
+    /// Phase 52: the recorded **cue triggers**: `(master sample, bank
+    /// index)` pairs in firing order. `replay_events` returns them for the
+    /// driver to apply at the exact samples.
+    pub cue_triggers: Vec<(u64, u32)>,
 }
 
 /// Replay a log against a fresh [`Timeline`], reproducing the fired-event
@@ -97,6 +106,8 @@ pub fn replay_events(log: &Aelog) -> Result<ReplayOutcome, ReplayError> {
         scene_swaps: inputs.scenes,
         tempo_map: inputs.tempo_map,
         gain_automation: inputs.gain_auto,
+        cue_bank: inputs.cue_bank,
+        cue_triggers: inputs.cue_triggers,
     })
 }
 
@@ -191,6 +202,8 @@ pub fn replay_render(
         scene_swaps: inputs.scenes,
         tempo_map: inputs.tempo_map,
         gain_automation: inputs.gain_auto,
+        cue_bank: inputs.cue_bank,
+        cue_triggers: inputs.cue_triggers,
     })
 }
 
@@ -208,8 +221,9 @@ fn apply_commands(
 
 /// The render inputs reassembled from a log's commands: the unaddressed
 /// audio track (channel-major planes), one track per clip (first-recorded
-/// order), the listener trajectory, the acoustic scene-swap timeline, and
-/// the musical automation (tempo map + tempo-mapped gain curves).
+/// order), the listener trajectory, the acoustic scene-swap timeline, the
+/// musical automation (tempo map + tempo-mapped gain curves), and the
+/// spatial cue bank + trigger timeline (Phase 52).
 struct ReconstructedInputs {
     audio: Vec<Vec<f32>>,
     clips: Vec<(String, Vec<Vec<f32>>)>,
@@ -217,6 +231,10 @@ struct ReconstructedInputs {
     scenes: Vec<(u64, BakedScene)>,
     tempo_map: Option<TempoMap>,
     gain_auto: Vec<(u32, CurveBeats)>,
+    /// Phase 52: the last-recorded cue bank (serde model).
+    cue_bank: Vec<config::SpatialCueConfig>,
+    /// Phase 52: cue triggers in firing order — `(master sample, bank index)`.
+    cue_triggers: Vec<(u64, u32)>,
 }
 
 /// Reassemble the recorded audio-input tracks (the unaddressed track and
@@ -230,6 +248,8 @@ fn reconstruct_inputs(log: &Aelog) -> ReconstructedInputs {
     let mut scenes: Vec<(u64, BakedScene)> = Vec::new();
     let mut tempo_map: Option<TempoMap> = None;
     let mut gain_auto: Vec<(u32, CurveBeats)> = Vec::new();
+    let mut cue_bank: Vec<config::SpatialCueConfig> = Vec::new();
+    let mut cue_triggers: Vec<(u64, u32)> = Vec::new();
     for c in &log.commands {
         match c {
             // Concatenate per channel, so `audio[ch]` is that channel's
@@ -266,6 +286,12 @@ fn reconstruct_inputs(log: &Aelog) -> ReconstructedInputs {
             RecordedCommand::SetGainAutomation { node, curve } => {
                 gain_auto.push((*node, curve.clone()));
             }
+            RecordedCommand::SetSpatialCues(cues) => {
+                cue_bank = cues.clone();
+            }
+            RecordedCommand::TriggerSpatialCue { at, cue } => {
+                cue_triggers.push((*at, *cue));
+            }
             _ => {}
         }
     }
@@ -276,6 +302,8 @@ fn reconstruct_inputs(log: &Aelog) -> ReconstructedInputs {
         scenes,
         tempo_map,
         gain_auto,
+        cue_bank,
+        cue_triggers,
     }
 }
 
@@ -311,14 +339,17 @@ fn apply_command(
             fired.extend(timeline.advance_block(*samples));
         }
         // Replay-only inputs: the timeline itself has no audio input,
-        // listener, acoustic world, or musical automation; they are
-        // reconstructed into `ReplayOutcome` by `reconstruct_inputs` and
-        // applied by the driver / spatial renderer / executor.
+        // listener, acoustic world, musical automation, or spatial cues;
+        // they are reconstructed into `ReplayOutcome` by
+        // `reconstruct_inputs` and applied by the driver / spatial
+        // renderer / executor.
         RecordedCommand::InputAudio { .. }
         | RecordedCommand::SetListenerPosition { .. }
         | RecordedCommand::SetBakedScene { .. }
         | RecordedCommand::SetTempoMap(_)
-        | RecordedCommand::SetGainAutomation { .. } => {}
+        | RecordedCommand::SetGainAutomation { .. }
+        | RecordedCommand::SetSpatialCues(_)
+        | RecordedCommand::TriggerSpatialCue { .. } => {}
     }
     Ok(())
 }

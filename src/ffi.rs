@@ -930,6 +930,88 @@ pub extern "C" fn engine_set_spatial_automation_time(
     EngineStatus::Ok as i32
 }
 
+/// Phase-52 scene animation (v4.4.0): fire the named cue on the spatial
+/// master. The cue's parameter curves apply relative to the firing
+/// instant, evaluated at the block boundary.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn engine_trigger_spatial_cue(
+    handle: *mut EngineHandleFFI,
+    name: *const std::os::raw::c_char,
+) -> i32 {
+    let h = match unsafe { handle.as_ref() } {
+        Some(h) => h,
+        None => return EngineStatus::InvalidHandle as i32,
+    };
+    if name.is_null() {
+        return EngineStatus::InvalidArgument as i32;
+    }
+    let name = match unsafe { std::ffi::CStr::from_ptr(name) }.to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return EngineStatus::InvalidArgument as i32,
+    };
+    h.handle.trigger_spatial_cue(&name);
+    EngineStatus::Ok as i32
+}
+
+/// Phase-52 scene animation: stop the active cue on `target` (0 = L,
+/// 1 = R).
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn engine_stop_spatial_cue(handle: *mut EngineHandleFFI, target: usize) -> i32 {
+    let h = match unsafe { handle.as_ref() } {
+        Some(h) => h,
+        None => return EngineStatus::InvalidHandle as i32,
+    };
+    h.handle.stop_spatial_cue(target);
+    EngineStatus::Ok as i32
+}
+
+/// Phase-53 spatial diagnostics (v4.5.0): the spatial stage's modeled
+/// render cost and budget state, mirrored from telemetry. Out-params:
+/// `cost_units` (cost units per block; 0.0 when disabled),
+/// `utilization` (fraction of the block budget; `> 1.0` = over budget),
+/// `tail_blocks` (blocks of cost headroom remaining; `+∞` when the stage
+/// is idle). All optional — pass NULL to skip.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn engine_spatial_render_cost(
+    handle: *mut EngineHandleFFI,
+    cost_units: *mut f32,
+    utilization: *mut f32,
+    tail_blocks: *mut f32,
+) -> i32 {
+    let h = match unsafe { handle.as_ref() } {
+        Some(h) => h,
+        None => return EngineStatus::InvalidHandle as i32,
+    };
+    let t = h.handle.playback_info().spatial.as_ref();
+    unsafe {
+        if let Some(p) = cost_units.as_mut() {
+            *p = t.map(|t| t.render_cost_units).unwrap_or(0.0);
+        }
+        if let Some(p) = utilization.as_mut() {
+            *p = t.map(|t| t.cost_utilization).unwrap_or(0.0);
+        }
+        if let Some(p) = tail_blocks.as_mut() {
+            *p = t.map(|t| t.tail_blocks_remaining).unwrap_or(f32::INFINITY);
+        }
+    }
+    EngineStatus::Ok as i32
+}
+
+/// Phase-52 scene animation: stop every active cue.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn engine_stop_all_spatial_cues(handle: *mut EngineHandleFFI) -> i32 {
+    let h = match unsafe { handle.as_ref() } {
+        Some(h) => h,
+        None => return EngineStatus::InvalidHandle as i32,
+    };
+    h.handle.stop_all_spatial_cues();
+    EngineStatus::Ok as i32
+}
+
 // ── Additional output endpoints (routing matrix) ───────────────────────────
 
 /// Add or replace one additional output endpoint. `id` is the stable

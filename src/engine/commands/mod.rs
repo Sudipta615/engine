@@ -505,6 +505,19 @@ impl AudioEngine {
                 self.graph
                     .set_spatial_listener_tracking(smoothing_ms, max_angular_rate_deg_s);
             }
+            // ── Phase 52: scene animation cues ──
+            EngineCommand::SetSpatialCues(cues) => {
+                self.graph.set_spatial_cues(&cues);
+            }
+            EngineCommand::TriggerSpatialCue(name) => {
+                self.graph.trigger_spatial_cue(&name);
+            }
+            EngineCommand::StopSpatialCue(target) => {
+                self.graph.stop_spatial_cue(target);
+            }
+            EngineCommand::StopAllSpatialCues => {
+                self.graph.stop_all_spatial_cues();
+            }
 
             // ── Correction (Phase 7 S5) ──
             EngineCommand::SetCorrectionEnabled(enabled) => {

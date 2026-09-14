@@ -33,8 +33,8 @@ pub use enums::{
 pub use rate_policy::{apply_fallback, base_rate, clock_family, nearest_rate, SampleRatePolicy};
 pub use scene_config::{
     is_valid_role, CurveQuatConfig, CurveScalarConfig, CurveVec3Config, SceneListenerConfig,
-    SpatialAutomationConfig, SpatialBedConfig, SpatialFieldConfig, SpatialObjectConfig,
-    SpatialSceneConfig,
+    SpatialAutomationConfig, SpatialBedConfig, SpatialCueConfig, SpatialFieldConfig,
+    SpatialObjectConfig, SpatialSceneConfig,
 };
 pub use spatial_render::{SpatialMeterConfig, SpatialQuality, SpatialVoiceConfig, VoicePriority};
 pub use versioned::{migrate_step, ConfigLoadError, VersionedConfig, CONFIG_VERSION};

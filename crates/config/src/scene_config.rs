@@ -114,6 +114,14 @@ pub struct CurveQuatConfig {
 /// Optional parameter automation for one object (spec §47): one curve per
 /// automatable parameter, positional in scene seconds. A curve in `Some`
 /// drives the object's parameter over time; `None` leaves it static.
+///
+/// Phase 52 (v4.4.0) adds playback modes on top of the keyframes:
+///
+/// - `looping` — wrap the clock at the automation's duration (the curves
+///   repeat); default `false` (play once).
+/// - `hold` — past the last keyframe, keep the final value (`true`, the
+///   pre-Phase-52 behavior); `false` releases the parameter back to its
+///   authored static value.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct SpatialAutomationConfig {
     #[serde(default)]
@@ -124,6 +132,17 @@ pub struct SpatialAutomationConfig {
     pub gain: Option<CurveScalarConfig>,
     #[serde(default)]
     pub spread: Option<CurveScalarConfig>,
+    /// Wrap the clock at the automation duration (default: play once).
+    #[serde(default)]
+    pub looping: bool,
+    /// Past the end, hold the final keyframe value (default: `true` —
+    /// the pre-Phase-52 behavior; `false` releases to the static value).
+    #[serde(default = "default_true")]
+    pub hold: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl SpatialAutomationConfig {
@@ -135,6 +154,89 @@ impl SpatialAutomationConfig {
                 .orientation
                 .as_ref()
                 .is_some_and(|c| !c.points.is_empty())
+    }
+}
+
+/// One named trigger cue (Phase 52, v4.4.0): composable parameter curves
+/// applied to a target object **relative to the moment the cue fires**.
+/// The cue bank lives on the spatial master; `target` is the program
+/// object it drives (`0` = L, `1` = R; other indices are ignored by the
+/// stereo master and reserved for multichannel scene routing).
+///
+/// While a cue is active, its curves **replace** the target's authored
+/// parameter values (the same override semantics as object automation);
+/// when it finishes (and `hold` is `false`) the authored values return.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct SpatialCueConfig {
+    /// The cue's trigger name (unique within the scene; non-empty).
+    #[serde(default)]
+    pub name: String,
+    /// The program object the cue drives (`0` = L, `1` = R).
+    #[serde(default)]
+    pub target: usize,
+    /// Gain overlay curve, in cue-relative seconds.
+    #[serde(default)]
+    pub gain: Option<CurveScalarConfig>,
+    /// Spread overlay curve, in cue-relative seconds.
+    #[serde(default)]
+    pub spread: Option<CurveScalarConfig>,
+    /// Position overlay curve, in cue-relative seconds (metres).
+    #[serde(default)]
+    pub position: Option<CurveVec3Config>,
+    /// Wrap the cue clock at its duration (the cue repeats).
+    #[serde(default)]
+    pub looping: bool,
+    /// Past the last keyframe, hold the final value instead of releasing
+    /// the target back to its authored parameters (default `false` — an
+    /// event ends).
+    #[serde(default)]
+    pub hold: bool,
+}
+
+impl SpatialCueConfig {
+    /// The **whoosh** preset: a gain swell that pans across the screen —
+    /// silence → peak → silence over 0.9 s while the position sweeps from
+    /// 2.5 m left to 2.5 m right at 2 m front. Non-looping, non-holding
+    /// (the target returns to its authored values when it finishes).
+    pub fn whoosh(name: impl Into<String>, target: usize) -> Self {
+        Self {
+            name: name.into(),
+            target,
+            gain: Some(CurveScalarConfig {
+                points: vec![(0.0, 0.0), (0.25, 0.9), (0.9, 0.0)],
+            }),
+            spread: None,
+            position: Some(CurveVec3Config {
+                points: vec![(0.0, [-2.5, 2.0, 0.0]), (0.9, [2.5, 2.0, 0.0])],
+            }),
+            looping: false,
+            hold: false,
+        }
+    }
+
+    /// The **door** preset: a slam — a burst of gain that decays to silence
+    /// with a spread bloom. Holding (`hold = true`): the door stays shut
+    /// (the final keyframe, silence, persists).
+    pub fn door(name: impl Into<String>, target: usize) -> Self {
+        Self {
+            name: name.into(),
+            target,
+            gain: Some(CurveScalarConfig {
+                points: vec![(0.0, 0.0), (0.03, 1.0), (0.35, 0.0)],
+            }),
+            spread: Some(CurveScalarConfig {
+                points: vec![(0.0, 0.0), (0.03, 0.6), (0.35, 0.0)],
+            }),
+            position: None,
+            looping: false,
+            hold: true,
+        }
+    }
+
+    pub fn has_any(&self) -> bool {
+        self.gain.as_ref().is_some_and(|c| !c.is_empty())
+            || self.spread.as_ref().is_some_and(|c| !c.is_empty())
+            || self.position.as_ref().is_some_and(|c| !c.points.is_empty())
     }
 }
 
@@ -222,6 +324,11 @@ pub struct SpatialSceneConfig {
     pub fields: Vec<SpatialFieldConfig>,
     #[serde(default)]
     pub room: SpatialRoomConfig,
+    /// Named trigger cues (Phase 52, v4.4.0): composable parameter-curve
+    /// events the host fires by name via `EngineCommand::TriggerSpatialCue`
+    /// or the timeline scheduler. Absent in legacy scenes = no cues.
+    #[serde(default)]
+    pub cues: Vec<SpatialCueConfig>,
 }
 
 impl Default for SpatialSceneConfig {
@@ -233,6 +340,7 @@ impl Default for SpatialSceneConfig {
             beds: Vec::new(),
             fields: Vec::new(),
             room: SpatialRoomConfig::default(),
+            cues: Vec::new(),
         }
     }
 }
@@ -301,6 +409,44 @@ impl SpatialSceneConfig {
                     .any(|(t, v)| !t.is_finite() || !v.is_finite())
                 {
                     return Err(format!("object {i}: non-finite spread automation"));
+                }
+            }
+            if a.looping && !a.has_any() {
+                return Err(format!("object {i}: looping automation with no curves"));
+            }
+        }
+        for (i, cue) in self.cues.iter().enumerate() {
+            if cue.name.is_empty() {
+                return Err(format!("cue {i}: empty name"));
+            }
+            if !cue.has_any() {
+                return Err(format!("cue {i}: no curves"));
+            }
+            if self.cues.iter().filter(|c| c.name == cue.name).count() > 1 {
+                return Err(format!("cue {i}: duplicate name '{}'", cue.name));
+            }
+            if let Some(c) = &cue.gain {
+                if c.points
+                    .iter()
+                    .any(|(t, v)| !t.is_finite() || !v.is_finite())
+                {
+                    return Err(format!("cue {i}: non-finite gain curve"));
+                }
+            }
+            if let Some(c) = &cue.spread {
+                if c.points
+                    .iter()
+                    .any(|(t, v)| !t.is_finite() || !v.is_finite())
+                {
+                    return Err(format!("cue {i}: non-finite spread curve"));
+                }
+            }
+            if let Some(c) = &cue.position {
+                if c.points
+                    .iter()
+                    .any(|(t, p)| !t.is_finite() || p.iter().any(|v| !v.is_finite()))
+                {
+                    return Err(format!("cue {i}: non-finite position curve"));
                 }
             }
         }

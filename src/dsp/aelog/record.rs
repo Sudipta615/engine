@@ -197,6 +197,25 @@ impl AelogRecorder {
         });
     }
 
+    // ── Phase 52: scene animation cues ─────────────────────────────────────
+
+    /// Record the spatial master's **cue bank** (the scene's named cues,
+    /// serde model verbatim). Idempotent; record before any cue
+    /// triggers so the replay fires the same cues with the same curves.
+    pub fn record_spatial_cues(&mut self, cues: &[config::SpatialCueConfig]) {
+        self.commands
+            .push(RecordedCommand::SetSpatialCues(cues.to_vec()));
+    }
+
+    /// Record a **cue trigger**: at the current master sample, fire the
+    /// cue at bank index `cue` — replays sample-accurately against the
+    /// recorded cue bank.
+    pub fn record_spatial_cue_trigger(&mut self, cue: u32) {
+        let at = self.timeline.clock().master_position();
+        self.commands
+            .push(RecordedCommand::TriggerSpatialCue { at, cue });
+    }
+
     // ── Finish ──────────────────────────────────────────────────────────────
 
     /// Seal the session into an [`Aelog`].

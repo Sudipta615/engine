@@ -202,6 +202,16 @@ impl GraphGeneration {
             // snapshots only; construction keeps the config-applied state).
             if user.has_live_bus_state {
                 gen_node!(self, node_id::SPATIAL, Spatial).set_enabled(user.spatial_enabled);
+                // Phase 52: a live cue bank + active triggers survive a
+                // swap. The bank (when set) is authoritative over the
+                // config's `cues`; the active triggers re-fire at the new
+                // generation's cue clock origin (documented semantics).
+                if let Some(bank) = &user.spatial_cues {
+                    gen_node!(self, node_id::SPATIAL, Spatial).set_cues(bank);
+                }
+                for idx in user.spatial_active_cues.iter().flatten() {
+                    gen_node!(self, node_id::SPATIAL, Spatial).trigger_cue(*idx);
+                }
             }
             // Phase 49: a live plugin host enable toggle + the last
             // parameter batch survive a swap (live snapshots only).

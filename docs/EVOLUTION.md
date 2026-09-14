@@ -2570,3 +2570,86 @@ fmt + clippy `-D warnings` clean; `engine`/`config` both at 4.2.0.
 listener will re-fold the air model automatically through
 `listener_images`) and the Phase-53 diagnostics (per-corner telemetry
 now has a well-defined meaning on both render paths).
+
+## Phase 51 — Listener motion (v4.3.0) — **Implemented**
+
+See CHANGELOG `[4.3.0]` for the full surface. The spatial master's
+listener is runtime-movable: a target pose glides per block (nlerp +
+one-pole, optional rate limit), allocation-free, with a smooth re-bake
+seam for the acoustic world.
+
+## Phase 52 — Scene animation events (v4.4.0) — **Implemented**
+
+The event half of scene animation: **named trigger cues** with
+parameter-curve payloads, plus automation **playback modes**.
+
+**What it adds.**
+
+- **Cues** — a scene-level bank of named, composable events
+  (`SpatialCueConfig`: `name`, `target` program object, gain/spread/
+  position curves, `looping`, `hold`). Firing a cue applies its curves
+  to the target **relative to the firing instant**; the curves override
+  the authored parameters while active (the same overlay semantics as
+  object automation), releasing on finish unless `hold`. Presets:
+  `whoosh` (gain swell + pan sweep) and `door` (slam + spread bloom,
+  holding).
+- **Automation modes** — `SpatialAutomationConfig` gains `looping`
+  (wrap the clock at the duration; the curves repeat) and `hold`
+  (default `true` = pre-Phase-52 behavior; `false` releases finished
+  parameters back to the authored values).
+- **Realtime discipline** — the bank is control-built
+  (`SpatialScene::set_cues`), the audio path only steps a fixed-size
+  activation cursor and evaluates the allocation-free curve kernels;
+  the overlay is a snapshot/restore around each block, bit-exact when
+  idle. The cue bank and active triggers mirror onto the sticky user
+  state (`user_cue_bank` + `user_active_cues`), so a live cue survives
+  a generation swap (re-fired at the new generation's clock origin —
+  documented semantics).
+- **Surface** — `EngineCommand::SetSpatialCues` / `TriggerSpatialCue` /
+  `StopSpatialCue` / `StopAllSpatialCues` + `EngineHandle` twins +
+  `Graph2Engine` forwards + queued `NodeCmd`s + C FFI
+  (`engine_trigger_spatial_cue` / `engine_stop_spatial_cue` /
+  `engine_stop_all_spatial_cues`). Timeline:
+  `EventPayload::SpatialCue { cue }` schedules triggers. Aelog:
+  `record_spatial_cues` / `record_spatial_cue_trigger` record the bank +
+  trigger timeline; replay reconstructs both
+  (`ReplayOutcome::cue_bank` / `cue_triggers`).
+- **Health** — `SpatialHealthSnapshot` reports `cue_count` /
+  `active_cue_count`.
+
+**Acceptance.** New suite `tests/fidelity/spatial_events.rs` (bit-exact
+idle bank, overlay-and-release, looping/hold, last-wins, unknown-name
+rejection, scene-file round-trip, generation-swap survival) + a
+`realtime_allocation` case with looping cues on both program objects.
+`spatial::cue` unit tests cover the bank semantics (relative
+evaluation, release, wrap, hold, last-wins, no-op bounds).
+
+## Phase 53 — Spatial diagnostics (v4.5.0) — **Implemented**
+
+A **deterministic render-cost model** for the spatial stage — cost
+units per block (1 unit ≈ one analytic-tier binaural object render),
+independent of wall-clock timing.
+
+**What it adds.**
+
+- **`spatial::diagnostics::build_scene_cost_report`** — per-object cost
+  rows (base = 1.0 + spread + room-send, × the quality multiplier:
+  Low/Medium 1.0, High 1.5, Ultra 2.5), the block budget (the voice
+  budget capacity or the 4.0-unit default), the deterministic total,
+  and the utilization fraction. Pure function of the scene —
+  reproducible, comparable, gateable.
+- **Telemetry** — `SpatialTelemetry.render_cost_units` /
+  `cost_utilization` / `tail_blocks_remaining` (headroom in equivalent
+  blocks; `∞` idle, 0 at/over budget), refreshed on the control path
+  (`refresh_cost_diagnostics`) and read via the C FFI
+  `engine_spatial_render_cost`.
+- **Eval harness** — `spatial_render_cost_units` /
+  `spatial_cost_utilization` metric kinds + the `spatial_cost@1`
+  reference vector: the default stereo program gates at exactly 2.0
+  units and ≤ 0.6 utilization, so a cost regression fails CI
+  deterministically — no timers, no flake.
+
+**Acceptance.** `spatial::diagnostics` cost-model unit tests (stereo
+program = 2.0, spread/room/tier scaling, disabled = 0, explicit
+budget), the eval `spatial_cost` component in `run_quality`, and the
+existing suites stay green.

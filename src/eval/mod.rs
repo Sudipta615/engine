@@ -101,6 +101,13 @@ pub enum MetricKind {
     /// HRTF/interpolation error: how far an interpolated response falls
     /// outside the convex hull of its bracketing grid nodes (dB; 0 = convex).
     HrtfInterpolationErrorDb,
+    /// Phase 53 (v4.5.0): spatial-stage modeled render cost per block
+    /// (cost units; deterministic model, not wall-clock). Used to gate
+    /// scene-cost regressions.
+    SpatialRenderCostUnits,
+    /// Phase 53: spatial-stage cost-budget utilization (fraction; ≤ 1 =
+    /// within budget).
+    SpatialCostUtilization,
 }
 
 impl MetricKind {
@@ -122,6 +129,8 @@ impl MetricKind {
             MetricKind::SampleRateErrorPpm => "sample_rate_error_ppm",
             MetricKind::AcousticIrErrorDb => "acoustic_ir_error_db",
             MetricKind::HrtfInterpolationErrorDb => "hrtf_interpolation_error_db",
+            MetricKind::SpatialRenderCostUnits => "spatial_render_cost_units",
+            MetricKind::SpatialCostUtilization => "spatial_cost_utilization",
         }
     }
 
@@ -138,6 +147,8 @@ impl MetricKind {
             MetricKind::CrestFactorDeltaDb | MetricKind::ChannelSeparationDb => "dB",
             MetricKind::LoudnessErrorLufs => "LUFS",
             MetricKind::ThdPlusN | MetricKind::IntermodDistortion => "frac",
+            MetricKind::SpatialRenderCostUnits => "units",
+            MetricKind::SpatialCostUtilization => "frac",
             MetricKind::InterchannelTimingSamples => "samples",
             MetricKind::SampleRateErrorPpm => "ppm",
         }
@@ -546,6 +557,7 @@ pub fn run_quality() -> EvaluationReport {
         .components
         .push(suites::channel_separation(&registry));
     report.components.push(suites::hrtf(&registry));
+    report.components.push(suites::spatial_cost(&registry));
     report
 }
 
@@ -643,7 +655,7 @@ mod tests {
     #[test]
     fn run_quality_assembles_all_components_and_passes() {
         let report = run_quality();
-        assert_eq!(report.components.len(), 9, "nine suites registered");
+        assert_eq!(report.components.len(), 10, "ten suites registered");
         for (n, comp) in report.components.iter().enumerate() {
             assert!(
                 comp.is_pass(),

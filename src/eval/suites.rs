@@ -627,3 +627,54 @@ pub fn hrtf(reg: &ReferenceVectorRegistry) -> ComponentReport {
         )],
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 11. Spatial render-cost diagnostics (Phase 53, v4.5.0)
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub fn def_spatial_cost(engine_version: String) -> ReferenceVector {
+    ReferenceVector::new(
+        "spatial_cost",
+        1,
+        engine_version,
+        vec![
+            super::MetricSpec::new(
+                MetricKind::SpatialRenderCostUnits,
+                Expect::AtMost { max: 2.0 },
+            ),
+            super::MetricSpec::new(
+                MetricKind::SpatialCostUtilization,
+                Expect::AtMost { max: 0.6 },
+            ),
+        ],
+    )
+}
+
+pub fn spatial_cost(reg: &ReferenceVectorRegistry) -> ComponentReport {
+    let v = reg.get("spatial_cost").unwrap();
+    // The default stereo program at the analytic tier with the stage
+    // enabled: two objects, no spread, no room → exactly 2.0 cost units
+    // and ≤ 0.6 utilization under the default budget.
+    let mut node = SpatialNode::new(48_000.0);
+    node.set_enabled(true);
+    node.refresh_cost_diagnostics();
+    let report = node.scene_cost_report(None);
+    ComponentReport {
+        component: "Spatial render-cost model".to_string(),
+        reference_vector: v.display_id(),
+        checks: vec![
+            CheckResult::evaluate(
+                MetricKind::SpatialRenderCostUnits,
+                report.total_cost as f64,
+                expect(v, 0),
+                "the default stereo program models at 2 cost units per block",
+            ),
+            CheckResult::evaluate(
+                MetricKind::SpatialCostUtilization,
+                report.utilization as f64,
+                expect(v, 1),
+                "the default program stays within the block budget",
+            ),
+        ],
+    }
+}

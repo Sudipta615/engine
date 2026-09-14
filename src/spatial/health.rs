@@ -171,6 +171,10 @@ pub struct SpatialHealthSnapshot {
     pub active_sources: usize,
     pub degraded_voice_count: usize,
     pub dropped_voice_count: usize,
+    /// Phase 52: the number of named cues in the scene's bank and how
+    /// many are currently active (fired and not finished).
+    pub cue_count: usize,
+    pub active_cue_count: usize,
     pub per_source: Vec<SourceHealth>,
 }
 
@@ -224,6 +228,8 @@ pub fn build_health(inputs: SpatialHealthInputs) -> SpatialHealthSnapshot {
             active_sources: 0,
             degraded_voice_count: 0,
             dropped_voice_count: 0,
+            cue_count: scene.cue_bank.len(),
+            active_cue_count: 0,
             per_source: Vec::new(),
         };
     }
@@ -474,6 +480,10 @@ pub fn build_health(inputs: SpatialHealthInputs) -> SpatialHealthSnapshot {
         active_sources: per_source.len(),
         degraded_voice_count: voice_degraded,
         dropped_voice_count: voice_dropped,
+        cue_count: scene.cue_bank.len(),
+        active_cue_count: (0..crate::spatial::cue::MAX_ACTIVE_CUES)
+            .filter(|&t| scene.cue_bank.is_active(t))
+            .count(),
         per_source,
     }
 }

@@ -282,6 +282,20 @@ impl Graph2ControlHandle {
         self.inner
             .set_spatial_listener_tracking(smoothing_ms, max_rate_deg_s);
     }
+    /// Phase-52 scene animation (v4.4.0): fire cue `cue_index` on the
+    /// spatial master at the block boundary (resolve names against the
+    /// graph via `Graph2Engine::trigger_spatial_cue`).
+    pub fn trigger_spatial_cue(&self, cue_index: usize) {
+        self.inner.trigger_spatial_cue(cue_index);
+    }
+    /// Phase-52 scene animation: stop the active cue on `target`.
+    pub fn stop_spatial_cue(&self, target: usize) {
+        self.inner.stop_spatial_cue(target);
+    }
+    /// Phase-52 scene animation: stop every active cue.
+    pub fn stop_all_spatial_cues(&self) {
+        self.inner.stop_all_spatial_cues();
+    }
     pub fn set_input_mute(&self, input: u8, mute: bool) {
         self.inner.set_input_mute(input, mute);
     }

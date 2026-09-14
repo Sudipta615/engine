@@ -333,6 +333,11 @@ pub struct SpatialConfig {
     /// Output metering enable (spec §70).
     #[serde(default)]
     pub metering: SpatialMeterConfig,
+    /// Named trigger cues (Phase 52, v4.4.0): the bank the spatial master
+    /// loads at construction / reconfig and fires by name at runtime
+    /// (`EngineCommand::TriggerSpatialCue` / the timeline scheduler).
+    #[serde(default)]
+    pub cues: Vec<super::scene_config::SpatialCueConfig>,
 }
 
 fn default_spatial_half_width() -> f32 {
@@ -354,6 +359,7 @@ impl Default for SpatialConfig {
             quality: SpatialQuality::default(),
             voice: SpatialVoiceConfig::default(),
             metering: SpatialMeterConfig::default(),
+            cues: Vec::new(),
         }
     }
 }

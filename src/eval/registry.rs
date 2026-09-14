@@ -142,7 +142,8 @@ impl ReferenceVectorRegistry {
         r.register(super::suites::def_loudness(ev.clone()));
         r.register(super::suites::def_convolution(ev.clone()));
         r.register(super::suites::def_channel_separation(ev.clone()));
-        r.register(super::suites::def_hrtf(ev));
+        r.register(super::suites::def_hrtf(ev.clone()));
+        r.register(super::suites::def_spatial_cost(ev));
         r
     }
 

@@ -147,6 +147,7 @@ pub mod ambisonic;
 pub mod automation;
 pub mod bed;
 pub mod binaural;
+pub mod cue;
 pub mod diagnostics;
 pub mod directivity;
 pub mod doppler;
@@ -190,6 +191,7 @@ pub use automation::{
 };
 pub use bed::{BedId, SpatialBed, SpatialBedStore, MAX_BEDS};
 pub use binaural::{BinauralRenderer, VIRTUAL_RING_SPEAKERS};
+pub use cue::{CueBank, CueOverlay, SpatialCue, MAX_ACTIVE_CUES};
 pub use diagnostics::{
     build_debug_view, ObjectDebugInfo, ReflectionDebugInfo, SpatialDebugView, SpeakerDebugInfo,
 };

@@ -115,6 +115,9 @@ pub struct SpatialScene {
     /// Room acoustics (spec §49): early reflections + late field.
     pub room: Room,
     pub sample_rate: u32,
+    /// Named trigger cues (Phase 52, v4.4.0): the runtime cue bank —
+    /// control-built, audio-read (see [`cue`]).
+    pub cue_bank: crate::spatial::cue::CueBank,
 }
 
 impl SpatialScene {
@@ -126,6 +129,7 @@ impl SpatialScene {
             fields: SpatialFieldStore::new(),
             room: Room::default(),
             sample_rate,
+            cue_bank: crate::spatial::cue::CueBank::new(),
         }
     }
 
@@ -238,6 +242,8 @@ impl SpatialScene {
                     .as_ref()
                     .and_then(|c| CurveScalar::from_points(&c.points)),
                 sample_rate: cfg.sample_rate as f32,
+                looping: a.looping,
+                hold: a.hold,
             };
         }
         for b in &cfg.beds {
@@ -259,6 +265,9 @@ impl SpatialScene {
             field.gain = f.gain;
             field.enabled = f.enabled;
         }
+        // Phase 52: named trigger cues ride the scene file; the runtime
+        // bank is built here (control path) and only read afterwards.
+        scene.set_cues(&cfg.cues);
         let r = &cfg.room;
         scene.room = Room {
             enabled: r.enabled,
@@ -340,6 +349,8 @@ impl SpatialScene {
                             .map(|c| config::CurveScalarConfig {
                                 points: c.keyframes().to_vec(),
                             }),
+                        looping: o.automation.looping,
+                        hold: o.automation.hold,
                     },
                     enabled: o.enabled,
                 })
@@ -381,7 +392,47 @@ impl SpatialScene {
                     .unwrap_or(0.0),
                 speed_of_sound: self.room.speed_of_sound,
             },
+            cues: self.cues(),
         }
+    }
+
+    /// The scene's named cues as the scene-file model (Phase 52).
+    pub fn cues(&self) -> Vec<config::SpatialCueConfig> {
+        (0..self.cue_bank.len())
+            .map(|i| {
+                let cue = self.cue_bank.cue(i).expect("index < len");
+                config::SpatialCueConfig {
+                    name: cue.name.clone(),
+                    target: cue.target,
+                    gain: cue.gain.as_ref().map(|c| config::CurveScalarConfig {
+                        points: c.keyframes().to_vec(),
+                    }),
+                    spread: cue.spread.as_ref().map(|c| config::CurveScalarConfig {
+                        points: c.keyframes().to_vec(),
+                    }),
+                    position: cue.position.as_ref().map(|c| config::CurveVec3Config {
+                        points: c
+                            .keyframes()
+                            .iter()
+                            .map(|(t, p)| (*t, [p.x, p.y, p.z]))
+                            .collect(),
+                    }),
+                    looping: cue.looping,
+                    hold: cue.hold,
+                }
+            })
+            .collect()
+    }
+
+    /// Replace the scene's named cues from the scene-file model (Phase
+    /// 52; control path — allocates the runtime curves on the caller's
+    /// thread). Invalid/no-curve entries are skipped.
+    pub fn set_cues(&mut self, cues: &[config::SpatialCueConfig]) {
+        let runtime: Vec<crate::spatial::cue::SpatialCue> = cues
+            .iter()
+            .filter_map(crate::spatial::cue::SpatialCue::from_config)
+            .collect();
+        self.cue_bank.replace(runtime);
     }
 }
 

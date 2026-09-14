@@ -177,6 +177,17 @@ pub struct SpatialTelemetry {
     pub listener_roll_deg: f32,
     /// Live listener world position (metres).
     pub listener_position: crate::spatial::math::Vec3,
+    /// Phase 53: the modeled per-block render cost of the spatial stage
+    /// in cost units (see `spatial::diagnostics`); 0.0 when disabled.
+    pub render_cost_units: f32,
+    /// Phase 53: the modeled cost budget utilization fraction
+    /// (`render_cost_units / budget`; `> 1.0` = over budget).
+    pub cost_utilization: f32,
+    /// Phase 53: the render tail budget in blocks — how many blocks of
+    /// headroom remain before the spatial stage's cost exceeds the
+    /// configured block budget (a large value = comfortable; reaching 0
+    /// means the next reconfig should shed work).
+    pub tail_blocks_remaining: f32,
 }
 
 /// Phase-7 S5 room/headphone correction telemetry.

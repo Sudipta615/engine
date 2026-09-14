@@ -218,4 +218,46 @@ impl Graph2Engine {
     pub fn control_handle(&self) -> Graph2ControlHandle {
         Graph2ControlHandle::new(self.inner.control_handle())
     }
+
+    // ── Phase 52: scene animation cues (v4.4.0) ─────────────────────
+
+    /// Fire the named cue on the spatial master at the block boundary —
+    /// resolves the name against the active bank. Returns `false` when
+    /// the bank holds no cue of that name.
+    pub fn trigger_spatial_cue(&self, name: &str) -> bool {
+        self.inner.trigger_spatial_cue(name)
+    }
+
+    /// Stop the active cue on `target` (0 = L, 1 = R) at the block
+    /// boundary.
+    pub fn stop_spatial_cue(&self, target: usize) {
+        self.inner.stop_spatial_cue(target);
+    }
+
+    /// Stop every active cue at the block boundary.
+    pub fn stop_all_spatial_cues(&self) {
+        self.inner.stop_all_spatial_cues();
+    }
+
+    /// Replace the spatial master's cue bank from the scene-file model
+    /// (control path — the runtime curves are built on this thread, and
+    /// the bank is mirrored onto the sticky user state so it survives a
+    /// generation rebuild).
+    pub fn set_spatial_cues(&mut self, cues: &[config::SpatialCueConfig]) {
+        self.inner.set_cue_bank(cues);
+    }
+
+    /// Phase 53: refresh the spatial master's modeled cost / tail-budget
+    /// diagnostics (control path, after config or scene changes).
+    pub fn refresh_spatial_cost(&mut self) {
+        self.inner.spatial_mut().refresh_cost_diagnostics();
+    }
+
+    /// Phase 53: the spatial master's modeled render-cost report
+    /// (deterministic — a pure function of the scene + stage config).
+    pub fn spatial_cost_report(&self) -> crate::spatial::diagnostics::SceneCostReport {
+        self.inner
+            .spatial()
+            .scene_cost_report(self.inner.spatial().voice_budget_capacity())
+    }
 }

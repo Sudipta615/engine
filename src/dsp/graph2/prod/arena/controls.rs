@@ -131,6 +131,15 @@ pub(crate) enum NodeCmd {
         smoothing_ms: f32,
         max_angular_rate_deg_s: f32,
     },
+    /// Phase-52 scene animation (v4.4.0): fire the cue at `cue_index`
+    /// (resolved from the bank by name on the control side) at the
+    /// current cue clock.
+    TriggerSpatialCue(usize),
+    /// Phase-52 scene animation: stop the active cue on `target`
+    /// (program object 0 = L, 1 = R).
+    StopSpatialCue(usize),
+    /// Phase-52 scene animation: stop every active cue.
+    StopAllSpatialCues,
     /// Runtime crossfade config (Phase 3 S3): curve / enabled / duration
     /// mirror the pipeline's `TrackMixer` setters the engine calls on
     /// `handle_set_crossfade_config`.
@@ -282,6 +291,16 @@ pub(crate) struct ControlBus {
     /// Phase 17: spatial master enabled flag, mirrored like the aux state so
     /// a live runtime toggle survives a generation swap.
     user_spatial_enabled: AtomicU8,
+    /// Phase 52: the spatial master's cue bank (serde model), mirrored
+    /// like `user_correction_ir` — control-thread writes only (the
+    /// `SetSpatialCues` handler + generation seeding), never touched by
+    /// the audio thread, so the mutex is never contended on a hot path.
+    /// `None` = no live bank (the config's `cues` are authoritative).
+    user_cue_bank: Mutex<Option<Arc<Vec<config::SpatialCueConfig>>>>,
+    /// Phase 52: the per-target active-cue indices (one per program
+    /// object slot), mirrored as plain atomics so a live trigger survives
+    /// a generation swap. `u32::MAX` = idle.
+    user_active_cues: [AtomicU32; crate::spatial::cue::MAX_ACTIVE_CUES],
     /// Phase 49: plugin host enabled flag + the last live parameter
     /// batch (plain data in a mutex written control-side only; never
     /// contended on the audio path — same contract as
@@ -343,6 +362,23 @@ impl ControlBus {
             user_correction_depth: AtomicU32::new(1.0f32.to_bits()),
             user_correction_ir: Mutex::new(None),
             user_spatial_enabled: AtomicU8::new(0),
+            user_cue_bank: Mutex::new(None),
+            user_active_cues: {
+                // `AtomicU32::new` is not `const`-array-repeat-friendly for
+                // MSRV; spell the fixed slots out (MAX_ACTIVE_CUES = 8).
+                let idle = || AtomicU32::new(u32::MAX);
+                let _ = idle;
+                [
+                    AtomicU32::new(u32::MAX),
+                    AtomicU32::new(u32::MAX),
+                    AtomicU32::new(u32::MAX),
+                    AtomicU32::new(u32::MAX),
+                    AtomicU32::new(u32::MAX),
+                    AtomicU32::new(u32::MAX),
+                    AtomicU32::new(u32::MAX),
+                    AtomicU32::new(u32::MAX),
+                ]
+            },
             user_plugin_enabled: AtomicU8::new(1),
             user_plugin_params: Mutex::new(plugin_abi::PluginParams::empty()),
         }
@@ -507,6 +543,41 @@ impl ControlBus {
         self.user_spatial_enabled.load(Ordering::Relaxed) != 0
     }
 
+    /// Mirror the Phase-52 cue bank (control side: the `SetSpatialCues`
+    /// handler and `set_cue_bank` write; generation seeding reads back).
+    /// The audio thread never touches this — see the field's docs.
+    pub(super) fn set_cue_bank_user_state(&self, cues: Option<Arc<Vec<config::SpatialCueConfig>>>) {
+        let mut guard = self.user_cue_bank.lock().expect("cue bank mutex poisoned");
+        *guard = cues;
+    }
+
+    /// Control-side read of the mirrored cue bank (if any).
+    pub(super) fn user_cue_bank(&self) -> Option<Arc<Vec<config::SpatialCueConfig>>> {
+        self.user_cue_bank
+            .lock()
+            .expect("cue bank mutex poisoned")
+            .clone()
+    }
+
+    /// Mirror the per-target active-cue indices (audio side at drain; the
+    /// values are the last-applied trigger per target).
+    pub(super) fn set_active_cue_user_state(&self, target: usize, cue_index: Option<usize>) {
+        if target >= crate::spatial::cue::MAX_ACTIVE_CUES {
+            return;
+        }
+        let v = cue_index.map(|i| i as u32).unwrap_or(u32::MAX);
+        self.user_active_cues[target].store(v, Ordering::Relaxed);
+    }
+
+    /// Control-side read of the mirrored active-cue index per target.
+    pub(super) fn user_active_cue(&self, target: usize) -> Option<usize> {
+        if target >= crate::spatial::cue::MAX_ACTIVE_CUES {
+            return None;
+        }
+        let v = self.user_active_cues[target].load(Ordering::Relaxed);
+        (v != u32::MAX).then_some(v as usize)
+    }
+
     /// Mirror the Phase-49 plugin host enable flag, audio side at drain.
     pub(super) fn set_plugin_user_state(&self, enabled: bool) {
         self.user_plugin_enabled
@@ -610,6 +681,12 @@ impl ControlBus {
             correction_depth: f32::from_bits(self.user_correction_depth.load(Ordering::Relaxed)),
             correction_ir: self.user_correction_ir(),
             spatial_enabled: self.user_spatial_enabled.load(Ordering::Relaxed) != 0,
+            spatial_cues: self.user_cue_bank(),
+            spatial_active_cues: (0..crate::spatial::cue::MAX_ACTIVE_CUES)
+                .map(|t| self.user_active_cue(t))
+                .collect::<Vec<_>>()
+                .try_into()
+                .expect("MAX_ACTIVE_CUES entries"),
             plugin_enabled: self.user_plugin_enabled.load(Ordering::Relaxed) != 0,
             plugin_params: self.user_plugin_params(),
             // Ducking + automation are NOT mirrored onto the bus atomics:
@@ -1182,6 +1259,25 @@ impl GraphControlHandle {
         );
     }
 
+    /// Phase-52 scene animation: fire cue `cue_index` (resolved by name
+    /// against the active bank — see [`DspGraph::trigger_spatial_cue`])
+    /// at the block boundary. Out-of-range indices no-op on drain.
+    pub fn trigger_spatial_cue(&self, cue_index: usize) {
+        self.enqueue(node_id::SPATIAL, NodeCmd::TriggerSpatialCue(cue_index));
+    }
+
+    /// Phase-52 scene animation: stop the active cue on `target` (0 = L,
+    /// 1 = R) at the block boundary.
+    pub fn stop_spatial_cue(&self, target: usize) {
+        self.enqueue(node_id::SPATIAL, NodeCmd::StopSpatialCue(target));
+    }
+
+    /// Phase-52 scene animation: stop every active cue at the block
+    /// boundary.
+    pub fn stop_all_spatial_cues(&self) {
+        self.enqueue(node_id::SPATIAL, NodeCmd::StopAllSpatialCues);
+    }
+
     /// Control-side read of the mirrored spatial enable flag.
     pub fn spatial_enabled(&self) -> bool {
         self.bus.user_spatial()
@@ -1465,6 +1561,21 @@ impl DspGraph {
                         self.bus.set_spatial_user_state(s.enabled());
                     }
                 }
+                // Phase 52: mirror cue triggers/stops post-apply so live
+                // cue state survives generation swaps.
+                if matches!(
+                    cmd,
+                    NodeCmd::TriggerSpatialCue(_)
+                        | NodeCmd::StopSpatialCue(_)
+                        | NodeCmd::StopAllSpatialCues
+                ) {
+                    if let GraphNode::Spatial(s) = &self.active.nodes[i] {
+                        for target in 0..crate::spatial::cue::MAX_ACTIVE_CUES {
+                            self.bus
+                                .set_active_cue_user_state(target, s.cue_active_index(target));
+                        }
+                    }
+                }
                 // Phase 49: mirror the plugin host enable + params
                 // post-apply so live runtime changes survive swaps.
                 if matches!(cmd, NodeCmd::SetPluginEnabled(_)) {
@@ -1597,6 +1708,12 @@ fn apply_node_cmd(node: &mut GraphNode, cmd: &NodeCmd) {
             smoothing_ms: *smoothing_ms,
             max_angular_rate_deg_s: *max_angular_rate_deg_s,
         }),
+        // ── Phase 52: scene animation cues ──
+        (GraphNode::Spatial(n), NodeCmd::TriggerSpatialCue(i)) => {
+            n.trigger_cue(*i);
+        }
+        (GraphNode::Spatial(n), NodeCmd::StopSpatialCue(t)) => n.stop_cue(*t),
+        (GraphNode::Spatial(n), NodeCmd::StopAllSpatialCues) => n.stop_all_cues(),
         (GraphNode::Mix(n), NodeCmd::SetMixCurve(c)) => n.curve = (*c).into(),
         (GraphNode::Mix(n), NodeCmd::SetMixEnabled(e)) => n.crossfade_enabled = *e,
         (GraphNode::Mix(n), NodeCmd::SetMixDurationFrames(f)) => {
@@ -2026,6 +2143,64 @@ impl DspGraph {
     pub fn set_spatial_listener_tracking(&self, smoothing_ms: f32, max_rate_deg_s: f32) {
         self.control_handle()
             .set_spatial_listener_tracking(smoothing_ms, max_rate_deg_s);
+    }
+
+    /// Phase-52 scene animation (v4.4.0): fire the named cue on the
+    /// spatial master at the block boundary — resolves the name against
+    /// the active bank and enqueues the index. Returns `false` when the
+    /// bank holds no cue of that name (the trigger then never reaches
+    /// the queue).
+    pub fn trigger_spatial_cue(&self, name: &str) -> bool {
+        let Some(index) = self.spatial().cue_index_of(name) else {
+            return false;
+        };
+        self.control_handle().trigger_spatial_cue(index);
+        true
+    }
+
+    /// Phase-52 scene animation: stop the active cue on `target` (see
+    /// [`GraphControlHandle::stop_spatial_cue`]).
+    pub fn stop_spatial_cue(&self, target: usize) {
+        self.control_handle().stop_spatial_cue(target);
+    }
+
+    /// Phase-52 scene animation: stop every active cue (see
+    /// [`GraphControlHandle::stop_all_spatial_cues`]).
+    pub fn stop_all_spatial_cues(&self) {
+        self.control_handle().stop_all_spatial_cues();
+    }
+
+    /// Phase-52 scene animation: replace the spatial master's cue bank
+    /// from the scene-file model (direct-`DspGraph` control path — the
+    /// mutation twin of the queued trigger surface). The bank is also
+    /// mirrored onto the sticky user state so a live swap survives a
+    /// generation rebuild.
+    pub fn set_cue_bank(&mut self, cues: &[config::SpatialCueConfig]) {
+        let arc = Arc::new(cues.to_vec());
+        self.bus.set_cue_bank_user_state(Some(arc.clone()));
+        self.spatial_mut().set_cues(&arc);
+    }
+
+    /// Phase-52 scene animation: fire cue `cue_index` (already resolved
+    /// by name) immediately (direct-`DspGraph` hosts/tests). Mirrors the
+    /// active-cue state onto the sticky user state.
+    pub fn trigger_spatial_cue_by_index(&mut self, cue_index: usize) {
+        let n = self.spatial_mut().trigger_cue(cue_index);
+        if n {
+            for target in 0..crate::spatial::cue::MAX_ACTIVE_CUES {
+                let idx = self.spatial().cue_active_index(target);
+                self.bus.set_active_cue_user_state(target, idx);
+            }
+        }
+    }
+
+    /// Phase-52 scene animation: stop every active cue immediately
+    /// (direct-`DspGraph` hosts/tests). Mirrors the cleared state.
+    pub fn stop_all_cue_bank(&mut self) {
+        self.spatial_mut().stop_all_cues();
+        for target in 0..crate::spatial::cue::MAX_ACTIVE_CUES {
+            self.bus.set_active_cue_user_state(target, None);
+        }
     }
 
     /// The spatial master's enable flag (mirrored at drain).

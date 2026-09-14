@@ -45,6 +45,12 @@ pub enum EventPayload {
     Trigger { tag: u64 },
     /// An opaque host tag for arbitrary hosts to interpret.
     Host(u64),
+    /// Phase-52 scene animation (v4.4.0): fire the spatial cue at bank
+    /// index `cue` at the exact master sample the event resolves to. The
+    /// index keys the spatial master's cue bank (the scene's `cues` list
+    /// order); the bank itself travels with the scene / aelog's
+    /// `SetSpatialCues` command, so the payload stays plain data.
+    SpatialCue { cue: u32 },
 }
 
 /// A resolved, schedule-ready event. `at` is the absolute master sample the
