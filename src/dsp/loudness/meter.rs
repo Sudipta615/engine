@@ -731,6 +731,12 @@ impl LoudnessMeter {
         }
     }
 
+    /// Running true-peak detector for each channel.
+    #[inline]
+    pub fn true_peak_meters(&self) -> &[TruePeakMeter; 8] {
+        &self.true_peak_meters
+    }
+
     /// Compute integrated LUFS using dual-threshold gating (EBU R128 / BS.1770-4 §3.2).
     ///
     /// ## Non-RT contract

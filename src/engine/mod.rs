@@ -12,7 +12,9 @@ pub mod handle;
 pub mod helpers;
 mod lanes;
 mod loudness_state;
+pub mod offline;
 mod output_setup;
+pub(crate) mod preload;
 mod recovery;
 mod spatial_persistence;
 mod stream;
@@ -22,6 +24,8 @@ mod tests;
 mod tick;
 mod track_loading;
 mod volume;
+
+pub(crate) use preload::{PreloadManager, PreparedTrack};
 
 pub(crate) use buffers::EngineScratch;
 #[allow(unused_imports)]
@@ -43,6 +47,7 @@ use crossbeam::channel::{Receiver, Sender};
 
 // Re-export public types from submodules so the public API is unchanged.
 use config::EngineConfig;
+pub use offline::{OfflineRenderResult, OfflineRenderer};
 pub use stream::{EngineError, PlaybackStream};
 
 #[cfg(feature = "audio-output")]
@@ -149,9 +154,40 @@ pub struct AudioEngine {
     pub(crate) endpoint_configs: Vec<config::EndpointConfig>,
     #[cfg(feature = "audio-output")]
     pub(crate) endpoint_dropped_frames: std::sync::atomic::AtomicU64,
+    /// Asynchronous next-track preloader and prepared-track coordinator.
+    pub(crate) preload: PreloadManager,
+    /// Bounded in-memory track/format metadata cache.
+    pub(crate) track_cache: crate::track_cache::TrackCache,
+    /// Professional audio metering subsystem.
+    pub(crate) meters: Arc<crate::dsp::meters::ProfessionalMeters>,
 }
 
 impl AudioEngine {
+    /// Professional unified audio metering subsystem.
+    pub fn meters(&self) -> Arc<crate::dsp::meters::ProfessionalMeters> {
+        self.meters.clone()
+    }
+
+    /// Read-only access to bounded track/metadata cache.
+    pub fn track_cache(&self) -> &crate::track_cache::TrackCache {
+        &self.track_cache
+    }
+
+    /// Mutable access to bounded track/metadata cache.
+    pub fn track_cache_mut(&mut self) -> &mut crate::track_cache::TrackCache {
+        &mut self.track_cache
+    }
+
+    /// Primary output sample rate in Hz.
+    pub fn output_sample_rate(&self) -> u32 {
+        self.output_sample_rate
+    }
+
+    /// Current track duration in seconds.
+    pub fn duration_secs(&self) -> f32 {
+        self.duration_secs
+    }
+
     /// Number of additional output endpoints (routing-matrix size).
     #[cfg(feature = "audio-output")]
     pub fn additional_endpoint_count(&self) -> usize {

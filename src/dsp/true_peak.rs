@@ -144,7 +144,7 @@ fn bessel_i0(x: f64) -> f64 {
 /// tracks running maxima for metering.
 #[derive(Clone)]
 pub struct TruePeakMeter {
-    buf: [f64; BRANCH_TAPS],
+    buf: [f64; BRANCH_TAPS * 2],
     pos: usize,
     max_true_peak_linear: f64,
     max_sample_peak_linear: f64,
@@ -159,7 +159,7 @@ impl Default for TruePeakMeter {
 impl TruePeakMeter {
     pub const fn new() -> Self {
         Self {
-            buf: [0.0; BRANCH_TAPS],
+            buf: [0.0; BRANCH_TAPS * 2],
             pos: 0,
             max_true_peak_linear: 0.0,
             max_sample_peak_linear: 0.0,
@@ -171,6 +171,8 @@ impl TruePeakMeter {
     #[inline]
     pub fn process_sample(&mut self, sample: f64) -> f64 {
         self.buf[self.pos] = sample;
+        self.buf[self.pos + BRANCH_TAPS] = sample;
+        let start = self.pos + 1;
         self.pos = (self.pos + 1) % BRANCH_TAPS;
 
         let proto = prototype_coefficients();
@@ -179,7 +181,7 @@ impl TruePeakMeter {
             let mut acc = 0.0_f64;
             for tap in 0..BRANCH_TAPS {
                 let coeff_idx = branch + tap * FIR_BRANCHES;
-                let buf_idx = (self.pos + BRANCH_TAPS - 1 - tap) % BRANCH_TAPS;
+                let buf_idx = start + BRANCH_TAPS - 1 - tap;
                 acc += self.buf[buf_idx] * proto[coeff_idx];
             }
             max_abs = max_abs.max(acc.abs());
@@ -193,7 +195,7 @@ impl TruePeakMeter {
 
     /// Reset the filter history and running maxima.
     pub fn reset(&mut self) {
-        self.buf = [0.0; BRANCH_TAPS];
+        self.buf = [0.0; BRANCH_TAPS * 2];
         self.pos = 0;
         self.max_true_peak_linear = 0.0;
         self.max_sample_peak_linear = 0.0;

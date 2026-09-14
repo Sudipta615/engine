@@ -6,7 +6,7 @@ use super::super::{AudioEngine, PlaybackStream};
 use crate::buffer::PlaybackState;
 
 impl AudioEngine {
-    pub(super) fn handle_play(&mut self) {
+    pub(crate) fn handle_play(&mut self) {
         if self.stream.is_some() && !self.stream_ended {
             if let Some(ref output) = self.audio_output {
                 output.resume();
@@ -16,12 +16,41 @@ impl AudioEngine {
         } else if self.stream_ended {
             log::warn!("Play command ignored: stream has ended. Reload the track to play again.");
         } else {
-            log::warn!("Play command ignored: no track loaded");
-            self.update_playback_state(PlaybackState::Stopped);
+            // No track loaded — try to auto-start from the playlist queue.
+            // Clone the source out to avoid holding a borrow on self.playlist
+            // while calling into load_source / handle_play.
+            let queued = if self.playlist.current_index().is_none() {
+                // Playlist hasn't started yet; begin at the first item.
+                self.playlist.play_index(0)
+            } else {
+                // Playlist has a current position (e.g. after a stop) — reload it.
+                self.playlist.current_source().cloned()
+            };
+
+            if let Some(src) = queued {
+                self.emit_playlist_changed();
+                match self.load_source(&src) {
+                    Ok(_) => {
+                        if let Some(ref output) = self.audio_output {
+                            output.resume();
+                        }
+                        self.update_playback_state(PlaybackState::Playing);
+                        self.maybe_preload_next();
+                        info!("Auto-started playback from queue: {}", src);
+                    }
+                    Err(e) => {
+                        warn!("Play: failed to load queued source '{}': {}", src, e);
+                        self.update_playback_state(PlaybackState::Stopped);
+                    }
+                }
+            } else {
+                log::warn!("Play command ignored: no track loaded and queue is empty");
+                self.update_playback_state(PlaybackState::Stopped);
+            }
         }
     }
 
-    pub(super) fn handle_pause(&mut self) {
+    pub(crate) fn handle_pause(&mut self) {
         if self.stream.is_some() {
             if let Some(ref output) = self.audio_output {
                 output.pause();
@@ -31,7 +60,7 @@ impl AudioEngine {
         }
     }
 
-    pub(super) fn handle_stop(&mut self) {
+    pub(crate) fn handle_stop(&mut self) {
         if let Some(ref output) = self.audio_output {
             output.reset_buffer();
         } else {

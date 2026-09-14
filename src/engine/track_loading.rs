@@ -585,12 +585,170 @@ impl AudioEngine {
     /// Falls back to [`Self::load_track`] only when DSD/DoP handling is
     /// involved (decoder mode selection and output-rate reconfiguration are
     /// too invasive for a state-preserving handoff).
+    /// Perform a seamless, gapless handoff using a preloaded [`PreparedTrack`].
+    /// Reuses the existing decoder, DSP pipeline, resampler (if matching sample rate),
+    /// and limiter lookahead delay buffer without any teardown or audio discontinuity.
+    pub(super) fn swap_to_prepared_track(
+        &mut self,
+        prepared: crate::engine::PreparedTrack,
+        #[cfg(feature = "resample")] resampler: &mut Option<GenericResampler>,
+        #[cfg(not(feature = "resample"))] _resampler: &mut Option<()>,
+    ) -> Result<DecodeInfo, EngineError> {
+        let decoder = prepared.decoder;
+        let info = decoder.info().clone();
+        let source = prepared.source;
+
+        if decoder.is_dsd() || self.dsd.dop_active || self.dsd.native_dsd_active {
+            return self.load_source(&source);
+        }
+
+        #[cfg(feature = "resample")]
+        let next_resampler = if info.sample_rate == self.clock.source_sample_rate {
+            resampler.take()
+        } else {
+            self.flush_resampler_tail(resampler);
+            let r = recovery::build_resampler(
+                self.config.resampler_quality,
+                info.sample_rate as f32,
+                self.output_sample_rate as f32,
+                self.speed,
+                self.config.precision_mode,
+            );
+            if r.is_none()
+                && (info.sample_rate != self.output_sample_rate || (self.speed - 1.0).abs() > 0.001)
+            {
+                error!(
+                    "Critical: Resampler required ({} Hz -> {} Hz) for gapless handoff \
+                     but could not be initialized!",
+                    info.sample_rate, self.output_sample_rate
+                );
+                self.write_playback_info(|pb| {
+                    pb.resampler_disabled = true;
+                    pb.resampler_failed_fatal = true;
+                    pb.set_engine_error(
+                        crate::diagnostics::DiagnosticKind::Resampler,
+                        "Resampler initialization failed during gapless handoff",
+                    );
+                });
+                return Err(EngineError::Resampler(format!(
+                    "Required resampler ({} Hz -> {} Hz) for gapless handoff could \
+                     not be initialized; refusing to play at the wrong rate/speed",
+                    info.sample_rate, self.output_sample_rate
+                )));
+            }
+            r
+        };
+        #[cfg(not(feature = "resample"))]
+        let next_resampler: Option<()> = _resampler.take();
+
+        self.dsd.dop_active = false;
+        self.dsd.dop_rate = 0;
+        self.graph.set_dop_bypass(false);
+
+        self.clock.reset_track(info.sample_rate);
+        self.analyzer.set_sample_rate(info.sample_rate);
+        self.duration_secs = info.duration_secs;
+        self.recovery.consecutive_decode_errors = 0;
+        self.scratch.crossfade_triggered = false;
+        self.scratch.pending_chunk = None;
+        self.scratch.pending_incoming_chunk = None;
+
+        self.stream = Some(PlaybackStream::Single {
+            decoder,
+            resampler: next_resampler,
+        });
+
+        if let AudioSource::File(ref path) = source {
+            let mut loudness_meta = prepared
+                .loudness
+                .unwrap_or_else(|| crate::decode::extract_loudness_metadata(path));
+            if loudness_meta.ebu_r128_loudness.is_none() {
+                if let Some(cached) = crate::decode::loudness_cache::lookup(path) {
+                    loudness_meta.ebu_r128_loudness = cached.ebu_r128_loudness;
+                    loudness_meta.ebu_r128_peak = cached.ebu_r128_peak_dbtp;
+                    info!("Loaded cached loudness metadata for {}", path.display());
+                }
+            }
+            self.loudness_scan.current_track_path = Some(path.to_path_buf());
+            self.loudness_scan.pending_loudness_metadata = Some(loudness_meta);
+            self.graph
+                .apply_loudness_metadata_outgoing(Some(loudness_meta));
+            self.start_loudness_scan();
+        } else {
+            self.loudness_scan.current_track_path = None;
+            self.loudness_scan.pending_loudness_metadata = prepared.loudness;
+            if let Some(meta) = prepared.loudness {
+                self.graph.apply_loudness_metadata_outgoing(Some(meta));
+            }
+        }
+
+        self.stream_ended = false;
+        self.current_source = Some(source.clone());
+        let current_source = self.current_source.clone();
+        let speed = self.speed;
+        let dop_active = self.dsd.dop_active;
+        let native_dsd_active = self.dsd.native_dsd_active;
+        let dsd_transport = self.dsd.dsd_transport_report.actual;
+        let dsd_transport_report = self.dsd.dsd_transport_report.clone();
+
+        self.playback_info.rcu(|old| {
+            Arc::new(PlaybackInfo {
+                duration_secs: info.duration_secs,
+                sample_rate: info.sample_rate,
+                current_source: current_source.clone(),
+                speed,
+                dop_active,
+                native_dsd_active,
+                dsd_transport,
+                dsd_transport_report: dsd_transport_report.clone(),
+                volume: old.volume,
+                state: if old.state == PlaybackState::Stopped {
+                    PlaybackState::Paused
+                } else {
+                    old.state
+                },
+                ..Default::default()
+            })
+        });
+
+        self.emit_event(EngineEvent::SourceOpened {
+            source: source.clone(),
+            sample_rate: info.sample_rate,
+            channels: info.channels,
+            duration_secs: info.duration_secs,
+        });
+        self.emit_event(EngineEvent::FormatChanged {
+            sample_rate: info.sample_rate,
+            channels: info.channels,
+        });
+
+        info!(
+            "Gapless handoff (prepared): {} Hz, {} ch, {:.1}s (resampler + DSP state preserved)",
+            info.sample_rate, info.channels, info.duration_secs
+        );
+        Ok(info)
+    }
+
     pub(super) fn swap_to_next_track(
         &mut self,
         path: &Path,
         #[cfg(feature = "resample")] resampler: &mut Option<GenericResampler>,
         #[cfg(not(feature = "resample"))] _resampler: &mut Option<()>,
     ) -> Result<DecodeInfo, EngineError> {
+        // If the preloader has already prepared this exact file track, use it directly!
+        let target_source = AudioSource::File(path.to_path_buf());
+        if self.preload.has_prepared_matching(&target_source) {
+            if let Some(prepared) = self.preload.take_prepared() {
+                return self.swap_to_prepared_track(
+                    prepared,
+                    #[cfg(feature = "resample")]
+                    resampler,
+                    #[cfg(not(feature = "resample"))]
+                    _resampler,
+                );
+            }
+        }
+
         // Reuse the decoder pre-opened by `prepare_next_track` if there is
         // one; it was opened for exactly this path.
         let decoder = match self.scratch.cached_incoming_decoder.take() {

@@ -66,6 +66,8 @@ pub enum EngineCommand {
     // ── Playlist / queue ─────────────────────────────────────────────────
     /// Append a source to the end of the playback queue.
     Enqueue(AudioSource),
+    /// Remove and discard the next track from the playback queue.
+    Dequeue,
     /// Remove the entry at `index` from the playback queue.
     RemoveFromPlaylist(usize),
     /// Clear the playback queue (does not stop the current track).

@@ -144,8 +144,22 @@ mod network {
 
     use super::AudioByteSource;
 
-    /// Default number of bytes fetched per HTTP Range request.
-    const DEFAULT_CHUNK_SIZE: usize = 65536;
+    /// Default number of bytes fetched per HTTP Range request (128 KiB).
+    const DEFAULT_CHUNK_SIZE: usize = 128 * 1024;
+
+    /// Minimum sliding buffer size kept in memory (256 KiB).
+    pub const MIN_STREAM_BUFFER_SIZE: usize = 256 * 1024;
+    /// Target buffer size when pre-buffering (4 MiB).
+    pub const TARGET_STREAM_BUFFER_SIZE: usize = 4 * 1024 * 1024;
+    /// Maximum sliding buffer size before older bytes are evicted (16 MiB).
+    pub const MAX_STREAM_BUFFER_SIZE: usize = 16 * 1024 * 1024;
+    /// Margins of bytes preserved behind read position during forward eviction (512 KiB).
+    pub const BACK_MARGIN: usize = 512 * 1024;
+
+    /// Max retry attempts for transient network failures.
+    const MAX_RETRIES: usize = 3;
+    /// Initial retry backoff delay.
+    const INITIAL_RETRY_BACKOFF_MS: u64 = 150;
 
     /// How long to wait for the initial HEAD / first GET probe.
     const PROBE_TIMEOUT_SECS: u64 = 15;
@@ -154,19 +168,11 @@ mod network {
 
     /// A seekable byte source backed by an HTTP(S) URL using Range requests.
     ///
-    /// The source maintains a grow-only buffer starting at byte 0. When the
-    /// decoder reads past the buffered prefix, a `Range: bytes=start-end` GET
-    /// fetches the missing window. When the server does not advertise
-    /// `Accept-Ranges: bytes`, the source falls back to a single GET that
-    /// streams the whole file into the buffer.
-    ///
-    /// # Memory
-    ///
-    /// The buffer grows to cover every byte that has ever been read, so
-    /// long-lived playback of very large files (multi-GB) will eventually hold
-    /// the whole file in RAM. For typical audio files (FLAC albums, WAV
-    /// stems) this is a few hundred MB at most — well within the realm of
-    /// a desktop audio engine.
+    /// The source maintains a bounded sliding-window buffer. When the
+    /// decoder reads past the buffered window, `Range: bytes=start-end` GET
+    /// requests fetch the missing segments. If the buffered content exceeds
+    /// `MAX_STREAM_BUFFER_SIZE`, bytes far behind the current read position
+    /// are evicted to maintain deterministic, low memory usage.
     pub struct NetworkByteSource {
         url: String,
         agent: ureq::Agent,
@@ -174,10 +180,10 @@ mod network {
         accepts_ranges: bool,
         extension: String,
         position: u64,
+        /// Absolute byte offset in the stream corresponding to `buffer[0]`.
+        buffer_offset: u64,
         buffer: Vec<u8>,
-        /// When `true`, every byte has already been downloaded (either the
-        /// server returned Content-Length matching the buffer, or a non-Range
-        /// GET completed). Further reads beyond the buffer are impossible.
+        /// When `true`, every byte has already been downloaded.
         fully_downloaded: bool,
     }
 
@@ -186,6 +192,7 @@ mod network {
             f.debug_struct("NetworkByteSource")
                 .field("url", &self.url)
                 .field("content_length", &self.content_length)
+                .field("buffer_offset", &self.buffer_offset)
                 .field("buffered", &self.buffer.len())
                 .field("position", &self.position)
                 .field("accepts_ranges", &self.accepts_ranges)
@@ -198,8 +205,7 @@ mod network {
         ///
         /// Sends a HEAD request to discover the content length and whether
         /// the server supports byte-range requests. Falls back to a
-        /// `Range: bytes=0-0` probe when HEAD is rejected (some servers
-        /// respond to GET but not HEAD).
+        /// `Range: bytes=0-0` probe when HEAD is rejected.
         pub fn open(url: &str) -> io::Result<Self> {
             let agent = ureq::AgentBuilder::new()
                 .timeout_read(Duration::from_secs(PROBE_TIMEOUT_SECS))
@@ -210,7 +216,6 @@ mod network {
                 .rsplit('.')
                 .next()
                 .and_then(|ext| {
-                    // Strip query params / fragments
                     let clean = ext.split('?').next().unwrap_or(ext);
                     let clean = clean.split('#').next().unwrap_or(clean);
                     if clean.len() <= 10 && clean.is_ascii() {
@@ -221,7 +226,6 @@ mod network {
                 })
                 .unwrap_or_default();
 
-            // Probe: try HEAD, fall back to GET Range:0-0
             let (content_length, accepts_ranges) = Self::probe(&agent, url)?;
 
             Ok(Self {
@@ -231,6 +235,7 @@ mod network {
                 accepts_ranges,
                 extension,
                 position: 0,
+                buffer_offset: 0,
                 buffer: Vec::new(),
                 fully_downloaded: false,
             })
@@ -251,11 +256,20 @@ mod network {
             self.accepts_ranges
         }
 
+        /// Absolute stream offset corresponding to the start of the memory buffer.
+        pub fn buffer_offset(&self) -> u64 {
+            self.buffer_offset
+        }
+
+        /// Number of bytes currently held in the sliding buffer.
+        pub fn buffered_len(&self) -> usize {
+            self.buffer.len()
+        }
+
         // ── internals ──────────────────────────────────────────────────
 
         /// Probe the server for content-length and range support.
         fn probe(agent: &ureq::Agent, url: &str) -> io::Result<(Option<u64>, bool)> {
-            // Try HEAD first.
             match agent.head(url).call() {
                 Ok(resp) => {
                     let len = resp
@@ -267,8 +281,7 @@ mod network {
                     return Ok((len, ranges));
                 }
                 Err(ureq::Error::Status(405, _)) | Err(ureq::Error::Status(501, _)) => {
-                    // Method Not Allowed / Not Implemented — fall through to
-                    // GET probe.
+                    // Method Not Allowed / Not Implemented — fall through
                 }
                 Err(e) => {
                     return Err(io::Error::new(
@@ -278,7 +291,6 @@ mod network {
                 }
             }
 
-            // Fall back to GET with Range:0-0.
             match agent
                 .get(url)
                 .set("Range", "bytes=0-0")
@@ -289,7 +301,6 @@ mod network {
                     let ranges = resp
                         .header("Accept-Ranges")
                         .is_some_and(|v| v.eq_ignore_ascii_case("bytes"));
-                    // Content-Range: bytes 0-0/12345
                     let len = resp
                         .header("Content-Range")
                         .and_then(|v| v.rsplit('/').next())
@@ -303,12 +314,17 @@ mod network {
             }
         }
 
-        /// Fetch bytes starting at `start` (inclusive) up to the lesser of
-        /// `start + DEFAULT_CHUNK_SIZE - 1` and `content_length - 1`.
-        /// Appends the response body to `self.buffer`.
+        /// Fetch bytes starting at `start` (inclusive) up to `start + DEFAULT_CHUNK_SIZE - 1`
+        /// with retry and exponential backoff.
         fn fetch_chunk(&mut self, start: u64) -> io::Result<()> {
             let end = match self.content_length {
-                Some(len) if len > 0 => (start + DEFAULT_CHUNK_SIZE as u64 - 1).min(len - 1),
+                Some(len) if len > 0 => {
+                    if start >= len {
+                        self.fully_downloaded = true;
+                        return Ok(());
+                    }
+                    (start + DEFAULT_CHUNK_SIZE as u64 - 1).min(len - 1)
+                }
                 _ => start + DEFAULT_CHUNK_SIZE as u64 - 1,
             };
 
@@ -317,64 +333,106 @@ mod network {
             }
 
             let range_value = format!("bytes={}-{}", start, end);
-            let resp = self
-                .agent
-                .get(&self.url)
-                .set("Range", &range_value)
-                .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
-                .call()
-                .map_err(|e| {
-                    io::Error::new(
-                        ErrorKind::UnexpectedEof,
-                        format!("Range GET {} failed: {}", range_value, e),
-                    )
-                })?;
+            let mut backoff = Duration::from_millis(INITIAL_RETRY_BACKOFF_MS);
+            let mut last_error = None;
 
-            let status = resp.status();
-            let mut body_bytes = Vec::new();
-            resp.into_reader()
-                .read_to_end(&mut body_bytes)
-                .map_err(|e| {
-                    io::Error::new(
-                        ErrorKind::UnexpectedEof,
-                        format!("reading response body: {}", e),
-                    )
-                })?;
-
-            if status == 206 {
-                // Partial Content — expected for Range requests.
-                if start as usize > self.buffer.len() {
-                    // Gap in the buffer — the server returned bytes we haven't
-                    // requested yet. Fill the gap with zeros (shouldn't happen
-                    // with sequential reads, but be safe).
-                    self.buffer.resize(start as usize, 0);
-                }
-                self.buffer.extend_from_slice(&body_bytes);
-
-                // If we fetched up to the last byte, mark fully downloaded.
-                if let Some(content_len) = self.content_length {
-                    if self.buffer.len() as u64 >= content_len {
+            for attempt in 0..=MAX_RETRIES {
+                let resp = match self
+                    .agent
+                    .get(&self.url)
+                    .set("Range", &range_value)
+                    .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
+                    .call()
+                {
+                    Ok(r) => r,
+                    Err(ureq::Error::Status(416, _)) => {
                         self.fully_downloaded = true;
+                        return Ok(());
+                    }
+                    Err(ureq::Error::Status(status, _)) if (400..500).contains(&status) => {
+                        return Err(io::Error::new(
+                            ErrorKind::NotFound,
+                            format!(
+                                "Range GET {} returned client error HTTP {}",
+                                range_value, status
+                            ),
+                        ));
+                    }
+                    Err(e) => {
+                        last_error = Some(format!("Range GET {} failed: {}", range_value, e));
+                        if attempt < MAX_RETRIES {
+                            std::thread::sleep(backoff);
+                            backoff *= 2;
+                            continue;
+                        } else {
+                            return Err(io::Error::new(
+                                ErrorKind::ConnectionReset,
+                                last_error.unwrap_or_default(),
+                            ));
+                        }
+                    }
+                };
+
+                let status = resp.status();
+                let mut body_bytes = Vec::new();
+                if let Err(e) = resp.into_reader().read_to_end(&mut body_bytes) {
+                    last_error = Some(format!("reading response body for {}: {}", range_value, e));
+                    if attempt < MAX_RETRIES {
+                        std::thread::sleep(backoff);
+                        backoff *= 2;
+                        continue;
+                    } else {
+                        return Err(io::Error::new(
+                            ErrorKind::UnexpectedEof,
+                            last_error.unwrap_or_default(),
+                        ));
                     }
                 }
-            } else if status == 200 {
-                // Server ignored the Range header — full file returned.
-                self.buffer = body_bytes;
-                self.content_length = Some(self.buffer.len() as u64);
-                self.fully_downloaded = true;
-                self.accepts_ranges = false;
-            } else {
-                return Err(io::Error::other(format!(
-                    "unexpected HTTP status {} for Range request",
-                    status
-                )));
+
+                if status == 206 {
+                    if body_bytes.is_empty() {
+                        self.fully_downloaded = true;
+                        return Ok(());
+                    }
+
+                    // Contiguous append to sliding buffer
+                    let expected_offset = self.buffer_offset + self.buffer.len() as u64;
+                    if start == expected_offset {
+                        self.buffer.extend_from_slice(&body_bytes);
+                    } else if start > expected_offset {
+                        let gap = (start - expected_offset) as usize;
+                        self.buffer.resize(self.buffer.len() + gap, 0);
+                        self.buffer.extend_from_slice(&body_bytes);
+                    }
+
+                    if let Some(content_len) = self.content_length {
+                        if self.buffer_offset + self.buffer.len() as u64 >= content_len {
+                            self.fully_downloaded = true;
+                        }
+                    }
+                    return Ok(());
+                } else if status == 200 {
+                    self.buffer = body_bytes;
+                    self.buffer_offset = 0;
+                    self.content_length = Some(self.buffer.len() as u64);
+                    self.fully_downloaded = true;
+                    self.accepts_ranges = false;
+                    return Ok(());
+                } else {
+                    return Err(io::Error::other(format!(
+                        "unexpected HTTP status {} for Range request",
+                        status
+                    )));
+                }
             }
 
-            Ok(())
+            Err(io::Error::new(
+                ErrorKind::ConnectionReset,
+                last_error.unwrap_or_else(|| "Range fetch failed after retries".into()),
+            ))
         }
 
-        /// Stream the remainder of the file from the current position via a
-        /// non-Range GET. Used when the server doesn't support Range requests.
+        /// Stream remainder of file via non-Range GET when byte ranges are unsupported.
         fn stream_remainder_from(&mut self, start: u64) -> io::Result<usize> {
             let resp = self
                 .agent
@@ -394,11 +452,11 @@ mod network {
             })?;
 
             self.buffer = body;
+            self.buffer_offset = 0;
             self.content_length = Some(self.buffer.len() as u64);
             self.fully_downloaded = true;
             self.accepts_ranges = false;
 
-            // Return bytes readable from `start`.
             let available = self.buffer.len().saturating_sub(start as usize);
             Ok(available)
         }
@@ -420,18 +478,31 @@ mod network {
                 }
             }
 
+            // If position is outside current sliding window and we support ranges,
+            // re-center window to avoid downloading large intervening spans.
+            if self.accepts_ranges {
+                let buf_end = self.buffer_offset + self.buffer.len() as u64;
+                if self.position < self.buffer_offset
+                    || self.position > buf_end + (TARGET_STREAM_BUFFER_SIZE as u64)
+                {
+                    self.buffer.clear();
+                    self.buffer_offset = self.position;
+                    self.fully_downloaded = false;
+                }
+            }
+
             // Make sure the buffer covers the requested range.
-            while (self.buffer.len() as u64) < needed_end && !self.fully_downloaded {
+            while (self.buffer_offset + self.buffer.len() as u64) < needed_end
+                && !self.fully_downloaded
+            {
                 if self.accepts_ranges {
-                    // Fetch from the next unbuffered byte forward.
-                    let fetch_start = (self.buffer.len() as u64).max(self.position);
+                    let fetch_start = self.buffer_offset + self.buffer.len() as u64;
                     if fetch_start < needed_end {
                         self.fetch_chunk(fetch_start)?;
                     } else {
                         break;
                     }
                 } else {
-                    // No Range support — download the whole file.
                     let available = self.stream_remainder_from(self.position)?;
                     if available == 0 {
                         self.fully_downloaded = true;
@@ -441,16 +512,33 @@ mod network {
                 }
             }
 
+            // Evict older buffered bytes behind read position if buffer exceeds MAX_STREAM_BUFFER_SIZE
+            if self.accepts_ranges
+                && self.buffer.len() > MAX_STREAM_BUFFER_SIZE
+                && self.position > self.buffer_offset + BACK_MARGIN as u64
+            {
+                let eligible = (self.position - BACK_MARGIN as u64 - self.buffer_offset) as usize;
+                let excess = self.buffer.len().saturating_sub(TARGET_STREAM_BUFFER_SIZE);
+                let drop_count = eligible.min(excess);
+                if drop_count > 0 {
+                    self.buffer.drain(..drop_count);
+                    self.buffer_offset += drop_count as u64;
+                }
+            }
+
             // Copy from buffer to output.
-            let pos = self.position as usize;
-            let available = self.buffer.len().saturating_sub(pos);
+            if self.position < self.buffer_offset {
+                return Ok(0);
+            }
+            let rel_pos = (self.position - self.buffer_offset) as usize;
+            let available = self.buffer.len().saturating_sub(rel_pos);
             let to_copy = available.min(buf.len());
 
             if to_copy == 0 {
                 return Ok(0);
             }
 
-            buf[..to_copy].copy_from_slice(&self.buffer[pos..pos + to_copy]);
+            buf[..to_copy].copy_from_slice(&self.buffer[rel_pos..rel_pos + to_copy]);
             self.position += to_copy as u64;
             Ok(to_copy)
         }
@@ -479,7 +567,15 @@ mod network {
                 ));
             }
 
-            self.position = new_pos as u64;
+            let new_pos_u64 = new_pos as u64;
+            if !self.accepts_ranges && new_pos_u64 < self.buffer_offset {
+                return Err(io::Error::new(
+                    ErrorKind::Unsupported,
+                    "cannot seek backwards past sliding window without byte-range support",
+                ));
+            }
+
+            self.position = new_pos_u64;
             Ok(self.position)
         }
     }
@@ -501,10 +597,35 @@ mod network {
             clean.to_string()
         }
     }
+
+    impl super::StreamingByteSource for NetworkByteSource {
+        fn poll_fill(&mut self) -> io::Result<super::FillStatus> {
+            if self.fully_downloaded {
+                return Ok(super::FillStatus::Ended);
+            }
+            if !self.accepts_ranges {
+                return Ok(super::FillStatus::Ready);
+            }
+            if self.buffer.len() < TARGET_STREAM_BUFFER_SIZE {
+                let next_pos = self.buffer_offset + self.buffer.len() as u64;
+                self.fetch_chunk(next_pos)?;
+                Ok(super::FillStatus::Ready)
+            } else {
+                Ok(super::FillStatus::Ready)
+            }
+        }
+
+        fn is_complete(&self) -> bool {
+            self.fully_downloaded
+        }
+    }
 }
 
 #[cfg(feature = "network-streaming")]
-pub use network::NetworkByteSource;
+pub use network::{
+    NetworkByteSource, BACK_MARGIN, MAX_STREAM_BUFFER_SIZE, MIN_STREAM_BUFFER_SIZE,
+    TARGET_STREAM_BUFFER_SIZE,
+};
 
 #[cfg(all(test, feature = "network-streaming"))]
 mod tests {

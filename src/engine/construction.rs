@@ -130,6 +130,12 @@ impl AudioEngine {
             endpoint_configs: configured_endpoints,
             #[cfg(feature = "audio-output")]
             endpoint_dropped_frames: std::sync::atomic::AtomicU64::new(0),
+            preload: super::PreloadManager::new(),
+            track_cache: crate::track_cache::TrackCache::default(),
+            meters: Arc::new(crate::dsp::meters::ProfessionalMeters::new(
+                output_sample_rate,
+                2,
+            )),
         })
     }
 
@@ -147,24 +153,34 @@ impl AudioEngine {
         }
         #[cfg(not(test))]
         {
-            use cpal::traits::{DeviceTrait, HostTrait};
-            let host = cpal::default_host();
-            let device = host.default_output_device()?;
-            let default_config = device.default_output_config().ok()?;
-            Some(default_config.sample_rate())
+            #[cfg(feature = "audio-output")]
+            {
+                use cpal::traits::{DeviceTrait, HostTrait};
+                let host = cpal::default_host();
+                let device = host.default_output_device()?;
+                let default_config = device.default_output_config().ok()?;
+                Some(default_config.sample_rate())
+            }
+            #[cfg(not(feature = "audio-output"))]
+            {
+                None
+            }
         }
     }
 
-    /// Push interleaved f32 samples to the active [`SampleSink`].
+    /// Deliver one processed interleaved block to the sample sink.
     ///
     /// Returns the number of **frames** accepted. The engine retries
     /// unwritten tail frames on the next tick. This is the only write
     /// path from the decode loop to the output — every stereo interleaved
     /// and multichannel interleaved push routes through here. It also feeds
-    /// the real-time analyzer.
+    /// the real-time analyzer and professional meters.
     #[inline]
     pub(crate) fn push_to_sink(&self, samples: &[f32], channels: usize) -> usize {
         self.analyzer.update(samples, channels);
+        if self.meters.is_enabled() {
+            self.meters.process_interleaved(samples, channels);
+        }
         self.sample_sink.push_interleaved(samples, channels)
     }
 
@@ -254,6 +270,7 @@ impl AudioEngine {
             #[cfg(feature = "audio-output")]
             self.output_event_rx.clone(),
             Arc::clone(&self.analyzer),
+            Arc::clone(&self.meters),
         )
     }
 }

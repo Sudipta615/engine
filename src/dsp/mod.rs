@@ -18,6 +18,7 @@ pub mod graph2;
 pub mod graphic_eq;
 pub mod limiter;
 pub mod loudness;
+pub mod meters;
 pub mod multiband_compressor;
 pub mod pipeline;
 #[cfg(feature = "resample")]
@@ -59,4 +60,5 @@ pub use timestretch::{TimeStretchConfig, TimeStretcher};
 pub use true_peak::TruePeakMeter;
 
 pub use crossfeed::Crossfeed;
+pub use meters::{ProfessionalMeterSnapshot, ProfessionalMeters};
 pub use multiband_compressor::MultibandCompressor;

@@ -114,6 +114,12 @@ impl Playlist {
         self.shuffle
     }
 
+    /// Whether shuffle is active (alias for [`Self::shuffle`]).
+    #[inline]
+    pub fn is_shuffle_enabled(&self) -> bool {
+        self.shuffle
+    }
+
     // ── mutation (called from engine command handlers) ───────────────────────
 
     /// Add a source to the end of the queue.
@@ -169,6 +175,21 @@ impl Playlist {
         }
 
         Some(removed)
+    }
+
+    /// Dequeue the first entry from the front of the queue (index 0).
+    pub fn dequeue(&mut self) -> Option<AudioSource> {
+        self.remove(0)
+    }
+
+    /// Peek at the entry at `index` without mutating state.
+    pub fn peek_index(&self, index: usize) -> Option<&AudioSource> {
+        self.items.get(index)
+    }
+
+    /// Access all queued items as a slice.
+    pub fn queue_slice(&self) -> &[AudioSource] {
+        &self.items
     }
 
     /// Remove all entries and reset state.

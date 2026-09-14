@@ -20,17 +20,21 @@ pub mod profile;
 pub mod sink;
 pub mod source;
 pub mod spatial;
+pub mod track_cache;
 
 // Re-exports for convenience
 pub use commands::EngineCommand;
 pub use diagnostics::{BitPerfectCause, Diagnostic, DiagnosticKind};
+pub use dsp::{ProfessionalMeterSnapshot, ProfessionalMeters};
 pub use events::EngineEvent;
 pub use playback_info::{PlaybackInfo, PlaybackState, SpatialTelemetry};
 pub use playlist::{Playlist, RepeatMode};
 pub use source::AudioSource;
+pub use track_cache::{CachedTrackInfo, TrackCache};
 
 #[cfg(feature = "audio-output")]
 pub use engine::{AudioEngine, EngineError, EngineHandle};
+pub use engine::{OfflineRenderResult, OfflineRenderer};
 
 #[cfg(feature = "network-streaming")]
 pub use audio_io::NetworkByteSource;
@@ -43,6 +47,7 @@ pub use sink::{DacSink, NoopSink, SampleSink, VecSink};
 pub mod prelude {
     #[cfg(feature = "audio-output")]
     pub use crate::engine::{AudioEngine, EngineError, EngineHandle, PlaybackStream};
+    pub use crate::engine::{OfflineRenderResult, OfflineRenderer};
     pub use crate::{
         buffer::{
             validate_audio_block, AudioBlockError, AudioChunk, AudioFrame, BufferError,

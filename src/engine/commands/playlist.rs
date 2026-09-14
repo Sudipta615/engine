@@ -20,6 +20,21 @@ impl AudioEngine {
             source,
             self.playlist.len()
         );
+        self.maybe_preload_next();
+    }
+
+    /// Remove and discard the next track from the playback queue.
+    pub(super) fn handle_dequeue(&mut self) {
+        if let Some(removed) = self.playlist.dequeue() {
+            info!(
+                "Dequeued '{}' — queue length {}",
+                removed,
+                self.playlist.len()
+            );
+            self.emit_playlist_changed();
+            self.cancel_stale_preload();
+            self.maybe_preload_next();
+        }
     }
 
     /// Remove the entry at `index` from the queue.  If this was the current
@@ -46,6 +61,8 @@ impl AudioEngine {
             warn!("RemoveFromPlaylist({}): index out of bounds", index);
         }
         self.emit_playlist_changed();
+        self.cancel_stale_preload();
+        self.maybe_preload_next();
     }
 
     /// Clear the entire queue.  The currently-playing track (if any) keeps
@@ -53,6 +70,7 @@ impl AudioEngine {
     pub(super) fn handle_clear_playlist(&mut self) {
         self.playlist.clear();
         self.emit_playlist_changed();
+        self.preload.cancel();
         info!("Playlist cleared");
     }
 
@@ -64,6 +82,7 @@ impl AudioEngine {
             return;
         };
         self.emit_playlist_changed();
+        self.cancel_stale_preload();
 
         // Manually load the selected source — replacing whatever was playing.
         match self.load_source(&src) {
@@ -83,6 +102,7 @@ impl AudioEngine {
         }
 
         self.handle_play();
+        self.maybe_preload_next();
     }
 
     /// Skip to the next playlist entry.  Uses the gapless/crossfade transition
@@ -92,12 +112,14 @@ impl AudioEngine {
         let Some(src) = self.playlist.advance() else {
             // Queue exhausted — stop playback.
             self.emit_playlist_changed();
+            self.cancel_stale_preload();
             self.handle_stop();
             info!("Queue exhausted; stopping");
             return;
         };
         self.emit_playlist_changed();
         self.play_source_after_track_end(&src);
+        self.maybe_preload_next();
     }
 
     /// Skip back to the previous playlist entry.
@@ -106,23 +128,66 @@ impl AudioEngine {
             return;
         };
         self.emit_playlist_changed();
+        self.cancel_stale_preload();
         self.play_source_after_track_end(&src);
+        self.maybe_preload_next();
     }
 
     /// Set the repeat mode and publish the change.
     pub(super) fn handle_set_repeat_mode(&mut self, mode: RepeatMode) {
         self.playlist.set_repeat(mode);
         info!("Repeat mode set to {:?}", mode);
-        // No event needed — the mode is visible through the handle inspection.
+        self.emit_playlist_changed();
+        self.cancel_stale_preload();
+        self.maybe_preload_next();
     }
 
     /// Enable or disable shuffle.
     pub(super) fn handle_set_shuffle(&mut self, enabled: bool) {
         self.playlist.set_shuffle(enabled);
         info!("Shuffle {}", if enabled { "on" } else { "off" });
+        self.emit_playlist_changed();
+        self.cancel_stale_preload();
+        self.maybe_preload_next();
     }
 
     // ── helpers ────────────────────────────────────────────────────────────
+
+    /// Check if the next track in the queue should be preloaded, and trigger
+    /// background preloading if needed.
+    pub(crate) fn maybe_preload_next(&mut self) {
+        if self.config.transition_mode == config::TransitionMode::Stop {
+            return;
+        }
+        let next_source = match self.playlist.peek_next() {
+            Some(s) => s,
+            None => return,
+        };
+
+        if !self.preload.has_prepared_matching(next_source) && !self.preload.is_in_flight() {
+            self.preload
+                .request_preload(next_source.clone(), &mut self.track_cache);
+        }
+    }
+
+    /// Cancel preloading if the queued next track has changed.
+    pub(crate) fn cancel_stale_preload(&mut self) {
+        let next_source = self.playlist.peek_next();
+        match next_source {
+            Some(s) => {
+                if !self.preload.has_prepared_matching(s)
+                    && self.preload.in_flight_source() != Some(s)
+                {
+                    self.preload.cancel();
+                }
+            }
+            None => {
+                if self.preload.has_prepared() || self.preload.is_in_flight() {
+                    self.preload.cancel();
+                }
+            }
+        }
+    }
 
     /// Called at EOS (or manual Next/Previous) to load a source into the
     /// engine.  Prefers the gapless/crossfade machinery when the current
@@ -131,6 +196,41 @@ impl AudioEngine {
     /// falls back to a fresh `load_source` for memory/URI sources or when
     /// the handoff fails.
     fn play_source_after_track_end(&mut self, src: &AudioSource) {
+        // First check if the preloader has already prepared this exact source
+        if self.stream.is_some() && self.preload.has_prepared_matching(src) {
+            if let Some(prepared) = self.preload.take_prepared() {
+                let crossfade_transition = self.config.crossfade.enabled
+                    || matches!(
+                        self.config.transition_mode,
+                        config::TransitionMode::Crossfade | config::TransitionMode::Fade
+                    );
+                if !crossfade_transition {
+                    #[cfg(feature = "resample")]
+                    let mut old_resampler = match self.stream.as_mut() {
+                        Some(crate::engine::PlaybackStream::Single { resampler, .. }) => {
+                            resampler.take()
+                        }
+                        _ => None,
+                    };
+                    #[cfg(not(feature = "resample"))]
+                    let mut old_resampler = None;
+
+                    if self
+                        .swap_to_prepared_track(
+                            prepared,
+                            #[cfg(feature = "resample")]
+                            &mut old_resampler,
+                            #[cfg(not(feature = "resample"))]
+                            &mut old_resampler,
+                        )
+                        .is_ok()
+                    {
+                        return;
+                    }
+                }
+            }
+        }
+
         if matches!(src, AudioSource::File(_)) && self.stream.is_some() {
             if let AudioSource::File(ref path) = src {
                 // `prepare_next_track` pre-opens the decoder and prepares
@@ -203,10 +303,9 @@ impl AudioEngine {
         let _ = old_resampler;
 
         #[cfg(feature = "resample")]
-        match self.swap_to_next_track(&next_path, &mut old_resampler) {
-            Ok(_) => {}
-            Err(e) => {
-                warn!("Gapless handoff failed: {}; falling back to fresh load", e);
+        {
+            if let Err(e) = self.swap_to_next_track(&next_path, &mut old_resampler) {
+                warn!("swap_to_next_track_now failed: {}", e);
                 self.handle_stop();
             }
         }
@@ -223,6 +322,9 @@ impl AudioEngine {
         self.write_playback_info(|pb| {
             pb.playlist_index = self.playlist.current_index();
             pb.playlist_length = self.playlist.len();
+            pb.repeat_mode = self.playlist.repeat();
+            pb.shuffle = self.playlist.is_shuffle_enabled();
+            pb.prepared_source = self.preload.prepared_source();
         });
         self.emit_event(EngineEvent::PlaylistChanged {
             current_index: self.playlist.current_index(),

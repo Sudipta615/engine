@@ -2,6 +2,37 @@
 
 All notable changes to this project are documented in this file.
 
+## [4.6.0] — 2026-09-15
+
+### Added
+
+- **Track Preloader & Gapless Queue Handoff**:
+  - `engine::preload`: background decoder & loudness preloading for upcoming playlist queue tracks (`PreloadManager`).
+  - Seamless, gapless track handoff when transitioning across queued tracks (`swap_to_prepared_track`), eliminating decode startup latency and preserving sample continuity.
+  - Integration fidelity suite `tests/gapless_queue.rs`.
+- **Bounded LRU Track Cache (`engine::track_cache`)**:
+  - `TrackCache` and `CachedTrackInfo` providing bounded LRU metadata caching with automatic cache invalidation upon file size or modification time (`mtime`) mutation.
+  - Comprehensive hit/miss metrics and eviction testing in `tests/track_cache.rs`.
+- **Unified Professional Audio Metering (`dsp::meters`)**:
+  - `ProfessionalMeters` calculating real-time sample peaks, 4x-oversampled true-peak (dBTP), windowed RMS (dBFS), dynamic range / crest factor, DC offset, and clipping counter.
+  - Comprehensive metering fidelity suite `tests/fidelity/meters.rs`.
+- **Deterministic Offline Audio Rendering (`engine::offline`)**:
+  - `OfflineRenderer` and `OfflineRenderResult` for headless, non-realtime batch rendering and offline testing of audio sources through the DSP pipeline.
+  - Integration suite in `tests/offline_render.rs`.
+- **Streaming Buffer Resiliency & Dynamic Eviction**:
+  - Dynamic stream buffer management in `src/audio_io.rs` with automatic eviction of historical buffered bytes past the read window (`BACK_MARGIN`), preventing unbounded memory growth during HTTP Range streaming.
+- **Low-Memory Build Profile & Bundled LLD Linker Optimization**:
+  - `.cargo/config.toml` configuring `jobs = 2`, `lld` linking via Rust's bundled toolchain (`-C link-arg=-fuse-ld=lld`), and `debug = 1` for dev and test profiles, cutting linker RAM usage by >70% and preventing system thrashing/crashes on memory-constrained systems.
+
+### Fixed
+
+- **Plugin ABI serde compatibility**:
+  - Implemented custom non-allocating `Serialize` and `Deserialize` for `PluginParams` and derived serde on `ParamValue` to satisfy trait bounds on fixed-size arrays (`[ParamValue; 64]`) when `serde-types` feature is enabled.
+- **FFI spatial metrics lifetime**:
+  - Fixed temporary value lifetime in `engine_get_spatial_cost_metrics` in `src/ffi.rs`.
+- **Clippy lints & warnings**:
+  - Addressed all lints across workspace targets, including needless borrows in playlist management, redundant option closures, range checks, and collapsible conditionals in `src/audio_io.rs`.
+
 ## [4.5.1] — 2026-09-14
 
 ### Changed

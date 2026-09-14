@@ -85,6 +85,9 @@ pub struct EngineConfig {
     /// the master insert seam). Disabled by default = bit-exact.
     #[serde(default)]
     pub plugins: PluginHostConfig,
+    /// Configurable quality and latency tuning profile.
+    #[serde(default)]
+    pub quality_profile: crate::QualityLatencyProfile,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -533,6 +536,7 @@ impl Default for EngineConfig {
             spatial_autosave_path: None,
             endpoints: Vec::new(),
             plugins: PluginHostConfig::default(),
+            quality_profile: crate::QualityLatencyProfile::default(),
         }
     }
 }

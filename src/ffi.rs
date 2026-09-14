@@ -984,7 +984,8 @@ pub extern "C" fn engine_spatial_render_cost(
         Some(h) => h,
         None => return EngineStatus::InvalidHandle as i32,
     };
-    let t = h.handle.playback_info().spatial.as_ref();
+    let info = h.handle.playback_info();
+    let t = info.spatial.as_ref();
     unsafe {
         if let Some(p) = cost_units.as_mut() {
             *p = t.map(|t| t.render_cost_units).unwrap_or(0.0);

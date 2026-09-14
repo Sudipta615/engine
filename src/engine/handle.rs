@@ -28,6 +28,8 @@ pub struct EngineHandle {
     output_event_rx: Receiver<OutputEvent>,
     /// Shared real-time analyzer (levels + spectrum).
     analyzer: Arc<crate::dsp::AudioAnalyzer>,
+    /// Shared professional metering subsystem.
+    meters: Arc<crate::dsp::meters::ProfessionalMeters>,
 }
 
 impl std::fmt::Debug for EngineHandle {
@@ -48,6 +50,7 @@ impl EngineHandle {
         event_rx: Receiver<EngineEvent>,
         #[cfg(feature = "audio-output")] output_event_rx: Receiver<OutputEvent>,
         analyzer: Arc<crate::dsp::AudioAnalyzer>,
+        meters: Arc<crate::dsp::meters::ProfessionalMeters>,
     ) -> Self {
         Self {
             cmd_tx,
@@ -56,6 +59,7 @@ impl EngineHandle {
             #[cfg(feature = "audio-output")]
             output_event_rx,
             analyzer,
+            meters,
         }
     }
 
@@ -144,6 +148,11 @@ impl EngineHandle {
         let _ = self.send_command(EngineCommand::Enqueue(AudioSource::File(path.into())));
     }
 
+    /// Remove and discard the next track from the playback queue.
+    pub fn dequeue(&self) {
+        let _ = self.send_command(EngineCommand::Dequeue);
+    }
+
     /// Remove the queue entry at `index`. Removing the current entry stops
     /// playback.
     pub fn remove_from_playlist(&self, index: usize) {
@@ -178,6 +187,41 @@ impl EngineHandle {
     /// Enable or disable shuffle.
     pub fn set_shuffle(&self, enabled: bool) {
         let _ = self.send_command(EngineCommand::SetShuffle(enabled));
+    }
+
+    /// The active playlist repeat mode.
+    pub fn repeat_mode(&self) -> crate::playlist::RepeatMode {
+        self.playback_info.load().repeat_mode
+    }
+
+    /// Whether shuffle playback ordering is currently active.
+    pub fn is_shuffle_enabled(&self) -> bool {
+        self.playback_info.load().shuffle
+    }
+
+    /// The currently preloaded next source awaiting gapless transition, if any.
+    pub fn prepared_source(&self) -> Option<AudioSource> {
+        self.playback_info.load().prepared_source.clone()
+    }
+
+    /// Shared professional metering subsystem.
+    pub fn meters(&self) -> Arc<crate::dsp::meters::ProfessionalMeters> {
+        Arc::clone(&self.meters)
+    }
+
+    /// Enable or disable the professional metering subsystem.
+    pub fn set_meters_enabled(&self, enabled: bool) {
+        self.meters.set_enabled(enabled);
+    }
+
+    /// Check if the professional metering subsystem is actively enabled.
+    pub fn is_meters_enabled(&self) -> bool {
+        self.meters.is_enabled()
+    }
+
+    /// Snapshot of the professional audio metering subsystem.
+    pub fn meters_snapshot(&self) -> crate::dsp::meters::ProfessionalMeterSnapshot {
+        self.meters.snapshot()
     }
 
     /// Scan a file for EBU R128 / ReplayGain loudness and write the result

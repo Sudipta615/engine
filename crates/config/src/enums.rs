@@ -101,6 +101,18 @@ pub enum PerformanceMode {
     LowPower,
 }
 
+/// Configurable quality and latency tuning profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum QualityLatencyProfile {
+    /// Highest fidelity: maximum precision, deep-stopband filtering, full lookahead.
+    Quality,
+    /// Balanced fidelity and latency (engine default).
+    #[default]
+    Balanced,
+    /// Lowest latency: short buffers, low lookahead, low-latency filter parameters.
+    LowLatency,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum LoudnessMode {
     #[default]

@@ -112,6 +112,14 @@ pub struct PlaybackInfo {
     pub playlist_index: Option<usize>,
     /// Number of entries in the playback queue.
     pub playlist_length: usize,
+    /// Currently preloaded / prepared next track awaiting gapless transition.
+    pub prepared_source: Option<crate::source::AudioSource>,
+    /// Active playlist repeat mode.
+    pub repeat_mode: crate::playlist::RepeatMode,
+    /// Whether shuffle playback ordering is enabled.
+    pub shuffle: bool,
+    /// Professional unified audio metering snapshot (Peak, True Peak, RMS, LUFS, LRA, DC, Crest Factor).
+    pub meters: Option<crate::dsp::meters::ProfessionalMeterSnapshot>,
     /// Multi-track lane telemetry: one entry per active lane,
     /// refreshed every engine tick from the lane registry + the mix bus's
     /// per-slot meters.
@@ -298,6 +306,10 @@ impl Default for PlaybackInfo {
             active_output_profile: None,
             playlist_index: None,
             playlist_length: 0,
+            prepared_source: None,
+            repeat_mode: crate::playlist::RepeatMode::default(),
+            shuffle: false,
+            meters: None,
             lanes: Vec::new(),
             #[cfg(feature = "audio-output")]
             endpoint_dropped_frames: 0,

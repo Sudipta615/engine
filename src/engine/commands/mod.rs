@@ -559,6 +559,7 @@ impl AudioEngine {
 
             // ── Playlist ──
             EngineCommand::Enqueue(source) => self.handle_enqueue(source),
+            EngineCommand::Dequeue => self.handle_dequeue(),
             EngineCommand::RemoveFromPlaylist(index) => self.handle_remove_from_playlist(index),
             EngineCommand::ClearPlaylist => self.handle_clear_playlist(),
             EngineCommand::PlayIndex(index) => self.handle_play_index(index),

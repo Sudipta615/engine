@@ -3,7 +3,7 @@ members = [".", "crates/config", "crates/plugin-abi", "crates/plugin-test-echo"]
 
 [package]
 name = "engine"
-version = "4.5.1"
+version = "4.6.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"
@@ -493,3 +493,19 @@ path = "tests/fidelity/convolver_taps.rs"
 [[test]]
 name = "plugin_host"
 path = "tests/fidelity/plugin_host.rs"
+
+[[test]]
+name = "gapless_queue"
+path = "tests/gapless_queue.rs"
+
+[[test]]
+name = "track_cache"
+path = "tests/track_cache.rs"
+
+[[test]]
+name = "meters"
+path = "tests/fidelity/meters.rs"
+
+[[test]]
+name = "offline_render"
+path = "tests/offline_render.rs"

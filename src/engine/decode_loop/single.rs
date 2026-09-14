@@ -107,68 +107,110 @@ impl AudioEngine {
                             }
                         }
 
-                        // Auto-advance the playlist when no track was
-                        // explicitly prepared via `prepare_next`.
-                        if self.loudness_scan.next_track_path.is_none()
-                            && self.config.transition_mode != config::TransitionMode::Stop
-                        {
-                            if let Some(src) = self.playlist.advance() {
-                                self.emit_playlist_changed();
-                                match src {
-                                    crate::source::AudioSource::File(ref p) => {
-                                        if let Err(e) = self.prepare_next_track(p) {
-                                            warn!(
-                                                "Failed to prepare next playlist entry {}: {}",
-                                                p.display(),
-                                                e
-                                            );
-                                        }
-                                    }
-                                    other => {
-                                        // Memory/URI sources cannot use the
-                                        // path-based gapless handoff; load
-                                        // them directly.
-                                        match self.load_source(&other) {
-                                            Ok(_) => loaded_next = true,
+                        if self.config.transition_mode != config::TransitionMode::Stop {
+                            // Check if the preloader has a prepared track ready for the next playlist item
+                            let next_peek = self.playlist.peek_next().cloned();
+                            if let Some(peek_src) = next_peek {
+                                if self.preload.has_prepared_matching(&peek_src) {
+                                    self.playlist.advance();
+                                    self.emit_playlist_changed();
+                                    if let Some(prepared) = self.preload.take_prepared() {
+                                        match self.swap_to_prepared_track(
+                                            prepared,
+                                            #[cfg(feature = "resample")]
+                                            resampler,
+                                            #[cfg(not(feature = "resample"))]
+                                            _resampler,
+                                        ) {
+                                            Ok(_info) => {
+                                                info!("Gapless transition: handed off to preloaded track {}", peek_src);
+                                                loaded_next = true;
+                                                self.maybe_preload_next();
+                                            }
                                             Err(e) => {
-                                                warn!("Failed to load next playlist entry: {}", e);
+                                                warn!("Gapless preloaded handoff failed: {}", e);
                                             }
                                         }
                                     }
                                 }
                             }
-                        }
 
-                        if self.config.transition_mode != config::TransitionMode::Stop {
-                            if let Some(path) = self.loudness_scan.next_track_path.take() {
-                                match self.swap_to_next_track(
-                                    &path,
-                                    #[cfg(feature = "resample")]
-                                    resampler,
-                                    #[cfg(not(feature = "resample"))]
-                                    _resampler,
-                                ) {
-                                    Ok(_info) => {
-                                        info!(
-                                            "Gapless transition: handed off to next track {}",
-                                            path.display()
-                                        );
-                                        loaded_next = true;
-                                        // The resampler and DSP state carry
-                                        // across the boundary, so the engine
-                                        // continues decoding on the next
-                                        // tick. stream_ended stays false so
-                                        // Play/Pause work.
+                            if !loaded_next {
+                                // Auto-advance the playlist when no track was preloaded
+                                if self.loudness_scan.next_track_path.is_none() {
+                                    if let Some(src) = self.playlist.advance() {
+                                        self.emit_playlist_changed();
+                                        if self.preload.has_prepared_matching(&src) {
+                                            if let Some(prepared) = self.preload.take_prepared() {
+                                                if self
+                                                    .swap_to_prepared_track(
+                                                        prepared,
+                                                        #[cfg(feature = "resample")]
+                                                        resampler,
+                                                        #[cfg(not(feature = "resample"))]
+                                                        _resampler,
+                                                    )
+                                                    .is_ok()
+                                                {
+                                                    loaded_next = true;
+                                                    self.maybe_preload_next();
+                                                }
+                                            }
+                                        } else {
+                                            match src {
+                                                crate::source::AudioSource::File(ref p) => {
+                                                    if let Err(e) = self.prepare_next_track(p) {
+                                                        warn!(
+                                                            "Failed to prepare next playlist entry {}: {}",
+                                                            p.display(),
+                                                            e
+                                                        );
+                                                    }
+                                                }
+                                                other => {
+                                                    match self.load_source(&other) {
+                                                        Ok(_) => {
+                                                            loaded_next = true;
+                                                            self.maybe_preload_next();
+                                                        }
+                                                        Err(e) => {
+                                                            warn!("Failed to load next playlist entry: {}", e);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
-                                    Err(e) => {
-                                        warn!("Gapless handoff failed: {}", e);
+                                }
+
+                                if !loaded_next {
+                                    if let Some(path) = self.loudness_scan.next_track_path.take() {
+                                        match self.swap_to_next_track(
+                                            &path,
+                                            #[cfg(feature = "resample")]
+                                            resampler,
+                                            #[cfg(not(feature = "resample"))]
+                                            _resampler,
+                                        ) {
+                                            Ok(_info) => {
+                                                info!(
+                                                    "Gapless transition: handed off to next track {}",
+                                                    path.display()
+                                                );
+                                                loaded_next = true;
+                                                self.maybe_preload_next();
+                                            }
+                                            Err(e) => {
+                                                warn!("Gapless handoff failed: {}", e);
+                                                self.update_playback_state(PlaybackState::Stopped);
+                                                self.stream_ended = true;
+                                            }
+                                        }
+                                    } else {
                                         self.update_playback_state(PlaybackState::Stopped);
                                         self.stream_ended = true;
                                     }
                                 }
-                            } else if !loaded_next {
-                                self.update_playback_state(PlaybackState::Stopped);
-                                self.stream_ended = true;
                             }
                         } else {
                             info!("TransitionMode::Stop active: stopping at EOS without advancing");

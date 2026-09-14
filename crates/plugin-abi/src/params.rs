@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 /// The normalized value of one parameter (0..=1 is conventional but
 /// plugins may declare wider ranges; the value is clamped by the plugin).
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde-types", derive(Serialize, Deserialize))]
 pub struct ParamValue {
     pub index: u32,
     pub value: f32,
@@ -20,7 +21,6 @@ pub struct ParamValue {
 /// A fixed-capacity batch of parameter values, applied atomically at a
 /// block boundary. Capacity matches [`MAX_PLUGIN_PARAMS`].
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "serde-types", derive(Serialize, Deserialize))]
 pub struct PluginParams {
     values: [ParamValue; super::MAX_PLUGIN_PARAMS],
     len: u32,
@@ -65,9 +65,63 @@ impl PluginParams {
         self.len == 0
     }
 
+    /// Return the populated parameter values as a slice.
+    pub fn as_slice(&self) -> &[ParamValue] {
+        &self.values[..self.len as usize]
+    }
+
     /// Iterate `(index, value)` in insertion order.
     pub fn iter(&self) -> impl Iterator<Item = ParamValue> + '_ {
         self.values[..self.len as usize].iter().copied()
+    }
+}
+
+#[cfg(feature = "serde-types")]
+impl Serialize for PluginParams {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeSeq;
+        let slice = self.as_slice();
+        let mut seq = serializer.serialize_seq(Some(slice.len()))?;
+        for elem in slice {
+            seq.serialize_element(elem)?;
+        }
+        seq.end()
+    }
+}
+
+#[cfg(feature = "serde-types")]
+impl<'de> Deserialize<'de> for PluginParams {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct PluginParamsVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for PluginParamsVisitor {
+            type Value = PluginParams;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a sequence of ParamValue")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut params = PluginParams::empty();
+                while let Some(val) = seq.next_element::<ParamValue>()? {
+                    if !params.push(val.index, val.value) {
+                        break;
+                    }
+                }
+                Ok(params)
+            }
+        }
+
+        deserializer.deserialize_seq(PluginParamsVisitor)
     }
 }
 

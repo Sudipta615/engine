@@ -27,8 +27,9 @@ pub use engine_config::{
 pub use enums::{
     AudioBackend, ChannelPolicy, CompressorDetector, CrossfadeCurve, CrossfeedProfile,
     DitherPolicy, DsdOutput, FallbackPolicy, FilterType, LoudnessMode, OutputAccessMode,
-    OutputAccessState, PerformanceMode, PrecisionMode, RateFallbackPolicy, ResamplerQuality,
-    ResamplerQualityInfo, SpeedMode, TimeStretchQuality, TransitionMode, VolumeMode,
+    OutputAccessState, PerformanceMode, PrecisionMode, QualityLatencyProfile, RateFallbackPolicy,
+    ResamplerQuality, ResamplerQualityInfo, SpeedMode, TimeStretchQuality, TransitionMode,
+    VolumeMode,
 };
 pub use rate_policy::{apply_fallback, base_rate, clock_family, nearest_rate, SampleRatePolicy};
 pub use scene_config::{

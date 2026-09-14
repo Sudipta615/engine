@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 
 use super::edge::{EdgeDef, EdgeEndpoint, EdgeId};
 use super::node::{
-    HrtfSource, NodeDef, NodeId, NodeKind, NodeParams, PortId, PortSpec, SignalType,
+    HrtfSource, NodeDef, NodeId, NodeKind, NodeParams, PortId, PortSpec, ProdStage, SignalType,
 };
 use super::sort::topological_order;
 use super::validate::{validate, Graph2Error};
@@ -58,7 +58,18 @@ pub fn node_latency(node: &NodeDef) -> u64 {
             HrtfSource::Dataset { taps, .. } => *taps as u64,
         },
         NodeParams::Resampler { quality, .. } => *quality as u64,
-        _ => 0,
+        _ => match node.kind {
+            NodeKind::Prod(ProdStage::PluginHost) => {
+                // If a plugin host is referenced by name, resolve its descriptor latency
+                if let Some(host) = super::prod::resolve_host(&node.name) {
+                    host.descriptor().latency_samples as u64
+                } else {
+                    0
+                }
+            }
+            NodeKind::Prod(ProdStage::Limiter) => 240, // 5ms lookahead at 48kHz
+            _ => 0,
+        },
     }
 }
 

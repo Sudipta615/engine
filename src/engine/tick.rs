@@ -98,6 +98,8 @@ impl AudioEngine {
         self.telemetry.tick_start = Some(now);
 
         self.process_commands();
+        self.preload.poll_results(&mut self.track_cache);
+        self.maybe_preload_next();
         #[cfg(feature = "audio-output")]
         {
             self.update_endpoint_telemetry();
@@ -455,6 +457,10 @@ impl AudioEngine {
                 {
                     next.output_info = out_info.clone();
                 }
+                next.prepared_source = self.preload.prepared_source();
+                next.repeat_mode = self.playlist.repeat();
+                next.shuffle = self.playlist.is_shuffle_enabled();
+                next.meters = Some(self.meters.snapshot());
                 next.bit_perfect = is_bp;
                 Arc::new(next)
             });

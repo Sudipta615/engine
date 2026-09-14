@@ -293,13 +293,23 @@ impl PluginInstance {
             frames: frames as u32,
         };
         // SAFETY: the caller guarantees plane lengths; the plugin owns
-        // no retained pointers.
-        let status = unsafe { proc(self.raw, &block as *const AudioBlockMut) };
-        let status = AbiStatus::from_abi_i32(status);
-        if status.is_ok() {
-            Ok(())
-        } else {
-            Err(PluginAbiError::Status(status))
+        // no retained pointers. Fault isolation wraps the call in catch_unwind
+        // so a plugin panic does not bring down the audio host.
+        let raw_ptr = self.raw;
+        let call_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            proc(raw_ptr, &block as *const AudioBlockMut)
+        }));
+
+        match call_res {
+            Ok(code) => {
+                let status = AbiStatus::from_abi_i32(code);
+                if status.is_ok() {
+                    Ok(())
+                } else {
+                    Err(PluginAbiError::Status(status))
+                }
+            }
+            Err(_) => Err(PluginAbiError::Status(AbiStatus::InstantiationFailed)),
         }
     }
 
