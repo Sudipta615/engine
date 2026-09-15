@@ -100,6 +100,35 @@ impl DspGraph {
         nodes
     }
 
+    /// Snapshot fine-grained node-level diagnostics (§6.4, Item 15).
+    pub fn node_diagnostics(&self) -> Vec<crate::dsp::graph2::diagnostics::NodeDiagnostics> {
+        let nodes = self.graph_nodes();
+        nodes
+            .into_iter()
+            .enumerate()
+            .map(|(idx, info)| {
+                let latency_samples = if self.sample_rate > 0.0 {
+                    (info.latency_ms * self.sample_rate / 1000.0) as usize
+                } else {
+                    0
+                };
+                let tail_samples = if self.sample_rate > 0.0 {
+                    (info.tail_ms * self.sample_rate / 1000.0) as usize
+                } else {
+                    0
+                };
+                let gr_db = if info.name == "limiter" && info.active {
+                    self.limiter_gain_reduction_db()
+                } else {
+                    0.0
+                };
+                crate::dsp::graph2::diagnostics::NodeDiagnostics::new(idx as u32, info.name, info.active)
+                    .with_latency_and_tail(latency_samples, info.latency_ms, tail_samples, info.tail_ms)
+                    .with_metering(-120.0, -120.0, gr_db)
+            })
+            .collect()
+    }
+
     /// Total deterministic graph latency in milliseconds (output domain).
     pub fn total_latency_ms(&self) -> f32 {
         if self.bit_perfect || self.dop_bypass {

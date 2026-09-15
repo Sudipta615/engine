@@ -10,15 +10,16 @@ use super::plan::{PlanId, StepScope};
 use super::*;
 
 impl DspGraph {
-    /// Execute a compiled plan over a planar block in f32. The plan borrows
-    /// the active generation's `plans` (immutably) while nodes borrow its
-    /// `nodes` (mutably) — disjoint fields, so the hot path stays lock-free
-    /// and allocation-free.
+    /// Execute a compiled plan on a given graph generation.
     #[inline]
-    fn run_plan(&mut self, id: PlanId, planes: &mut [&mut [f32]]) {
-        let plan = self.active.plans.plan(id);
+    fn run_plan_generation(
+        generation: &mut swap::GraphGeneration,
+        id: PlanId,
+        planes: &mut [&mut [f32]],
+    ) {
+        let plan = generation.plans.plan(id);
         for step in &plan.steps {
-            let node = &mut self.active.nodes[step.node.0];
+            let node = &mut generation.nodes[step.node.0];
             match step.scope {
                 StepScope::AllChannels => node.process_block_f32(planes),
                 StepScope::FrontPair => {
@@ -28,24 +29,22 @@ impl DspGraph {
                     node.process_block_f32(&mut pair);
                 }
             }
-            // The aux bus node runs right after the mix node, so
-            // the mix step's end-of-step metering misses the aux return.
-            // Recompute the master (slot 0) meter HERE — the return has just
-            // landed in the front pair, but the post-mix chain hasn't run —
-            // restoring the pre-split semantics (pre-chain metering that
-            // includes the return). Gated on the aux node having written
-            // this block: an idle/disabled aux leaves the planes untouched,
-            // so the mix step's own meters are already exact.
             if step.node.0 == node_id::AUX {
-                if let GraphNode::Aux(aux) = &self.active.nodes[node_id::AUX] {
+                if let GraphNode::Aux(aux) = &generation.nodes[node_id::AUX] {
                     if aux.written {
-                        if let GraphNode::Mix(mix) = &mut self.active.nodes[node_id::MIX] {
+                        if let GraphNode::Mix(mix) = &mut generation.nodes[node_id::MIX] {
                             mix.meter_master_f32(planes, planes[0].len());
                         }
                     }
                 }
             }
         }
+    }
+
+    /// Execute a compiled plan over a planar block in f32 on the active generation.
+    #[inline]
+    fn run_plan(&mut self, id: PlanId, planes: &mut [&mut [f32]]) {
+        Self::run_plan_generation(&mut self.active, id, planes);
     }
 
     /// f64 variant of [`Self::run_plan`] (Quality mode).
@@ -89,7 +88,60 @@ impl DspGraph {
         // swap once per CALLER block, before any splitting or bypass checks
         // (bypass governs signal processing, not control application).
         self.control_tick();
-        self.process_block_inner(left, right);
+
+        let n = left.len().min(right.len());
+        if self.transition_fader.is_active()
+            && self.retiring.is_some()
+            && n > 0
+            && n <= MAX_AUDIO_BLOCK_FRAMES
+        {
+            // Snapshot dry inputs into preallocated scratch buffers for the old generation.
+            self.scratch.scratch_trans_l[..n].copy_from_slice(&left[..n]);
+            self.scratch.scratch_trans_r[..n].copy_from_slice(&right[..n]);
+
+            // 1. Process active (new) generation on left and right in place.
+            self.process_block_inner(left, right);
+
+            // 2. Copy the new generation's processed audio into scratch_trans_new
+            //    so both old and new planes reside in disjoint pre-allocated buffers.
+            //    This is necessary to avoid the aliasing borrow conflict in step 4:
+            //    crossfade_block needs an immutable `new_planes` and a mutable
+            //    `dst_planes` pointing at separate memory.
+            self.scratch.scratch_trans_new_l[..n].copy_from_slice(&left[..n]);
+            self.scratch.scratch_trans_new_r[..n].copy_from_slice(&right[..n]);
+
+            // 3. Process retiring (old) generation on scratch_trans in place.
+            if let Some(old_gen) = self.retiring.as_mut() {
+                let mut old_planes = [
+                    &mut self.scratch.scratch_trans_l[..n],
+                    &mut self.scratch.scratch_trans_r[..n],
+                ];
+                Self::run_plan_generation(old_gen, PlanId::Normal, &mut old_planes);
+            }
+
+            // 4. Blend old (scratch_trans) and new (scratch_trans_new) into left/right.
+            //    `blend_stereo_into` reads from two disjoint scratch slices and writes
+            //    into `left`/`right` — three separate memory regions, no aliasing.
+            self.transition_fader.blend_stereo_into(
+                &self.scratch.scratch_trans_l[..n],
+                &self.scratch.scratch_trans_r[..n],
+                &self.scratch.scratch_trans_new_l[..n],
+                &self.scratch.scratch_trans_new_r[..n],
+                &mut left[..n],
+                &mut right[..n],
+            );
+
+            if !self.transition_fader.is_active() {
+                if let Some(old_gen) = self.retiring.take() {
+                    self.retire_generation_to_bus(old_gen);
+                }
+            }
+        } else {
+            if let Some(old_gen) = self.retiring.take() {
+                self.retire_generation_to_bus(old_gen);
+            }
+            self.process_block_inner(left, right);
+        }
     }
 
     /// Process a stereo block with a second mix-bus input.

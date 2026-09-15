@@ -3,7 +3,7 @@ members = [".", "crates/config", "crates/plugin-abi", "crates/plugin-test-echo"]
 
 [package]
 name = "engine"
-version = "5.2.0"
+version = "5.3.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"
@@ -525,3 +525,8 @@ path = "tests/fidelity/independent_references.rs"
 [[test]]
 name = "fuzz_expanded"
 path = "tests/fidelity/fuzz_expanded.rs"
+
+[[test]]
+name = "production_diagnostics_fidelity"
+path = "tests/fidelity/production_diagnostics_fidelity.rs"
+

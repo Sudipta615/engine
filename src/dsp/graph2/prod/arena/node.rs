@@ -67,6 +67,11 @@ pub trait DspNode: Send {
         }
     }
 
+    /// Fine-grained node-level diagnostics report (§6.4, Item 15).
+    fn diagnostics(&self, _sample_rate: f32) -> Option<crate::dsp::graph2::diagnostics::NodeDiagnostics> {
+        None
+    }
+
     /// Reset internal filter state (e.g., on seek or track boundary).
     fn reset(&mut self);
 

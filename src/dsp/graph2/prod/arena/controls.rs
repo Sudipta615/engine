@@ -1472,14 +1472,29 @@ impl DspGraph {
         if !pending.is_null() {
             let new_gen = unsafe { Box::from_raw(pending) };
             let prev = std::mem::replace(&mut self.active, new_gen);
-            self.bus
-                .retired
-                .store(Box::into_raw(prev), Ordering::Release);
+            if let Some(old_retiring) = self.retiring.take() {
+                self.bus
+                    .retired
+                    .store(Box::into_raw(old_retiring), Ordering::Release);
+            }
+            self.retiring = Some(prev);
+            self.transition_fader.trigger(self.sample_rate);
             self.bus.swap_seq.fetch_add(1, Ordering::Relaxed);
         }
         if self.bus.has_pending.swap(false, Ordering::AcqRel) {
             self.drain_control();
         }
+    }
+
+    /// Audio-side helper: hand a retiring [`GraphGeneration`] back to the
+    /// control thread via `ControlBus::retired`. Called from `process.rs`
+    /// when a transition crossfade completes and the old generation is no
+    /// longer needed. Allocation-free; uses a single atomic `Release` store.
+    #[inline]
+    pub(super) fn retire_generation_to_bus(&mut self, gen: Box<GraphGeneration>) {
+        self.bus
+            .retired
+            .store(Box::into_raw(gen), Ordering::Release);
     }
 
     /// FIFO-per-node drain. Shell commands first, then per-node commands in

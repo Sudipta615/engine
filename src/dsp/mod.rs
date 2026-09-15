@@ -25,6 +25,7 @@ pub mod loudness;
 pub mod meters;
 pub mod modulation;
 pub mod multiband_compressor;
+pub mod parameters;
 pub mod pipeline;
 #[cfg(feature = "resample")]
 pub mod resampler;
@@ -84,4 +85,8 @@ pub use crossfeed::Crossfeed;
 pub use deterministic::{compare_buffers, DeterministicMode, EquivalenceClass};
 pub use meters::{ProfessionalMeterSnapshot, ProfessionalMeters};
 pub use multiband_compressor::MultibandCompressor;
+pub use parameters::{
+    ParameterCurve, ParameterDescriptor, ParameterId, ParameterRegistry, ParameterSmoothing,
+    ParameterUnit,
+};
 pub use safety::{contain_non_finite_block, FloatSafetyMode, NonFiniteIncident, NonFinitePolicy};

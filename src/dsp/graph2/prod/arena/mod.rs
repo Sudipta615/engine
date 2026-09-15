@@ -222,4 +222,8 @@ pub struct DspGraph {
 
     // ── Pre-allocated Scratch Arena ──
     scratch: GraphScratch,
+
+    // ── Seamless Generation Transition Blending ──
+    transition_fader: crate::dsp::graph2::transitions::TransitionCrossfader,
+    retiring: Option<Box<swap::GraphGeneration>>,
 }

@@ -6,6 +6,14 @@ pub struct GraphScratch {
     /// Stereo f64 scratch channels for Quality-mode precision promotion.
     pub scratch_f64_l: Vec<f64>,
     pub scratch_f64_r: Vec<f64>,
+    /// Stereo f32 scratch channels for seamless generation transition crossfades.
+    /// `scratch_trans_l/r` hold the **old** generation's output (before blend);
+    /// `scratch_trans_new_l/r` hold the **new** generation's output so the
+    /// blend can read both without aliasing the caller's `left`/`right`.
+    pub scratch_trans_l: Vec<f32>,
+    pub scratch_trans_r: Vec<f32>,
+    pub scratch_trans_new_l: Vec<f32>,
+    pub scratch_trans_new_r: Vec<f32>,
     /// Multichannel planar scratch channels for de-interleaving and channel routing (up to [`MAX_CHANNELS`]).
     pub scratch_mc: Vec<Vec<f32>>,
 }
@@ -22,6 +30,10 @@ impl GraphScratch {
         Self {
             scratch_f64_l: vec![0.0; MAX_AUDIO_BLOCK_FRAMES],
             scratch_f64_r: vec![0.0; MAX_AUDIO_BLOCK_FRAMES],
+            scratch_trans_l: vec![0.0; MAX_AUDIO_BLOCK_FRAMES],
+            scratch_trans_r: vec![0.0; MAX_AUDIO_BLOCK_FRAMES],
+            scratch_trans_new_l: vec![0.0; MAX_AUDIO_BLOCK_FRAMES],
+            scratch_trans_new_r: vec![0.0; MAX_AUDIO_BLOCK_FRAMES],
             scratch_mc: (0..MAX_CHANNELS)
                 .map(|_| vec![0.0; MAX_AUDIO_BLOCK_FRAMES])
                 .collect(),

@@ -654,6 +654,10 @@ impl DspGraph {
             bit_perfect: false,
             dop_bypass: false,
             scratch: GraphScratch::new(),
+            transition_fader: crate::dsp::graph2::transitions::TransitionCrossfader::new(
+                crate::dsp::graph2::transitions::TransitionConfig::default(),
+            ),
+            retiring: None,
         }
     }
 

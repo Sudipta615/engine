@@ -24,6 +24,7 @@ pub mod output;
 pub mod output_info;
 pub mod output_profile;
 pub mod rate_policy;
+pub mod recovery;
 pub mod wav_writer;
 // Native WASAPI exclusive-mode backend (no cpal). Windows-only, opt-in via
 // the `wasapi-native` feature.
@@ -55,3 +56,6 @@ pub use output::{
 pub use output_info::OutputInfo;
 pub use output_profile::{OutputProfile, OutputProfileLibrary};
 pub use rate_policy::SampleRatePolicy;
+pub use recovery::{
+    rescale_clock_frames, OutputRecoveryController, PreservedPlaybackSnapshot, RecoveryPhase,
+};

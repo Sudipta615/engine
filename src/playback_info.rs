@@ -1,7 +1,11 @@
 pub const DEFAULT_SAMPLE_RATE: u32 = 44100;
 
 // Re-export DSP stats and the typed diagnostics for consumers of this type.
-pub use crate::diagnostics::{BitPerfectCause, Diagnostic, DiagnosticKind};
+pub use crate::diagnostics::{
+    BitPerfectCause, Diagnostic, DiagnosticEvent, DiagnosticKind, DiagnosticSeverity,
+    RealtimeHealthSnapshot,
+};
+pub use crate::dsp::graph2::diagnostics::NodeDiagnostics;
 pub use crate::dsp::pipeline::EngineStats;
 #[cfg(feature = "audio-output")]
 pub use crate::output::output_info::OutputInfo;
@@ -149,6 +153,12 @@ pub struct PlaybackInfo {
     /// existing spatial meters + scene + voice counts. `None` until the
     /// first refresh.
     pub spatial_health: Option<crate::spatial::health::SpatialHealthSnapshot>,
+    /// Real-time audio callback health snapshot (§6.1, Item 14).
+    pub health_snapshot: Option<RealtimeHealthSnapshot>,
+    /// Fine-grained node-level diagnostics (§6.4, Item 15).
+    pub node_diagnostics: Vec<NodeDiagnostics>,
+    /// Structured diagnostic incident event log (§6.5, Item 16).
+    pub diagnostic_events: Vec<DiagnosticEvent>,
 }
 
 /// Spatial master output telemetry (with listener pose). Mirrored from the [`crate::dsp::graph2::prod::SpatialNode`]
@@ -324,6 +334,9 @@ impl Default for PlaybackInfo {
             spatial: Some(SpatialTelemetry::default()),
             spatial_health: None,
             engine_diagnostics: Vec::new(),
+            health_snapshot: None,
+            node_diagnostics: Vec::new(),
+            diagnostic_events: Vec::new(),
         }
     }
 }

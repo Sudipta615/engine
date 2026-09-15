@@ -11,6 +11,7 @@ mod rate_policy;
 mod scene_config;
 mod spatial_render;
 mod versioned;
+pub mod versioned_state;
 
 pub use dsp_config::{
     BandConfig, BassManagementConfig, ChannelEqConfig, ChannelEqEntry, ChannelMixConfig,
@@ -43,6 +44,10 @@ pub use spatial_render::{
     SpatialQuality, SpatialVoiceConfig, VoicePriority,
 };
 pub use versioned::{migrate_step, ConfigLoadError, VersionedConfig, CONFIG_VERSION};
+pub use versioned_state::{
+    EngineState, GraphState, NodeState, OutputProfileState, PluginState, SpatialSceneState,
+    StateMigrationError, VersionedEnvelope, CURRENT_ENGINE_VERSION, STATE_SCHEMA_VERSION,
+};
 
 pub mod types {
     pub mod enums {

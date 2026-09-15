@@ -57,6 +57,7 @@
 //! the `prod` lowering. No allocation or lock is added to any audio
 //! thread.
 
+pub mod diagnostics;
 pub mod edge;
 pub mod exec;
 pub mod latency;
@@ -65,7 +66,11 @@ pub mod prod;
 pub mod rt;
 pub mod sort;
 pub mod transaction;
+pub mod transitions;
 pub mod validate;
+
+pub use diagnostics::NodeDiagnostics;
+pub use transitions::{TransitionConfig, TransitionCrossfader, TransitionCurve};
 
 pub use edge::{EdgeDef, EdgeEndpoint, EdgeId};
 pub use exec::{OfflineExecutor, CONVOLUTION_FFT_THRESHOLD};

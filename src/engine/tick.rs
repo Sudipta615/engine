@@ -462,6 +462,7 @@ impl AudioEngine {
                 next.shuffle = self.playlist.is_shuffle_enabled();
                 next.meters = Some(self.meters.snapshot());
                 next.bit_perfect = is_bp;
+                next.node_diagnostics = self.graph.node_diagnostics();
                 Arc::new(next)
             });
             self.telemetry.dsp_time = Duration::ZERO;

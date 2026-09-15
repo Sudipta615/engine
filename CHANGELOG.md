@@ -2,6 +2,52 @@
 
 All notable changes to this project are documented in this file.
 
+## [5.3.0] — 2026-09-15
+
+### Added
+
+- **Stage 2: Production Diagnostics and State**:
+  - **Real-time Health Monitor (`src/diagnostics/`)** (§6.1):
+    - Added `RealtimeHealthMonitor` tracking per-callback duration (µs), rolling average and worst-case duration, CPU load estimate, buffer fill %, XRun / underrun / overrun counters, clock drift (ppm), resampler ratio, graph generation sequence, and output latency — all via lock-free atomics with zero allocations on the audio thread.
+    - Added `HealthSnapshot` — an immutable, copy-safe telemetry snapshot readable from any thread at any time.
+    - Added `RealtimeDiagnosticQueue` — a lock-free SPSC ring for pushing `RawDiagnosticEvent`s from the audio thread and draining them on the control/UI thread without allocation.
+    - Added `RawDiagnosticEvent` and `DiagnosticEvent` with `DiagnosticSeverity` (`Info`, `Warning`, `Error`, `Critical`) and expanded `DiagnosticKind` (`Dsp`, `Clock`, `Plugin`, `Graph`, `Security`).
+  - **Node-Level Diagnostics (`src/dsp/graph2/diagnostics.rs`)** (§6.4):
+    - Added `NodeDiagnostics` carrying per-node: `node_id`, `name`, `active`, `latency_samples`, `latency_ms`, `tail_samples`, `tail_ms`, `peak_in_db`, `peak_out_db`, `gain_reduction_db`, `error_count`, `non_finite_count`, and `cpu_cost_us`.
+    - Builder API (`with_latency_and_tail`, `with_metering`, `with_errors`, `with_cpu_cost`) for zero-cost construction in hot paths.
+    - Full `serde` round-trip support for telemetry serialization.
+  - **Unified Parameter Metadata System (`src/dsp/parameters.rs`)** (§9.1):
+    - Added `ParameterId`, `ParameterDescriptor` with `min`/`max`/`default`, `ParameterUnit` (LinearGain, Decibels, Hertz, Milliseconds, Percent, Semitones, Ratio, Boolean, Integer, Enum), `ParameterCurve` (Linear, Logarithmic, Exponential, Decibel, SCurve), and `ParameterSmoothing` (None, OnePole, LinearRamp, SlewRateLimit).
+    - `ParameterDescriptor` methods: `normalize`, `denormalize`, `clamp`, `snap_step`, `format_value`.
+    - `ParameterRegistry` — centralized catalog seeded with standard engine parameters (master volume, balance, speed, EQ band frequency/gain/Q, dynamics threshold/ratio, spatial master gain).
+  - **Versioned State & Preset Serialization (`crates/config/src/versioned_state.rs`, `src/state/mod.rs`)** (§9.2):
+    - Added generic `VersionedEnvelope<T>` carrying `schema_version`, `engine_version`, `component_version`, and typed `state`.
+    - Added state models: `EngineState`, `GraphState`, `NodeState`, `PluginState`, `SpatialSceneState`, `OutputProfileState`.
+    - Added `StateMigrationError` with structured variants including `UnsupportedSchema { found, max_supported }` for forward-incompatible rejection.
+    - Added `save_versioned_state` / `load_versioned_state` helpers and `STATE_SCHEMA_VERSION` / `CURRENT_ENGINE_VERSION` constants.
+  - **Seamless Graph Transitions (`src/dsp/graph2/transitions.rs`)** (§5.3):
+    - Added `TransitionCrossfader` performing dual-path equal-power, linear, or S-curve crossfades over a configurable window (default 10 ms).
+    - Added `TransitionConfig` and `TransitionCurve`.
+    - Added `ContinuousParameterSmoother` (one-pole exponential) for zipper-free EQ and dynamics parameter changes.
+    - Added `measure_max_discontinuity` analytical helper for fidelity verification.
+    - Added `blend_stereo_into` variant for alias-free stereo blending into a separate output buffer.
+  - **Seamless generation-swap click elimination (`src/dsp/graph2/prod/arena/process.rs`, `controls.rs`)** (§5.3):
+    - `control_tick` now arms `transition_fader` on every generation swap.
+    - `process_block` runs both the retiring and incoming generations on disjoint pre-allocated scratch buffers (`scratch_trans_l/r`, `scratch_trans_new_l/r`) and blends them via `blend_stereo_into` — eliminating the instantaneous cut click that previously occurred on graph reconfigurations, EQ changes, and plugin reloads.
+    - `GraphScratch` extended with `scratch_trans_new_l/r` (pre-allocated, zero hot-path allocation).
+    - Added `retire_generation_to_bus` audio-side helper on `DspGraph` to encapsulate atomic handback of retiring generations.
+  - **Device/Output Recovery Hardening (`src/output/recovery.rs`)** (§10.1):
+    - Formalized 7-phase recovery state machine: `DeviceDisappeared` → `PreserveEngineState` → `ReopenDevice` → `ReconfigureFormat` → `RestoreClock` → `RestoreOutputProfile` → `Idle`.
+    - Added `OutputRecoveryController` with exponential-backoff retry counting and `PreservedPlaybackSnapshot` carrying sample-accurate playhead position, volume, output profile ID, and playback state.
+    - Added `rescale_clock_frames` for sample-accurate frame count rescaling across sample-rate changes (e.g. 48 kHz → 96 kHz device reconnect).
+
+### Changed
+
+- Fidelity test suite renamed: `tests/fidelity/stage2_diagnostics_and_state.rs` →
+  [`tests/fidelity/production_diagnostics_fidelity.rs`](tests/fidelity/production_diagnostics_fidelity.rs)
+  (`[[test]] name` in `Cargo.toml` updated accordingly). Module doc rewritten with
+  domain-precise descriptions of each pillar.
+
 ## [5.2.0] — 2026-09-15
 
 ### Added
