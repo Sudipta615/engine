@@ -42,11 +42,13 @@
 
 pub mod automation;
 pub mod clock;
+pub mod curve;
 pub mod event;
 pub mod tempo;
 
 pub use automation::CurveBeats;
 pub use clock::{AudioClock, TempoRamp, TransportState};
+pub use curve::{AutomationKeyframe, AutomationTrack, InterpolationMode};
 pub use event::{EventError, EventId, EventPayload, EventTime, ScheduledEvent};
 pub use tempo::{TempoMap, TempoPoint};
 

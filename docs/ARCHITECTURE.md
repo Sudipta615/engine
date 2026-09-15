@@ -34,7 +34,8 @@ src/
 │                             #   {id,version,engine,checks,address});
 │                             #   objective measurement primitives (measure.rs
 │                             #   — Goertzel amplitude, THD+N, bit-exactness,
-│                             #   DTFT IR magnitude/phase); 9 DSP/spatial
+│                             #   DTFT IR magnitude/phase, SNR, SMPTE IMD,
+│                             #   group delay, ITD and ILD); 9 DSP/spatial
 │                             #   suites (suites.rs — pipeline bit-exact+THD,
 │                             #   parametric-EQ FR+phase, limiter true-peak
 │                             #   ceiling, resampler in-band gain, binaural
@@ -204,6 +205,16 @@ src/
 │   ├── device_profile.rs     # Per-device DSP defaults
 │   ├── analyzer.rs           # Real-time peak/RMS/spectrum analyzer
 │   ├── float.rs              # AudioFloat numeric helpers
+│   ├── modulation/           # Unified modulation system (Phase 4):
+│   │                         #   lfo.rs (Sine/Tri/Saw/Square/S&H, tempo-sync),
+│   │                         #   envelope.rs (ADSR 4-stage generator),
+│   │                         #   follower.rs (peak & RMS envelope follower),
+│   │                         #   matrix.rs (ModulationMatrix routing)
+│   ├── analysis/             # Spectral & psychoacoustic analysis (Phase 4):
+│   │                         #   spectral.rs (centroid, spread, flux, rolloff, flatness),
+│   │                         #   temporal.rs (crest factor, dynamic range, transients),
+│   │                         #   harmonic.rs (harmonicity, tonality estimation),
+│   │                         #   mod.rs (AnalysisEngine real-time telemetry)
 │   └── graph2/               # Graph 2.0 (Phase 25, v3.27): general-purpose
 │   │                         #   audio graph topology — nodes with explicit
 │   │                         #   typed ports (node.rs: PortSpec/SignalType/
@@ -355,11 +366,20 @@ src/
 │   │                         #   tempo-mapped piecewise-linear control curve
 │   │                         #   in beats, evaluate(sample, &TempoMap) for
 │   │                         #   musical automation; Phase 39 v3.41),
+│   │                         #   curve.rs (Phase 4: sample-accurate
+│   │                         #   AutomationTrack with Step/Linear/Exponential/
+│   │                         #   SCurve interpolation),
 │   │                         #   mod.rs (Timeline scheduler —
 │   │                         #   advance_block fires sample-accurate once-
 │   │                         #   events per block, note-grid quantization,
 │   │                         #   timeline regions). Drives a compiled Graph
 │   │                         #   2.0 graph: the transport owns rendering
+│
+│   ├── fx/                   # ── Creative sound-design DSP layer (Phase 4) ──
+│   │   ├── delay.rs          # CombFilter (feedback/feedforward) & PingPongDelay
+│   │   ├── modulation.rs     # Chorus, Flanger, Phaser, RingModulator
+│   │   ├── distortion.rs     # Saturator (Tape, Tube, Soft/Hard Clip, Wavefolder)
+│   │   └── mod.rs            # Facade and public re-exports
 │
 ├── spatial/                  # ── Spatial audio (Phases 8–24, opt-in) ──
 │   ├── acoustic/             # Acoustic world simulation + baking (Phases
@@ -527,8 +547,10 @@ src/
 │   ├── rate_policy.rs        # Output sample-rate policy helpers
 │   ├── endpoint.rs           # Multi-endpoint routing matrix (Phase 5b): per-
 │   │                         #   endpoint ring + nominal-ratio resampler +
-│   │                         #   rubato Slip drift trim + final limiter, plus
-│   │                         #   the drift controller and virtual endpoint
+│   │                         #   rubato Slip drift trim + final limiter
+│   ├── drift.rs              # Adaptive endpoint clock drift correction & ASRC (Phase 4):
+│   │                         #   dual-mode PI loop filter, 2-pole jitter filter,
+│   │                         #   anti-windup, slew limiter, loss-of-clock detector
 │   ├── cpal_output/          # cpal shared-mode fallback (all platforms)
 │   ├── alsa_output/          # Native ALSA exclusive (`hw:`/`plughw:`)
 │   ├── wasapi_output/        # Native WASAPI exclusive (IAudioClient)

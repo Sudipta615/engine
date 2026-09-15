@@ -36,13 +36,21 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+pub mod automation;
+pub mod bus;
 pub mod host;
+pub mod midi;
 pub mod params;
 pub mod state;
+pub mod transport;
 
+pub use automation::{ParamAutomationBatch, ParamAutomationEvent, MAX_AUTOMATION_EVENTS_PER_BLOCK};
+pub use bus::{AudioBussesMut, BusDescriptor, PluginBusLayout, PluginBusRole, MAX_PLUGIN_BUSSES};
 pub use host::{PluginHost, PluginInstance};
+pub use midi::{MidiEvent, MidiEventType, MidiPacket, MAX_MIDI_EVENTS_PER_BLOCK};
 pub use params::{ParamDescriptor, ParamValue, PluginParams};
 pub use state::{PluginStateError, StateBuffer};
+pub use transport::TransportInfo;
 
 use std::fmt;
 

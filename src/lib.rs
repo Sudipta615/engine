@@ -11,6 +11,7 @@ pub mod eval;
 pub mod events;
 #[cfg(feature = "c-ffi")]
 pub mod ffi;
+pub mod fx;
 #[cfg(feature = "audio-output")]
 pub mod output;
 pub mod paths;
@@ -27,6 +28,9 @@ pub use commands::EngineCommand;
 pub use diagnostics::{BitPerfectCause, Diagnostic, DiagnosticKind};
 pub use dsp::{ProfessionalMeterSnapshot, ProfessionalMeters};
 pub use events::EngineEvent;
+pub use fx::{
+    Chorus, CombFilter, DistortionType, Flanger, Phaser, PingPongDelay, RingModulator, Saturator,
+};
 pub use playback_info::{PlaybackInfo, PlaybackState, SpatialTelemetry};
 pub use playlist::{Playlist, RepeatMode};
 pub use source::AudioSource;

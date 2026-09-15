@@ -1676,3 +1676,501 @@ fn realtime_spatial_cue_overlay_does_not_allocate() {
         "the cue overlay path allocated on the audio thread"
     );
 }
+
+#[test]
+fn hybrid_spatial_renderer_allocates_zero_bytes() {
+    use config::{SpatialBassConfig, SpatialBassMode};
+    use engine::spatial::render::{HybridBlockInputs, RendererKind};
+    use engine::spatial::HybridSpatialRenderer;
+
+    let custom_bass = SpatialBassConfig {
+        mode: SpatialBassMode::BassManaged,
+        crossover_hz: 120.0,
+        ..Default::default()
+    };
+
+    let layouts = [
+        (SpeakerLayout::stereo(), 2),
+        (SpeakerLayout::seven_point_one(), 8),
+        (SpeakerLayout::seven_point_one_four(), 12),
+        // 16 channels custom layout (e.g. 9.1.6)
+        (
+            SpeakerLayout::custom(
+                (0..16)
+                    .map(|i| {
+                        let theta = i as f32 * std::f32::consts::TAU / 16.0;
+                        Vec3::new(theta.cos(), theta.sin(), 0.0)
+                    })
+                    .collect(),
+            ),
+            16,
+        ),
+    ];
+
+    let block_sizes = [64, 128, 256, 512, 1024];
+
+    for (layout, expected_channels) in &layouts {
+        let mut renderer = HybridSpatialRenderer::new(RendererKind::Vbap, custom_bass.clone());
+        renderer.prepare(layout, 48_000).expect("prepare");
+
+        let mut scene = SpatialScene::new(48_000);
+        let obj_id = scene.create_audio_object(Vec3::new(1.0, 1.0, 0.0)).unwrap();
+        scene.object_mut(obj_id).unwrap().bass_send = 0.5;
+
+        for &frames in &block_sizes {
+            let total_samples = frames * expected_channels;
+            let mut out = vec![0.0f32; total_samples];
+            let obj_data = vec![0.1f32; frames];
+            let obj_slices: Vec<&[f32]> = vec![&obj_data];
+            let inputs = HybridBlockInputs {
+                objects: &obj_slices,
+                beds: &[],
+                fields: &[],
+            };
+
+            // Warm up
+            renderer
+                .process_hybrid_block(&scene, &inputs, frames, &mut out)
+                .expect("warmup");
+
+            ARMED.store(true, Ordering::Relaxed);
+            THREAD_ALLOCS.with(|c| c.set(0));
+
+            for _ in 0..100 {
+                renderer
+                    .process_hybrid_block(&scene, &inputs, frames, &mut out)
+                    .expect("process");
+            }
+
+            ARMED.store(false, Ordering::Relaxed);
+            let allocs = THREAD_ALLOCS.with(|c| c.get());
+
+            assert_eq!(
+                allocs, 0,
+                "HybridSpatialRenderer::process_hybrid_block allocated {} times with {} channels at block size {}",
+                allocs, expected_channels, frames
+            );
+        }
+    }
+}
+
+#[test]
+fn professional_meters_allocates_zero_bytes() {
+    use engine::dsp::ProfessionalMeters;
+
+    let channel_counts = [1, 2, 6, 8, 12, 16];
+    let block_sizes = [64, 128, 256, 512, 1024];
+
+    for &channels in &channel_counts {
+        let meters = ProfessionalMeters::new(48000, channels);
+
+        for &frames in &block_sizes {
+            let buf = vec![0.1f32; frames * channels];
+
+            // Warm up
+            meters.process_interleaved(&buf, channels);
+
+            ARMED.store(true, Ordering::Relaxed);
+            THREAD_ALLOCS.with(|c| c.set(0));
+
+            for _ in 0..100 {
+                meters.process_interleaved(&buf, channels);
+            }
+
+            ARMED.store(false, Ordering::Relaxed);
+            let allocs = THREAD_ALLOCS.with(|c| c.get());
+
+            assert_eq!(
+                allocs, 0,
+                "ProfessionalMeters::process_interleaved allocated {} times with {} channels at block size {}",
+                allocs, channels, frames
+            );
+        }
+    }
+}
+
+#[test]
+fn hoa_decoder_order9_allocates_zero_bytes() {
+    use engine::spatial::{HoaConfig, HoaDecoder, HoaDecoding, SpeakerLayout};
+
+    let layout = SpeakerLayout::seven_point_one_four();
+    let mut decoder = HoaDecoder::new(HoaConfig {
+        order: 9,
+        decoding: HoaDecoding::MaxRe,
+    });
+    decoder.prepare(&layout, 48_000).expect("prepare");
+
+    let bus_channels = 100;
+    let bus = vec![0.1f32; bus_channels];
+    let mut out = vec![0.0f32; layout.speakers.len()];
+
+    // Warmup
+    decoder.decode(&bus, 1, &mut out);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for _ in 0..100 {
+        decoder.decode(&bus, 1, &mut out);
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocs = THREAD_ALLOCS.with(|c| c.get());
+    assert_eq!(
+        allocs, 0,
+        "HoaDecoder::decode allocated {} times during steady state",
+        allocs
+    );
+}
+
+#[test]
+fn spherical_hrtf_interpolation_allocates_zero_bytes() {
+    use engine::spatial::{Ear, HrtfCorpus, HrtfDataset, HrtfLoadOptions, HrtfMeasurement, Vec3};
+
+    let pts = [Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y, Vec3::Z, -Vec3::Z];
+    let measurements: Vec<HrtfMeasurement> = pts
+        .iter()
+        .map(|&p| HrtfMeasurement {
+            direction: [p.x, p.y, p.z],
+            left: vec![1.0; 64],
+            right: vec![1.0; 64],
+        })
+        .collect();
+
+    let corpus = HrtfCorpus {
+        sample_rate: 48_000,
+        source: None,
+        measurements,
+        mesh_hint: None,
+    };
+    let opts = HrtfLoadOptions {
+        taps: 64,
+        target_sample_rate: 48_000,
+        normalize: engine::spatial::HrtfNormalize::None,
+    };
+
+    let ds = HrtfDataset::from_corpus_irregular(&corpus, &opts).expect("from_corpus_irregular");
+    let mut scratch = [0.0f32; 64];
+    let query = Vec3::new(1.0, 1.0, 1.0).normalized().unwrap();
+
+    // Warmup
+    ds.interpolate_direction(query, Ear::Left, &mut scratch);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for _ in 0..100 {
+        ds.interpolate_direction(query, Ear::Left, &mut scratch);
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocs = THREAD_ALLOCS.with(|c| c.get());
+    assert_eq!(
+        allocs, 0,
+        "HrtfDataset::interpolate_direction allocated {} times during steady state",
+        allocs
+    );
+}
+
+#[test]
+fn constant_spread_panning_allocates_zero_bytes() {
+    use engine::spatial::{constant_power_spread_gains, Vec3, MAX_SPREAD_GAINS};
+
+    let speakers = [
+        (0, Vec3::new(-1.0, 1.0, 0.0).normalized().unwrap()),
+        (1, Vec3::new(1.0, 1.0, 0.0).normalized().unwrap()),
+        (2, Vec3::new(0.0, 1.0, 0.0).normalized().unwrap()),
+    ];
+    let mut gains = [(0usize, 0.0f32); MAX_SPREAD_GAINS];
+
+    // Warmup
+    constant_power_spread_gains(
+        Vec3::Y,
+        0.5,
+        std::f32::consts::FRAC_PI_2,
+        &mut gains,
+        &speakers,
+    );
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for _ in 0..100 {
+        constant_power_spread_gains(
+            Vec3::Y,
+            0.5,
+            std::f32::consts::FRAC_PI_2,
+            &mut gains,
+            &speakers,
+        );
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocs = THREAD_ALLOCS.with(|c| c.get());
+    assert_eq!(
+        allocs, 0,
+        "constant_power_spread_gains allocated {} times during steady state",
+        allocs
+    );
+}
+
+#[test]
+fn frequency_dependent_occlusion_allocates_zero_bytes() {
+    use engine::spatial::{
+        BroadbandOcclusion, DiffractionOcclusion, FrequencyDependentOcclusion,
+        MaterialTransmission, OcclusionBandCoeffs, OcclusionBandState,
+    };
+
+    let mut state = OcclusionBandState::default();
+    let fd = FrequencyDependentOcclusion {
+        broadband: BroadbandOcclusion {
+            amount: 0.5,
+            ..Default::default()
+        },
+        diffraction: DiffractionOcclusion::default(),
+        material: MaterialTransmission::WOOD,
+    };
+    let coeffs = OcclusionBandCoeffs::new(48_000.0, &fd);
+
+    // Warmup
+    let _ = state.process(0.5, &coeffs);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for _ in 0..1000 {
+        let _ = state.process(0.5, &coeffs);
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocs = THREAD_ALLOCS.with(|c| c.get());
+    assert_eq!(
+        allocs, 0,
+        "OcclusionBandState::process allocated {} times during steady state",
+        allocs
+    );
+}
+
+#[test]
+fn nearfield_wavefront_curvature_allocates_zero_bytes() {
+    use engine::spatial::WavefrontCurvatureState;
+
+    let mut state = WavefrontCurvatureState::default();
+
+    // Warmup
+    state.update_wavefront(0.3, 0.0875, 0.5, 48_000.0);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for _ in 0..1000 {
+        state.update_wavefront(0.3, 0.0875, 0.5, 48_000.0);
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocs = THREAD_ALLOCS.with(|c| c.get());
+    assert_eq!(
+        allocs, 0,
+        "WavefrontCurvatureState::update_wavefront allocated {} times during steady state",
+        allocs
+    );
+}
+
+#[test]
+fn psychoacoustic_bass_allocates_zero_bytes() {
+    use config::PsychoacousticBassConfig;
+    use engine::spatial::PsychoacousticBassProcessor;
+
+    let config = PsychoacousticBassConfig::default();
+    let mut processor = PsychoacousticBassProcessor::new(&config, 1.0, 48_000.0);
+    let mut block = vec![0.1f32; 256];
+
+    // Warmup
+    processor.process_block(&mut block);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for _ in 0..100 {
+        processor.process_block(&mut block);
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocs = THREAD_ALLOCS.with(|c| c.get());
+    assert_eq!(
+        allocs, 0,
+        "PsychoacousticBassProcessor::process_block allocated {} times during steady state",
+        allocs
+    );
+}
+
+// ── Phase 4: Advanced Engine, Modulation, Plugins & Analysis Zero Allocation Tests ──
+
+#[test]
+fn drift_controller_allocates_zero_bytes() {
+    use engine::output::DriftController;
+
+    let mut ctrl = DriftController::new_adaptive(true, 8192);
+    // Warmup
+    ctrl.update(4100);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for i in 0..1000 {
+        ctrl.update(4100 + (i % 5));
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocs = THREAD_ALLOCS.with(|c| c.get());
+    assert_eq!(
+        allocs, 0,
+        "DriftController::update allocated {} times during steady state",
+        allocs
+    );
+}
+
+#[test]
+fn automation_track_render_block_allocates_zero_bytes() {
+    use engine::dsp::timeline::curve::{AutomationTrack, InterpolationMode};
+
+    let mut track = AutomationTrack::new();
+    track.insert(0, 0.0, InterpolationMode::Linear);
+    track.insert(500, 1.0, InterpolationMode::SCurve);
+    track.insert(1000, 0.2, InterpolationMode::Exponential);
+
+    let mut buf = [0.0f32; 128];
+    // Warmup
+    track.render_block(0, &mut buf);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for i in 0..1000 {
+        track.render_block((i * 128) % 1000, &mut buf);
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocs = THREAD_ALLOCS.with(|c| c.get());
+    assert_eq!(
+        allocs, 0,
+        "AutomationTrack::render_block allocated {} times during steady state",
+        allocs
+    );
+}
+
+#[test]
+fn modulation_processors_allocate_zero_bytes() {
+    use engine::dsp::modulation::{
+        AdsrEnvelope, EnvelopeFollower, Lfo, ModSource, ModulationMatrix,
+    };
+
+    let mut lfo = Lfo::new(48000.0, 5.0);
+    let mut env = AdsrEnvelope::new(48000.0, 0.01, 0.05, 0.5, 0.1);
+    let mut follower = EnvelopeFollower::new(48000.0, 0.005, 0.05);
+    let mut matrix = ModulationMatrix::new();
+    matrix.connect(ModSource::Lfo(0), 1, 0.5);
+
+    let audio = [0.5f32; 128];
+    let mut out_lfo = [0.0f32; 128];
+    let mut out_env = [0.0f32; 128];
+    let mut out_fol = [0.0f32; 128];
+
+    // Warmup
+    lfo.render_block(&mut out_lfo);
+    env.render_block(&mut out_env);
+    follower.process_block(&audio, &mut out_fol);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for _ in 0..500 {
+        lfo.render_block(&mut out_lfo);
+        env.render_block(&mut out_env);
+        follower.process_block(&audio, &mut out_fol);
+        let _ = matrix.evaluate_param_offset(1, |_| 0.5);
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocs = THREAD_ALLOCS.with(|c| c.get());
+    assert_eq!(
+        allocs, 0,
+        "Modulation processors allocated {} times during steady state",
+        allocs
+    );
+}
+
+#[test]
+fn creative_fx_allocate_zero_bytes() {
+    use engine::fx::{
+        Chorus, CombFilter, DistortionType, Flanger, Phaser, PingPongDelay, RingModulator,
+        Saturator,
+    };
+
+    let mut comb = CombFilter::new(512, 100.0, 0.5, 0.2);
+    let mut ping_pong = PingPongDelay::new(512, 100, 0.5);
+    let mut chorus = Chorus::new(48000.0);
+    let mut flanger = Flanger::new(48000.0);
+    let mut phaser = Phaser::new(48000.0);
+    let mut ring_mod = RingModulator::new(48000.0, 440.0);
+    let mut saturator = Saturator::new(DistortionType::TubeSaturation, 2.0);
+
+    let mut left = [0.3f32; 128];
+    let mut right = [0.3f32; 128];
+
+    // Warmup
+    comb.process_plane(&mut left);
+    ping_pong.process_stereo(&mut left, &mut right);
+    chorus.process_stereo(&mut left, &mut right);
+    flanger.process_plane(&mut left);
+    phaser.process_plane(&mut left);
+    ring_mod.process_plane(&mut left);
+    saturator.process_plane(&mut left);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for _ in 0..500 {
+        comb.process_plane(&mut left);
+        ping_pong.process_stereo(&mut left, &mut right);
+        chorus.process_stereo(&mut left, &mut right);
+        flanger.process_plane(&mut left);
+        phaser.process_plane(&mut left);
+        ring_mod.process_plane(&mut left);
+        saturator.process_plane(&mut left);
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocs = THREAD_ALLOCS.with(|c| c.get());
+    assert_eq!(
+        allocs, 0,
+        "Creative FX processors allocated {} times during steady state",
+        allocs
+    );
+}
+
+#[test]
+fn analysis_engine_allocates_zero_bytes() {
+    use engine::dsp::analysis::AnalysisEngine;
+
+    let mut engine = AnalysisEngine::new(48000.0, 512);
+    let samples = [0.2f32; 512];
+
+    // Warmup
+    let _ = engine.process_block(&samples);
+
+    ARMED.store(true, Ordering::Relaxed);
+    THREAD_ALLOCS.with(|c| c.set(0));
+
+    for _ in 0..200 {
+        let _ = engine.process_block(&samples);
+    }
+
+    ARMED.store(false, Ordering::Relaxed);
+    let allocs = THREAD_ALLOCS.with(|c| c.get());
+    assert_eq!(
+        allocs, 0,
+        "AnalysisEngine::process_block allocated {} times during steady state",
+        allocs
+    );
+}

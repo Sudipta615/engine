@@ -30,6 +30,7 @@ pub struct HybridSpatialRenderer {
     vbap: VbapRenderer,
     ambisonic: AmbisonicRenderer,
     binaural: BinauralRenderer,
+    bass_config: SpatialBassConfig,
     bass_engine: SpatialBassEngine,
     bass_room: Option<ModalBassRoom>,
     sample_rate: u32,
@@ -61,6 +62,7 @@ impl HybridSpatialRenderer {
             vbap,
             ambisonic,
             binaural,
+            bass_config,
             bass_engine,
             bass_room: None,
             sample_rate: 48000,
@@ -80,8 +82,14 @@ impl HybridSpatialRenderer {
 
     /// Update spatial bass engine configuration.
     pub fn set_bass_config(&mut self, config: &SpatialBassConfig) {
+        self.bass_config = config.clone();
         self.bass_engine
             .update_config(config, self.sample_rate as f32);
+    }
+
+    /// Active spatial bass configuration.
+    pub fn bass_config(&self) -> &SpatialBassConfig {
+        &self.bass_config
     }
 
     /// Switch output renderer kind (Vbap, Ambisonic, Binaural).
@@ -99,11 +107,12 @@ impl SpatialRenderer for HybridSpatialRenderer {
         // Prepare child renderers
         self.vbap.prepare(layout, sample_rate)?;
         self.ambisonic.prepare(layout, sample_rate)?;
-        self.binaural.prepare(layout, sample_rate)?;
+        self.binaural
+            .prepare(&SpeakerLayout::stereo(), sample_rate)?;
 
-        // Update bass engine for active channel count and sample rate
+        // Update bass engine for active channel count, sample rate, and user bass config
         self.bass_engine = SpatialBassEngine::new(
-            &SpatialBassConfig::default(),
+            &self.bass_config,
             self.sample_rate as f32,
             self.channel_count,
         );
@@ -226,13 +235,14 @@ impl SpatialRenderer for HybridSpatialRenderer {
 
         // 5. Process Spatial Bass Engine (crossover redirection, sub delay, immersion)
         {
-            // Split mutable borrows across channel planes
-            let (mains_slice, _) = self.channel_planes.split_at_mut(channels);
-            let mut mains_refs: Vec<&mut [f32]> =
-                mains_slice.iter_mut().map(|p| &mut p[..frames]).collect();
+            let mut mains_refs: [&mut [f32]; MAX_HYBRID_CHANNELS] =
+                core::array::from_fn(|_| &mut [][..]);
+            for (i, plane) in self.channel_planes[..channels].iter_mut().enumerate() {
+                mains_refs[i] = &mut plane[..frames];
+            }
 
             self.bass_engine.process(
-                &mut mains_refs,
+                &mut mains_refs[..channels],
                 &mut self.sub_plane[..frames],
                 None,
                 Some(&self.object_bass_plane[..frames]),
@@ -254,6 +264,7 @@ impl SpatialRenderer for HybridSpatialRenderer {
 mod tests {
     use super::*;
     use crate::spatial::speaker::SpeakerLayout;
+    use config::SpatialBassMode;
 
     #[test]
     fn hybrid_renderer_prepares_and_processes() {
@@ -268,6 +279,37 @@ mod tests {
 
         let inputs = HybridBlockInputs::default();
         let res = renderer.process_hybrid_block(&scene, &inputs, 128, &mut out);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn hybrid_renderer_preserves_custom_bass_config_through_prepare() {
+        let custom_cfg = SpatialBassConfig {
+            mode: SpatialBassMode::BassManaged,
+            crossover_hz: 125.0,
+            sub_delay_ms: 4.5,
+            sub_polarity_invert: true,
+            ..Default::default()
+        };
+
+        let mut renderer = HybridSpatialRenderer::new(RendererKind::Vbap, custom_cfg.clone());
+        assert_eq!(renderer.bass_config().crossover_hz, 125.0);
+        assert_eq!(renderer.bass_config().mode, SpatialBassMode::BassManaged);
+
+        let layout = SpeakerLayout::five_point_one();
+        renderer.prepare(&layout, 96000).expect("prepare");
+
+        // The configured parameters must survive prepare()
+        assert_eq!(renderer.bass_config().crossover_hz, 125.0);
+        assert_eq!(renderer.bass_config().mode, SpatialBassMode::BassManaged);
+        assert_eq!(renderer.bass_config().sub_delay_ms, 4.5);
+        assert!(renderer.bass_config().sub_polarity_invert);
+
+        let scene = SpatialScene::new(96000);
+        let channels = layout.speakers.len();
+        let mut out = vec![0.0f32; 64 * channels];
+        let inputs = HybridBlockInputs::default();
+        let res = renderer.process_hybrid_block(&scene, &inputs, 64, &mut out);
         assert!(res.is_ok());
     }
 }

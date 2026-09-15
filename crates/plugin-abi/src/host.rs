@@ -209,6 +209,9 @@ impl PluginHost {
             host: self as *const PluginHost,
             raw,
             vtable: self.vtable,
+            bypassed: false,
+            transport: crate::transport::TransportInfo::default(),
+            bus_layout: crate::bus::PluginBusLayout::default(),
         })
     }
 }
@@ -226,6 +229,9 @@ pub struct PluginInstance {
     host: *const PluginHost,
     raw: *mut c_void,
     vtable: crate::PluginVTable,
+    bypassed: bool,
+    transport: crate::transport::TransportInfo,
+    bus_layout: crate::bus::PluginBusLayout,
 }
 
 impl PluginInstance {
@@ -311,6 +317,76 @@ impl PluginInstance {
             }
             Err(_) => Err(PluginAbiError::Status(AbiStatus::InstantiationFailed)),
         }
+    }
+
+    /// Process a multi-bus audio block (main audio channels + optional sidechain).
+    /// If the plugin is bypassed, the main audio passes through unmodified.
+    pub unsafe fn process_busses(
+        &mut self,
+        busses: &mut crate::bus::AudioBussesMut,
+    ) -> Result<(), PluginAbiError> {
+        if self.bypassed {
+            return Ok(());
+        }
+        self.process(busses.main)
+    }
+
+    /// Toggle plugin bypass. When bypassed, `process_busses` is a transparent pass-through.
+    pub fn set_bypass(&mut self, bypassed: bool) {
+        self.bypassed = bypassed;
+    }
+
+    /// Returns `true` if the plugin is currently bypassed.
+    pub fn is_bypassed(&self) -> bool {
+        self.bypassed
+    }
+
+    /// Update musical transport and tempo context for the plugin.
+    pub fn set_transport(&mut self, transport: crate::transport::TransportInfo) {
+        self.transport = transport;
+    }
+
+    /// Read active transport context.
+    pub fn transport(&self) -> &crate::transport::TransportInfo {
+        &self.transport
+    }
+
+    /// Configure active multi-bus layout.
+    pub fn set_bus_layout(&mut self, layout: crate::bus::PluginBusLayout) {
+        self.bus_layout = layout;
+    }
+
+    /// Read active multi-bus layout.
+    pub fn bus_layout(&self) -> &crate::bus::PluginBusLayout {
+        &self.bus_layout
+    }
+
+    /// Dispatch a batch of sample-offset parameter automation events.
+    pub fn dispatch_automation(
+        &mut self,
+        batch: &crate::automation::ParamAutomationBatch,
+    ) -> Result<(), PluginAbiError> {
+        for ev in batch.as_slice() {
+            self.set_param(ev.param_index, ev.value)?;
+        }
+        Ok(())
+    }
+
+    /// Dispatch MIDI events (e.g. CC mapping or MPE expressions).
+    pub fn dispatch_midi(
+        &mut self,
+        packet: &crate::midi::MidiPacket,
+    ) -> Result<(), PluginAbiError> {
+        for ev in packet.as_slice() {
+            if ev.event_type == crate::midi::MidiEventType::ControlChange as u8 {
+                // Map CC number to parameter if in range
+                if (ev.data1 as usize) < crate::MAX_PLUGIN_PARAMS {
+                    let val = (ev.data2 as f32) / 127.0;
+                    let _ = self.set_param(ev.data1 as u32, val);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Serialize the plugin's state. Control path; may allocate.

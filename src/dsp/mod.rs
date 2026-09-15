@@ -1,6 +1,7 @@
 //! Digital Signal Processing module — EQ, limiter, loudness, resampler, and the full pipeline.
 
 pub mod aelog;
+pub mod analysis;
 pub mod analyzer;
 pub mod autoeq;
 pub mod biquad;
@@ -9,8 +10,10 @@ pub mod convolution;
 pub mod correction;
 pub mod crossfade;
 pub mod crossfeed;
+pub mod crossover;
 pub mod device_profile;
 pub mod dither;
+pub mod dynamics;
 pub mod equalizer;
 pub mod float;
 pub mod gain;
@@ -19,6 +22,7 @@ pub mod graphic_eq;
 pub mod limiter;
 pub mod loudness;
 pub mod meters;
+pub mod modulation;
 pub mod multiband_compressor;
 pub mod pipeline;
 #[cfg(feature = "resample")]
@@ -30,6 +34,7 @@ pub mod timeline;
 pub mod timestretch;
 pub mod true_peak;
 
+pub use analysis::{AnalysisEngine, AnalysisSnapshot};
 pub use analyzer::{AnalyzerSnapshot, AudioAnalyzer, ANALYZER_FFT_SIZE, ANALYZER_UPDATE_HZ};
 pub use autoeq::{AutoEq, AutoEqParams, AutoEqResult, FrequencyResponse, TargetCurve};
 pub use biquad::{
@@ -39,8 +44,18 @@ pub use biquad::{
 pub use channel_trim::{ChannelTrimmer, MAX_CHANNEL_DELAY_MS, MAX_CHANNEL_EQ_BANDS};
 pub use convolution::ConvolutionEngine;
 pub use crossfade::{CrossfadeConfig, CrossfadeCurve, MixerState, TrackMixer};
+pub use crossover::{
+    Crossover2Way, Crossover3Way, CrossoverArchitecture, CrossoverCpuTier, CrossoverPhaseBehavior,
+};
 pub use dither::{Dither, DitherType};
-pub use equalizer::{EqBandParams, EqFilterType, ParametricEq, MAX_EQ_BANDS};
+pub use dynamics::{
+    BallisticEnvelope, ChannelLinkMode, DetectionMode, DetectorConfig, DynamicsDetector,
+    SidechainFilter,
+};
+pub use equalizer::{
+    DynamicEq, DynamicEqBand, DynamicEqBandParams, EqBandParams, EqFilterType, ParametricEq,
+    MAX_DYNAMIC_EQ_BANDS, MAX_EQ_BANDS,
+};
 pub use float::AudioFloat;
 pub use gain::{FadeProcessor, FadeState, GainProcessor, GainProcessorF32, GainProcessorF64};
 pub use graphic_eq::GraphicEq;
@@ -48,12 +63,15 @@ pub use limiter::{LimiterMode, LookaheadLimiter, TruePeakMode};
 pub use loudness::{
     LoudnessMeasurement, LoudnessMetadata, LoudnessMeter, LoudnessMode, LoudnessNormalizer,
 };
+pub use modulation::{AdsrEnvelope, EnvelopeFollower, Lfo, ModulationMatrix};
 pub use pipeline::{
     DspPipeline, DspStageCapability, EngineStats, OutputSampleFormat, PrecisionMode,
     StageChannelSupport, DSP_STAGE_CAPABILITIES,
 };
 #[cfg(feature = "resample")]
 pub use resampler::AudioResampler;
+#[cfg(feature = "resample")]
+pub use resampler::LatencyProvider;
 #[cfg(feature = "resample")]
 pub use resampler::ResamplerError;
 pub use stereo::StereoEnhancer;

@@ -53,7 +53,10 @@ use super::render::{HybridBlockInputs, RenderError, SpatialRenderer};
 use super::room::{EarlyReflections, ListenerImage, RoomLateField, MAX_IMAGES};
 use super::scene::{ListenerTransform, SpatialScene};
 use super::speaker::SpeakerLayout;
-use super::spread::{add_gain, normalize_gains, ring_directions, MAX_SPREAD_GAINS, RING_SAMPLES};
+use super::spread::{
+    add_gain, constant_spread_half_angle, normalize_gains, ring_directions_n, SpreadMode,
+    MAX_SPREAD_GAINS,
+};
 
 /// Default smoothing time constant (ms) for coefficient changes.
 pub const DEFAULT_SMOOTHING_MS: f32 = 24.0;
@@ -126,6 +129,7 @@ pub struct BasicPanner {
     /// bit-identical.
     baked: Option<BakedScene>,
 
+    layout_span_rad: f32,
     sample_rate: f32,
     prepared: bool,
 }
@@ -156,6 +160,7 @@ impl BasicPanner {
             meter: SpatialMeterState::new(0),
             quality: SpatialQuality::default(),
             baked: None,
+            layout_span_rad: std::f32::consts::FRAC_PI_3,
             sample_rate: 44_100.0,
             prepared: false,
         }
@@ -273,6 +278,22 @@ impl BasicPanner {
         self.room_er
             .prepare(speaker_count, sample_rate, self.smooth);
         self.room_late.prepare(sample_rate);
+        let layout_span_rad = if self.pan.len() >= 2 {
+            let min_az = self
+                .pan
+                .iter()
+                .map(|p| p.azimuth)
+                .fold(f32::INFINITY, f32::min);
+            let max_az = self
+                .pan
+                .iter()
+                .map(|p| p.azimuth)
+                .fold(f32::NEG_INFINITY, f32::max);
+            (max_az - min_az).abs().min(std::f32::consts::PI)
+        } else {
+            std::f32::consts::FRAC_PI_3
+        };
+        self.layout_span_rad = layout_span_rad;
         self.sample_rate = sample_rate as f32;
         self.prepared = true;
         Ok(())
@@ -325,27 +346,30 @@ impl BasicPanner {
     }
 
     /// Angular-region spread solve (spec §30): solve the exact direction
-    /// plus a fixed ring of samples around it at `spread × 60°`, aggregate
-    /// by speaker, and energy-normalise. `dir` is the listener-space 3D
-    /// direction (needed for the ring geometry; the panner consumes only
-    /// azimuths). Writes into `out` (sized [`MAX_SPREAD_GAINS`]).
+    /// plus an angular ring of samples around it scaled by constant-spread
+    /// half-angle, aggregate by speaker, and energy-normalise. Writes into `out`.
     fn solve_spread(&self, dir: Vec3, spread: f32, out: &mut [(usize, f32)]) {
         let s = spread.clamp(0.0, 1.0);
-        let base_w = 1.0 - s;
+        let mode = SpreadMode::from_linear(s);
+        let n_ring = mode.ring_count();
+        let half_angle = constant_spread_half_angle(s, self.layout_span_rad);
+        let base_w = (1.0 - s).max(0.0);
         let mut scratch = [(0usize, 0.0f32); 4];
         let mut len = 0usize;
         self.solve_pan(dir.azimuth_rad(), &mut scratch);
         for &(spk, v) in scratch.iter() {
             len = add_gain(out, len, spk, v * base_w);
         }
-        let mut ring = [Vec3::ZERO; RING_SAMPLES];
-        let n_ring = ring_directions(dir, s * super::spread::SPREAD_MAX_HALF_ANGLE_RAD, &mut ring);
         if n_ring > 0 {
-            let ring_w = s / n_ring as f32;
-            for rd in ring.iter().take(n_ring) {
-                self.solve_pan(rd.azimuth_rad(), &mut scratch);
-                for &(spk, v) in scratch.iter() {
-                    len = add_gain(out, len, spk, v * ring_w);
+            let mut ring = [Vec3::ZERO; 12];
+            let actual_n = ring_directions_n(dir, half_angle, &mut ring, n_ring);
+            if actual_n > 0 {
+                let ring_w = s / actual_n as f32;
+                for rd in ring.iter().take(actual_n) {
+                    self.solve_pan(rd.azimuth_rad(), &mut scratch);
+                    for &(spk, v) in scratch.iter() {
+                        len = add_gain(out, len, spk, v * ring_w);
+                    }
                 }
             }
         }

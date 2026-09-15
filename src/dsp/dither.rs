@@ -53,6 +53,12 @@ pub enum DitherType {
         note = "Undefined transfer function; use DitherType::Triangular instead."
     )]
     NoiseShaped,
+    /// 16-bit psychoacoustically optimized noise shaping (Wannamaker 4-tap F-weighting).
+    NoiseShaped16,
+    /// 20-bit noise shaping with balanced high-frequency boost.
+    NoiseShaped20,
+    /// 24-bit subtle high-order noise shaping for reference dynamic range.
+    NoiseShaped24,
 }
 
 /// Shibata F-weighted noise shaping coefficients for 44.1 kHz (9-tap IIR error feedback).
@@ -65,6 +71,16 @@ const SHIBATA_COEFFS_44100: [f32; 9] = [
 const SHIBATA_COEFFS_48000: [f32; 9] = [
     2.2374, -2.7120, 2.3784, -1.8640, 1.2035, -0.6267, 0.2625, -0.0740, 0.0119,
 ];
+
+/// Wannamaker F-weighted 4-tap noise shaping coefficients for 16-bit word length.
+/// H(z) = 1 - (2.033 z^-1 - 2.165 z^-2 + 1.959 z^-3 - 0.835 z^-4)
+const NOISE_SHAPING_16: [f32; 4] = [2.033, -2.165, 1.959, -0.835];
+
+/// Psychoacoustically tuned 3-tap noise shaping coefficients for 20-bit word length.
+const NOISE_SHAPING_20: [f32; 3] = [1.5, -0.8, 0.1];
+
+/// High-order subtle 2-tap noise shaping coefficients for 24-bit word length.
+const NOISE_SHAPING_24: [f32; 2] = [1.0, -0.25];
 
 /// Dither processor.
 ///
@@ -98,6 +114,10 @@ pub struct Dither {
     shibata_err_pos: usize,
     // Active Shibata coefficients (set from sample_rate at construction)
     shibata_coeffs: [f32; 9],
+    // Generic noise shaping error history (16/20/24-bit)
+    ns_err_left: [f32; 8],
+    ns_err_right: [f32; 8],
+    ns_err_pos: usize,
 }
 
 impl Dither {
@@ -132,6 +152,9 @@ impl Dither {
             shibata_err_right: [0.0; 9],
             shibata_err_pos: 0,
             shibata_coeffs,
+            ns_err_left: [0.0; 8],
+            ns_err_right: [0.0; 8],
+            ns_err_pos: 0,
         }
     }
 
@@ -158,6 +181,17 @@ impl Dither {
         for k in 0..9 {
             let idx = (pos + 9 - 1 - k) % 9;
             sum += self.shibata_coeffs[k] * err[idx];
+        }
+        sum
+    }
+
+    /// Compute generic noise-shaping error-feedback value for one channel (16/20/24-bit).
+    #[inline]
+    fn generic_ns_feedback(coeffs: &[f32], err: &[f32; 8], pos: usize) -> f32 {
+        let mut sum = 0.0f32;
+        for (k, &c) in coeffs.iter().enumerate() {
+            let idx = (pos + 8 - 1 - k) % 8;
+            sum += c * err[idx];
         }
         sum
     }
@@ -293,6 +327,37 @@ impl Dither {
                 self.shape_right = q_r - shaped_r + self.shape_right * 0.5;
                 return (q_l.clamp(-1.0, 1.0), q_r.clamp(-1.0, 1.0));
             }
+
+            DitherType::NoiseShaped16 | DitherType::NoiseShaped20 | DitherType::NoiseShaped24 => {
+                let coeffs: &[f32] = match self.dither_type {
+                    DitherType::NoiseShaped16 => &NOISE_SHAPING_16,
+                    DitherType::NoiseShaped20 => &NOISE_SHAPING_20,
+                    DitherType::NoiseShaped24 => &NOISE_SHAPING_24,
+                    _ => unreachable!(),
+                };
+                let noise_l = (Self::next_random_f32(&mut self.rng_state_left)
+                    + Self::next_random_f32(&mut self.rng_state_left))
+                    * half_lsb;
+                let noise_r = (Self::next_random_f32(&mut self.rng_state_right)
+                    + Self::next_random_f32(&mut self.rng_state_right))
+                    * half_lsb;
+
+                let pos = self.ns_err_pos;
+                let feedback_l = Self::generic_ns_feedback(coeffs, &self.ns_err_left, pos);
+                let feedback_r = Self::generic_ns_feedback(coeffs, &self.ns_err_right, pos);
+
+                let shaped_l = left + noise_l - feedback_l;
+                let shaped_r = right + noise_r - feedback_r;
+
+                let q_l = (shaped_l * quant_steps_f).round() / quant_steps_f;
+                let q_r = (shaped_r * quant_steps_f).round() / quant_steps_f;
+
+                self.ns_err_left[pos] = q_l - shaped_l;
+                self.ns_err_right[pos] = q_r - shaped_r;
+                self.ns_err_pos = (pos + 1) % 8;
+
+                return (q_l.clamp(-1.0, 1.0), q_r.clamp(-1.0, 1.0));
+            }
         };
 
         let ql = (dithered_l * quant_steps_f).round() / quant_steps_f;
@@ -381,6 +446,37 @@ impl Dither {
                 self.shape_right = (q_r - shaped_r + (self.shape_right as f64) * 0.5) as f32;
                 return (q_l.clamp(-1.0, 1.0), q_r.clamp(-1.0, 1.0));
             }
+
+            DitherType::NoiseShaped16 | DitherType::NoiseShaped20 | DitherType::NoiseShaped24 => {
+                let coeffs: &[f32] = match self.dither_type {
+                    DitherType::NoiseShaped16 => &NOISE_SHAPING_16,
+                    DitherType::NoiseShaped20 => &NOISE_SHAPING_20,
+                    DitherType::NoiseShaped24 => &NOISE_SHAPING_24,
+                    _ => unreachable!(),
+                };
+                let noise_l = (Self::next_random_f64(&mut self.rng_state_left)
+                    + Self::next_random_f64(&mut self.rng_state_left))
+                    * half_lsb;
+                let noise_r = (Self::next_random_f64(&mut self.rng_state_right)
+                    + Self::next_random_f64(&mut self.rng_state_right))
+                    * half_lsb;
+
+                let pos = self.ns_err_pos;
+                let feedback_l = Self::generic_ns_feedback(coeffs, &self.ns_err_left, pos) as f64;
+                let feedback_r = Self::generic_ns_feedback(coeffs, &self.ns_err_right, pos) as f64;
+
+                let shaped_l = left + noise_l - feedback_l;
+                let shaped_r = right + noise_r - feedback_r;
+
+                let q_l = (shaped_l * quant_steps_f).round() / quant_steps_f;
+                let q_r = (shaped_r * quant_steps_f).round() / quant_steps_f;
+
+                self.ns_err_left[pos] = (q_l - shaped_l) as f32;
+                self.ns_err_right[pos] = (q_r - shaped_r) as f32;
+                self.ns_err_pos = (pos + 1) % 8;
+
+                return (q_l.clamp(-1.0, 1.0), q_r.clamp(-1.0, 1.0));
+            }
         };
 
         let ql = (dithered_l * quant_steps_f).round() / quant_steps_f;
@@ -439,6 +535,24 @@ impl Dither {
                 self.shape_left = q - shaped + self.shape_left * 0.5;
                 q.clamp(-1.0, 1.0)
             }
+            DitherType::NoiseShaped16 | DitherType::NoiseShaped20 | DitherType::NoiseShaped24 => {
+                let coeffs: &[f32] = match self.dither_type {
+                    DitherType::NoiseShaped16 => &NOISE_SHAPING_16,
+                    DitherType::NoiseShaped20 => &NOISE_SHAPING_20,
+                    DitherType::NoiseShaped24 => &NOISE_SHAPING_24,
+                    _ => unreachable!(),
+                };
+                let noise = (Self::next_random_f32(&mut self.rng_state_left)
+                    + Self::next_random_f32(&mut self.rng_state_left))
+                    * half_lsb;
+                let pos = self.ns_err_pos;
+                let feedback = Self::generic_ns_feedback(coeffs, &self.ns_err_left, pos);
+                let shaped = sample + noise - feedback;
+                let q = (shaped * quant_steps_f).round() / quant_steps_f;
+                self.ns_err_left[pos] = q - shaped;
+                self.ns_err_pos = (pos + 1) % 8;
+                q.clamp(-1.0, 1.0)
+            }
         }
     }
 
@@ -491,6 +605,24 @@ impl Dither {
                 let shaped = sample + noise - (self.shape_left as f64) * 0.5;
                 let q = (shaped * quant_steps_f).round() / quant_steps_f;
                 self.shape_left = (q - shaped + (self.shape_left as f64) * 0.5) as f32;
+                q.clamp(-1.0, 1.0)
+            }
+            DitherType::NoiseShaped16 | DitherType::NoiseShaped20 | DitherType::NoiseShaped24 => {
+                let coeffs: &[f32] = match self.dither_type {
+                    DitherType::NoiseShaped16 => &NOISE_SHAPING_16,
+                    DitherType::NoiseShaped20 => &NOISE_SHAPING_20,
+                    DitherType::NoiseShaped24 => &NOISE_SHAPING_24,
+                    _ => unreachable!(),
+                };
+                let noise = (Self::next_random_f64(&mut self.rng_state_left)
+                    + Self::next_random_f64(&mut self.rng_state_left))
+                    * half_lsb;
+                let pos = self.ns_err_pos;
+                let feedback = Self::generic_ns_feedback(coeffs, &self.ns_err_left, pos) as f64;
+                let shaped = sample + noise - feedback;
+                let q = (shaped * quant_steps_f).round() / quant_steps_f;
+                self.ns_err_left[pos] = (q - shaped) as f32;
+                self.ns_err_pos = (pos + 1) % 8;
                 q.clamp(-1.0, 1.0)
             }
         }
@@ -562,5 +694,23 @@ mod tests {
             "TPDF mean should be near zero, got {}",
             mean
         );
+    }
+
+    #[test]
+    fn test_noise_shaped_modes_bounded_and_stable() {
+        for &(mode, depth) in &[
+            (DitherType::NoiseShaped16, 16),
+            (DitherType::NoiseShaped20, 20),
+            (DitherType::NoiseShaped24, 24),
+        ] {
+            let mut dither = Dither::new(mode, depth);
+            for _ in 0..10_000 {
+                let (l, r) = dither.process(0.2, -0.2);
+                assert!(l.abs() <= 1.0, "{:?} output must be bounded", mode);
+                assert!(r.abs() <= 1.0, "{:?} output must be bounded", mode);
+                assert!(!l.is_nan(), "{:?} must not produce NaN", mode);
+                assert!(!r.is_nan(), "{:?} must not produce NaN", mode);
+            }
+        }
     }
 }

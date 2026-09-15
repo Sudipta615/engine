@@ -425,4 +425,40 @@ impl OfflineExecutor {
     pub fn master_sample(&self) -> u64 {
         self.master_sample
     }
+
+    /// Flush all processor states (delays, acoustics, convolution overlap buffers,
+    /// and edge planes) to silence (Item 29).
+    pub fn flush(&mut self) {
+        for delay in self.delays.values_mut() {
+            delay.buf.fill(0.0);
+            delay.pos = 0;
+        }
+        for acoustic in self.acoustics.values_mut() {
+            acoustic.raw.fill(0.0);
+            acoustic.pos = 0;
+        }
+        for conv in self.convolutions.values_mut() {
+            for x in &mut conv.pending {
+                *x = 0.0;
+            }
+            conv.tail.fill(0.0);
+        }
+        for fft_conv in self.fft_convolutions.values_mut() {
+            for x in &mut fft_conv.extra_delay {
+                *x = 0.0;
+            }
+        }
+        for plane in self.edge_planes.values_mut() {
+            plane.fill(0.0);
+        }
+        self.gain_steps.clear();
+    }
+
+    /// Render silent blocks to flush out the full reverberant / delay tail of the graph (Item 29).
+    pub fn render_tail(&mut self, tail_samples: usize) {
+        let blocks = tail_samples.div_ceil(self.block);
+        for _ in 0..blocks {
+            let _ = self.process_block();
+        }
+    }
 }

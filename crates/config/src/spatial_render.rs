@@ -115,6 +115,8 @@ pub enum SpatialBassMode {
     BassManaged,
     /// Bass immersion: dynamic low-shelf + psychoacoustic harmonic reinforcement.
     BassImmersion,
+    /// Adaptive psychoacoustic bass: fundamental tracking, missing fundamental harmonic synthesis, and masking.
+    Psychoacoustic,
 }
 
 fn default_immersion_amount() -> f32 {
@@ -123,6 +125,50 @@ fn default_immersion_amount() -> f32 {
 
 fn default_bass_crossover_hz() -> f32 {
     80.0
+}
+
+fn default_max_harmonic() -> u8 {
+    4
+}
+
+fn default_speaker_cutoff_hz() -> f32 {
+    60.0
+}
+
+fn default_max_spl_db() -> f32 {
+    105.0
+}
+
+/// Configuration for adaptive psychoacoustic bass enhancement (Phase 3 Point 26).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PsychoacousticBassConfig {
+    /// Maximum harmonic generated (2 = 2nd harmonic only, up to 5).
+    #[serde(default = "default_max_harmonic")]
+    pub max_harmonic: u8,
+    /// Enable DC offset protection highpass filter.
+    #[serde(default = "default_true")]
+    pub dc_protection: bool,
+    /// Intermodulation distortion protection.
+    #[serde(default = "default_true")]
+    pub intermod_protection: bool,
+    /// Speaker physical cutoff frequency (Hz). Harmonics below this are suppressed.
+    #[serde(default = "default_speaker_cutoff_hz")]
+    pub speaker_cutoff_hz: f32,
+    /// Maximum SPL capability of the target speaker / transducer (dB).
+    #[serde(default = "default_max_spl_db")]
+    pub max_spl_db: f32,
+}
+
+impl Default for PsychoacousticBassConfig {
+    fn default() -> Self {
+        Self {
+            max_harmonic: default_max_harmonic(),
+            dc_protection: true,
+            intermod_protection: true,
+            speaker_cutoff_hz: default_speaker_cutoff_hz(),
+            max_spl_db: default_max_spl_db(),
+        }
+    }
 }
 
 /// Configuration for the spatial bass engine.
@@ -155,6 +201,9 @@ pub struct SpatialBassConfig {
     /// Dynamic low-shelf boost [0.0, 12.0] dB in BassImmersion mode.
     #[serde(default)]
     pub dynamic_boost_db: f32,
+    /// Psychoacoustic configuration parameters (Phase 3 Point 26).
+    #[serde(default)]
+    pub psychoacoustic: PsychoacousticBassConfig,
 }
 
 impl Default for SpatialBassConfig {
@@ -169,6 +218,7 @@ impl Default for SpatialBassConfig {
             sub_polarity_invert: false,
             harmonic_amount: default_immersion_amount(),
             dynamic_boost_db: 0.0,
+            psychoacoustic: PsychoacousticBassConfig::default(),
         }
     }
 }

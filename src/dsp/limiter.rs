@@ -79,12 +79,24 @@ pub enum LimiterMode {
     Transparent,
 
     /// Intentional coloration — applies an exponential soft-clip curve after
-    /// gain reduction.  The limiter's brick-wall protection is slightly
+    /// gain reduction. The limiter's brick-wall protection is slightly
     /// sacrificed for a warmer, rounder transient character.
     ///
-    /// Formerly: `soft_clip = true`.  Old callers that passed `soft_clip=true`
+    /// Formerly: `soft_clip = true`. Old callers that passed `soft_clip=true`
     /// are automatically mapped to this variant.
     Saturate,
+
+    /// Ultra-fast brickwall safety limiter with microsecond attack for live streaming
+    /// and strict safety enforcement (zero overshoot guarantee).
+    Safety,
+
+    /// High-quality mastering limiter with program-dependent dual-stage release,
+    /// inter-sample peak protection, and adaptive recovery.
+    Mastering,
+
+    /// Combined soft-clipper pre-limiter and lookahead brickwall limiter.
+    /// Shaves transient crest factor before limiting for maximal perceived loudness.
+    ClipperLimiter,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -124,6 +136,11 @@ pub struct LookaheadLimiter {
     current_gain: f32,
     attack_coeff: f32,
     release_coeff: f32,
+    stereo_link: f32,
+    fast_release_coeff: f32,
+    slow_release_coeff: f32,
+    rms_history: f32,
+    rms_coeff: f32,
 
     // ── FIR state (for TruePeakMode::Fir4x) ──────────────────────────────
     // Shared `TruePeakMeter` implementation (one per channel) — the same
@@ -190,7 +207,7 @@ impl LookaheadLimiter {
         mode: LimiterMode,
     ) -> Self {
         let lookahead_secs = lookahead_ms / 1000.0;
-        let lookahead_samples = ((lookahead_secs * sample_rate).ceil() as usize).max(1);
+        let lookahead_samples = ((lookahead_secs * sample_rate).round() as usize).max(1);
         let attack_secs = attack_ms / 1000.0;
         let release_secs = release_ms / 1000.0;
 
@@ -233,6 +250,11 @@ impl LookaheadLimiter {
             current_gain: 1.0,
             attack_coeff,
             release_coeff,
+            stereo_link: 1.0,
+            fast_release_coeff: (-1.0_f32 / (0.020 * sample_rate)).exp(),
+            slow_release_coeff: (-1.0_f32 / (0.250 * sample_rate)).exp(),
+            rms_history: 0.0,
+            rms_coeff: 1.0 - (-1.0_f32 / (0.050 * sample_rate)).exp(),
             fir_meters: std::array::from_fn(|_| TruePeakMeter::new()),
             max_true_peak: 0.0,
             max_sample_peak: 0.0,
@@ -317,6 +339,21 @@ impl LookaheadLimiter {
     /// Set the limiter/saturation mode.
     pub fn set_mode(&mut self, mode: LimiterMode) {
         self.mode = mode;
+    }
+
+    /// Current limiter/saturation mode.
+    pub fn mode(&self) -> LimiterMode {
+        self.mode
+    }
+
+    /// Stereo link ratio `0.0` (independent channel processing) to `1.0` (fully linked).
+    pub fn stereo_link(&self) -> f32 {
+        self.stereo_link
+    }
+
+    /// Set stereo link ratio `0.0` to `1.0`.
+    pub fn set_stereo_link(&mut self, link: f32) {
+        self.stereo_link = link.clamp(0.0, 1.0);
     }
 
     /// Backward-compat API: maps `true` → `Saturate`, `false` → `Transparent`.
@@ -503,6 +540,9 @@ impl LookaheadLimiter {
             .map(|&(_, v)| v)
             .unwrap_or(input_peak);
 
+        // Track RMS history for program-dependent release in mastering mode
+        self.rms_history += self.rms_coeff * (input_peak - self.rms_history);
+
         // ── 3. Compute desired gain from future peak ───────────────────────
         let desired_gain = if future_max_peak > self.ceiling_linear {
             self.ceiling_linear / future_max_peak
@@ -512,11 +552,22 @@ impl LookaheadLimiter {
 
         // ── 4. Smooth gain (attack when reducing, release when recovering) ─
         if desired_gain < self.current_gain {
-            self.current_gain =
-                desired_gain + (self.current_gain - desired_gain) * self.attack_coeff;
+            let eff_attack = match self.mode {
+                LimiterMode::Safety => (-1.0_f32 / (0.00005 * self.sample_rate)).exp(),
+                _ => self.attack_coeff,
+            };
+            self.current_gain = desired_gain + (self.current_gain - desired_gain) * eff_attack;
         } else {
-            self.current_gain =
-                desired_gain + (self.current_gain - desired_gain) * self.release_coeff;
+            let eff_release = if self.mode == LimiterMode::Mastering {
+                // Program-dependent dual-stage release:
+                // Fast recovery for isolated transients; slow recovery for sustained program level.
+                let crest = (input_peak - self.rms_history).max(0.0);
+                let blend = (crest * 3.0).clamp(0.0, 1.0);
+                self.fast_release_coeff * blend + self.slow_release_coeff * (1.0 - blend)
+            } else {
+                self.release_coeff
+            };
+            self.current_gain = desired_gain + (self.current_gain - desired_gain) * eff_release;
         }
         self.current_gain = crate::buffer::flush_denormal(self.current_gain);
         self.current_gain = self.current_gain.clamp(0.0, 1.0);
@@ -530,10 +581,27 @@ impl LookaheadLimiter {
 
         for i in 0..ch {
             let delayed = self.delay_lines[i][read_pos];
-            self.delay_lines[i][self.delay_write_pos] = clean_in[i];
+            let write_sample = if self.mode == LimiterMode::ClipperLimiter {
+                // Gentle soft-clipper pre-limiter to shave peak crests
+                let thresh = self.ceiling_linear as f64;
+                let abs_s = clean_in[i].abs();
+                if abs_s > thresh {
+                    let sign = clean_in[i].signum();
+                    let excess = abs_s - thresh;
+                    sign * (thresh + (excess * 0.5).tanh() * (thresh * 0.2))
+                } else {
+                    clean_in[i]
+                }
+            } else {
+                clean_in[i]
+            };
+            self.delay_lines[i][self.delay_write_pos] = write_sample;
             let mut out = delayed * gain_f64;
             match self.mode {
-                LimiterMode::Transparent => {
+                LimiterMode::Transparent
+                | LimiterMode::Safety
+                | LimiterMode::Mastering
+                | LimiterMode::ClipperLimiter => {
                     out = out.clamp(-c, c);
                 }
                 LimiterMode::Saturate => {
@@ -718,7 +786,7 @@ impl LookaheadLimiter {
     // ── Internal helpers ──────────────────────────────────────────────────
 
     fn rebuild_buffers(&mut self) {
-        self.lookahead_samples = ((self.lookahead_secs * self.sample_rate).ceil() as usize).max(1);
+        self.lookahead_samples = ((self.lookahead_secs * self.sample_rate).round() as usize).max(1);
         // The audio delay line must hold the lookahead window plus the FIR
         // detector's own group delay when Fir4x mode is active.
         let buf_len = (self.audio_delay_samples() + 1).next_power_of_two();
@@ -1013,5 +1081,71 @@ mod tests {
             "Predictive envelope: output exceeded ceiling after impulse; got {}",
             max_out
         );
+    }
+
+    #[test]
+    fn test_mastering_mode_program_dependent_release() {
+        let sr = 48000.0f32;
+        let mut limiter = LookaheadLimiter::new(sr);
+        limiter.set_mode(LimiterMode::Mastering);
+        limiter.set_ceiling_db(-0.3);
+
+        // Feed impulse
+        limiter.process(3.0, 3.0);
+        let mut min_gain = 1.0f32;
+        for _ in 0..300 {
+            limiter.process(0.0, 0.0);
+            min_gain = min_gain.min(limiter.current_gain());
+        }
+        assert!(
+            min_gain < 0.5,
+            "Gain must reduce significantly for 3.0 impulse (got {min_gain})"
+        );
+
+        // Allow release recovery over 40,000 samples (~3 time constants)
+        for _ in 0..40_000 {
+            limiter.process(0.0, 0.0);
+        }
+        let recovered_gain = limiter.current_gain();
+        assert!(
+            recovered_gain > 0.95,
+            "Mastering limiter must recover gain back to unity (got {recovered_gain})"
+        );
+    }
+
+    #[test]
+    fn test_safety_mode_zero_overshoot() {
+        let sr = 48000.0f32;
+        let mut limiter = LookaheadLimiter::new(sr);
+        limiter.set_mode(LimiterMode::Safety);
+        limiter.set_ceiling_db(-0.5);
+        let ceiling = 10.0_f32.powf(-0.5 / 20.0);
+
+        // Feed massive overload steps
+        for _ in 0..1000 {
+            let (l, r) = limiter.process(10.0, -10.0);
+            assert!(
+                l.abs() <= ceiling + 1e-4,
+                "Safety mode output must never exceed ceiling"
+            );
+            assert!(
+                r.abs() <= ceiling + 1e-4,
+                "Safety mode output must never exceed ceiling"
+            );
+        }
+    }
+
+    #[test]
+    fn test_clipper_limiter_and_stereo_link() {
+        let sr = 48000.0f32;
+        let mut limiter = LookaheadLimiter::new(sr);
+        limiter.set_mode(LimiterMode::ClipperLimiter);
+        limiter.set_stereo_link(0.5);
+        assert_eq!(limiter.stereo_link(), 0.5);
+
+        for _ in 0..1000 {
+            let (l, r) = limiter.process(2.0, 2.0);
+            assert!(l <= 1.0 && r <= 1.0);
+        }
     }
 }

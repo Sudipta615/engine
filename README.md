@@ -34,6 +34,9 @@ from C, C++, Python, C#, Node.js, and any language that can call C.
 | **Real-time analyzer** | Lock-free peak / RMS / dominant-frequency and FFT spectrum taps published in every telemetry snapshot. |
 | **Loudness & tags** | EBU R128 / ReplayGain measurement, normalization, and **tag write-back** (`tag-write`) in FLAC/MP3/M4A/WAV/AIFF/APE/WavPack; AcoustID **fingerprinting** (`fingerprint`). |
 | **System-audio capture** | WASAPI loopback recording of the system mix straight to a float32 WAV (Windows). |
+| **Creative FX & Modulation** | Dedicated sound-design layer (`fx/`): comb filter, stereo ping-pong delay, chorus, flanger, phaser, ring modulator, and saturator (tape/tube/wavefolder). Unified modulation engine (`dsp::modulation`): tempo-synced multi-waveform LFO, ADSR envelopes, envelope follower, and dynamic modulation matrix. |
+| **Production Plugin Host & Tail Flushing** | Full plugin hosting abstraction (`crates/plugin-abi`): multi-bus audio (sidechain, aux), sample-offset automation, full MIDI/MPE routing, musical transport sync, and error-isolated bypass. Graph tail analysis (`latency::analyze_tail`) and executor flush/render semantics. |
+| **Real-Time Psychoacoustic Analysis** | Spectral centroid, spread, flux, rolloff, flatness, sub-bass energy, crest factor, dynamic range, transient density, and harmonicity analysis (`dsp::analysis`). |
 | **Stable C FFI** | Drive the whole surface — transport, DSP, playlist, **endpoint routing**, and the **aux insert** — from C/C++ or any C-callable language. |
 
 ---
@@ -477,10 +480,12 @@ cross-target compile check of the native WASAPI/ASIO backends. Always re-run `ca
 │   ├── decode/                # Symphonia + native DSD/Opus/TTA/WavPack, channel
 │   │                          #   layout/mix, tags, fingerprint, loudness
 │   ├── dsp/                   # DSP primitives + pipeline/ (reference oracle)
-│   │   │                      #   + graph/ (production: arena + compiled plans,
-│   │   │                      #   split into construction/plan/swap/access/controls/
-│   │   │                      #   lifecycle/process/limiter/report + nodes/)
-│   │   └── resampler/         # Rubato-based resampling
+│   │   ├── modulation/        #   Unified modulation: Lfo, AdsrEnvelope, EnvelopeFollower, ModulationMatrix
+│   │   ├── analysis/          #   Spectral/psychoacoustic analysis: centroid, spread, flux, rolloff, harmonicity
+│   │   ├── timeline/          #   Sample-accurate parameter automation curves & interpolation
+│   │   ├── graph2/            #   Graph 2.0: typed-port topology + arena lowering + realtime execution
+│   │   └── resampler/         #   Rubato-based resampling
+│   ├── fx/                    # Creative sound-design DSP layer: comb, ping-pong delay, chorus, flanger, phaser, ring mod, saturation
 │   ├── spatial/               # Speaker-independent spatial layer (Phases 8–19):
 │   │                          #   math/ (Vec3+Quat+coords), scene/object/speaker/
 │   │                          #   level/render + panner/ (BasicPanner) +
@@ -498,8 +503,8 @@ cross-target compile check of the native WASAPI/ASIO backends. Always re-run `ca
 │   │                          #   smoothing of IMU/VR orientation samples) +
 │   │                          #   scene-file format (Serde save/load) and a
 │   │                          #   SpatialNode in the production DSP graph
-│   ├── output/                # ALSA / WASAPI / ASIO / CoreAudio / CPAL + endpoint.rs
-│   │                          #   (per-endpoint worker + drift correction), device
+│   ├── output/                # ALSA / WASAPI / ASIO / CoreAudio / CPAL + endpoint.rs,
+│   │                          #   drift.rs (adaptive PI clock drift correction & ASRC), device
 │   │                          #   monitor, output profiles, WAV writer, loopback
 │   └── bin/                   # audio-engine-cli, replaygain-scanner
 ├── benches/                   # dsp_bench, pipeline_bench, graph_plan_bench, spatial_bench

@@ -179,3 +179,71 @@ fn test_resampler_speed_half_not_inverted() {
             ratio,
         );
 }
+
+#[test]
+fn test_latency_provider_all_quality_tiers_and_rates() {
+    use super::LatencyProvider;
+
+    let tiers = [
+        ResamplerQuality::Fast,
+        ResamplerQuality::Balanced,
+        ResamplerQuality::HighQuality,
+        ResamplerQuality::Ultra,
+    ];
+
+    let rate_pairs = [
+        (44_100.0, 48_000.0),
+        (48_000.0, 96_000.0),
+        (96_000.0, 44_100.0),
+        (88_200.0, 192_000.0),
+    ];
+
+    for &tier in &tiers {
+        for &(in_rate, out_rate) in &rate_pairs {
+            let resampler =
+                AudioResampler::<f32>::new(tier, in_rate as f32, out_rate as f32).unwrap();
+
+            // Direct filter delay
+            let filter_delay = resampler.filter_delay_samples();
+            assert!(
+                filter_delay > 0.0,
+                "{:?} ({in_rate}->{out_rate}): filter group delay must be positive",
+                tier
+            );
+
+            // Buffering delay
+            let buf_delay = resampler.buffering_delay_samples();
+            assert!(
+                buf_delay > 0.0,
+                "{:?} ({in_rate}->{out_rate}): buffering delay must be positive",
+                tier
+            );
+
+            // Total latency
+            let total = resampler.latency_samples_exact();
+            assert_eq!(total, filter_delay + buf_delay);
+
+            // LatencyProvider trait
+            let provider_latency = LatencyProvider::latency_samples(&resampler, out_rate);
+            assert!(
+                (provider_latency - total).abs() < 1e-3,
+                "LatencyProvider at out_rate should match total latency"
+            );
+
+            // LatencyProvider scaled to input sample rate
+            let in_rate_latency = LatencyProvider::latency_samples(&resampler, in_rate);
+            let expected_scaled = total * (in_rate / out_rate);
+            assert!(
+                (in_rate_latency - expected_scaled).abs() < 1e-3,
+                "LatencyProvider at in_rate should be properly ratio-scaled"
+            );
+
+            // GenericResampler wrapper
+            let generic = crate::dsp::resampler::GenericResampler::F32(resampler);
+            assert_eq!(
+                LatencyProvider::latency_samples(&generic, out_rate),
+                provider_latency
+            );
+        }
+    }
+}

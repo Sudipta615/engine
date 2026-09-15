@@ -78,3 +78,12 @@ impl DspNode for ResamplerNode {
 
     fn process_block_f64(&mut self, _planes: &mut [&mut [f64]]) {}
 }
+
+#[cfg(feature = "resample")]
+impl crate::dsp::resampler::LatencyProvider for ResamplerNode {
+    fn latency_samples(&self, sample_rate: f64) -> f64 {
+        self.resampler
+            .as_ref()
+            .map_or(0.0, |r| r.latency_samples_at(sample_rate))
+    }
+}

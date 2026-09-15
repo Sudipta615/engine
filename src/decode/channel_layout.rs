@@ -14,6 +14,10 @@ pub enum ChannelId {
     TopFrontRight,
     TopRearLeft,
     TopRearRight,
+    WideLeft,
+    WideRight,
+    TopSideLeft,
+    TopSideRight,
     Unknown(u8),
 }
 
@@ -35,6 +39,10 @@ impl ChannelId {
             ChannelId::TopFrontRight => "TFR".to_string(),
             ChannelId::TopRearLeft => "TRL".to_string(),
             ChannelId::TopRearRight => "TRR".to_string(),
+            ChannelId::WideLeft => "WL".to_string(),
+            ChannelId::WideRight => "WR".to_string(),
+            ChannelId::TopSideLeft => "TSL".to_string(),
+            ChannelId::TopSideRight => "TSR".to_string(),
             ChannelId::Unknown(n) => format!("U{n}"),
         }
     }
@@ -56,6 +64,10 @@ impl ChannelId {
             "TFR" => ChannelId::TopFrontRight,
             "TRL" => ChannelId::TopRearLeft,
             "TRR" => ChannelId::TopRearRight,
+            "WL" => ChannelId::WideLeft,
+            "WR" => ChannelId::WideRight,
+            "TSL" => ChannelId::TopSideLeft,
+            "TSR" => ChannelId::TopSideRight,
             _ => {
                 let rest = name.strip_prefix('U')?;
                 let n = rest.parse::<u8>().ok()?;
@@ -83,6 +95,8 @@ pub enum ChannelLayout {
     SevenPointOne,  // FL FR C LFE SL SR RL RR
     /// 7.1.4: FL FR C LFE SL SR RL RR + four overheads (TFL TFR TRL TRR).
     SevenPointOneFour,
+    /// 9.1.6: 7.1 base + 2 wide (WL WR) + 6 overheads (TFL TFR TSL TSR TRL TRR).
+    NinePointOneSix,
     Custom(Vec<ChannelId>),
 }
 
@@ -103,6 +117,7 @@ impl ChannelLayout {
             Self::SevenPointZero => 7,
             Self::SevenPointOne => 8,
             Self::SevenPointOneFour => 12,
+            Self::NinePointOneSix => 16,
             Self::Custom(ids) => ids.len(),
         }
     }
@@ -199,6 +214,24 @@ impl ChannelLayout {
                 ChannelId::TopRearLeft,
                 ChannelId::TopRearRight,
             ],
+            Self::NinePointOneSix => vec![
+                ChannelId::FrontLeft,
+                ChannelId::FrontRight,
+                ChannelId::Center,
+                ChannelId::Lfe,
+                ChannelId::SideLeft,
+                ChannelId::SideRight,
+                ChannelId::RearLeft,
+                ChannelId::RearRight,
+                ChannelId::WideLeft,
+                ChannelId::WideRight,
+                ChannelId::TopFrontLeft,
+                ChannelId::TopFrontRight,
+                ChannelId::TopSideLeft,
+                ChannelId::TopSideRight,
+                ChannelId::TopRearLeft,
+                ChannelId::TopRearRight,
+            ],
             Self::Custom(ids) => ids.clone(),
         }
     }
@@ -221,6 +254,7 @@ impl ChannelLayout {
             7 => Self::SevenPointZero,
             8 => Self::SevenPointOne,
             12 => Self::SevenPointOneFour,
+            16 => Self::NinePointOneSix,
             _ => Self::Custom((0..n as u8).map(ChannelId::Unknown).collect()),
         }
     }

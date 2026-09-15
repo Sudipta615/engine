@@ -753,6 +753,37 @@ impl<T: rubato::Sample + Float + Default + Send + Sync + 'static> AudioResampler
         self.source_rate == self.output_rate && (self.speed - 1.0).abs() < 0.001
     }
 
+    /// Filter group delay in output frames (`rubato::Resampler::output_delay`).
+    pub fn filter_delay_samples(&self) -> f64 {
+        if self.disabled || self.is_passthrough() {
+            0.0
+        } else {
+            self.inner.output_delay() as f64
+        }
+    }
+
+    /// Buffering delay in output frames from input chunk accumulation.
+    pub fn buffering_delay_samples(&self) -> f64 {
+        if self.disabled || self.is_passthrough() {
+            0.0
+        } else {
+            let ratio =
+                self.output_rate as f64 / self.compute_effective_source_rate().max(1) as f64;
+            self.inner.input_frames_next() as f64 * ratio
+        }
+    }
+
+    /// Implementation pipeline delay in output frames.
+    pub fn pipeline_delay_samples(&self) -> f64 {
+        0.0
+    }
+
+    /// Authoritative total latency in output frames:
+    /// filter group delay + pipeline delay + buffering delay.
+    pub fn latency_samples_exact(&self) -> f64 {
+        self.filter_delay_samples() + self.pipeline_delay_samples() + self.buffering_delay_samples()
+    }
+
     /// Authoritative filter group delay in output frames, straight from the
     /// underlying rubato resampler (`Resampler::output_delay`). Zero when the
     /// resampler is disabled or in passthrough mode (no conversion is
@@ -765,6 +796,21 @@ impl<T: rubato::Sample + Float + Default + Send + Sync + 'static> AudioResampler
         }
     }
 
+    /// Latency in samples at the specified sample rate including filter group delay
+    /// and buffering delay.
+    pub fn latency_samples_at(&self, sample_rate: f64) -> f64 {
+        if self.disabled || self.is_passthrough() {
+            return 0.0;
+        }
+        let out_sr = self.output_rate.max(1) as f64;
+        let delay_out = self.latency_samples_exact();
+        if sample_rate > 0.0 && (sample_rate - out_sr).abs() > 0.01 {
+            delay_out * (sample_rate / out_sr)
+        } else {
+            delay_out
+        }
+    }
+
     /// Group delay in milliseconds at the output sample rate.
     pub fn latency_ms(&self) -> f32 {
         self.latency_samples() as f32 / self.output_rate.max(1) as f32 * 1000.0
@@ -772,6 +818,14 @@ impl<T: rubato::Sample + Float + Default + Send + Sync + 'static> AudioResampler
 
     pub fn is_disabled(&self) -> bool {
         self.disabled
+    }
+}
+
+impl<T: rubato::Sample + Float + Default + Send + Sync + 'static> super::LatencyProvider
+    for AudioResampler<T>
+{
+    fn latency_samples(&self, sample_rate: f64) -> f64 {
+        self.latency_samples_at(sample_rate)
     }
 }
 
@@ -941,11 +995,26 @@ impl GenericResampler {
         }
     }
 
+    /// Latency in samples at the specified sample rate.
+    #[inline]
+    pub fn latency_samples_at(&self, sample_rate: f64) -> f64 {
+        match self {
+            Self::F32(r) => r.latency_samples_at(sample_rate),
+            Self::F64(r) => r.latency_samples_at(sample_rate),
+        }
+    }
+
     #[inline]
     pub fn read_f64(&mut self) -> Option<(f64, f64)> {
         match self {
             Self::F32(r) => r.read().map(|(l, r)| (l as f64, r as f64)),
             Self::F64(r) => r.read(),
         }
+    }
+}
+
+impl super::LatencyProvider for GenericResampler {
+    fn latency_samples(&self, sample_rate: f64) -> f64 {
+        self.latency_samples_at(sample_rate)
     }
 }

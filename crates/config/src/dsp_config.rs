@@ -44,6 +44,47 @@ impl Default for EqBandConfig {
     }
 }
 
+/// Configuration for a single dynamic EQ band.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DynamicEqBandConfig {
+    pub enabled: bool,
+    pub filter_type: FilterType,
+    pub frequency: f32,
+    pub static_gain_db: f32,
+    pub dynamic_gain_db: f32,
+    pub threshold_db: f32,
+    pub ratio: f32,
+    pub attack_ms: f32,
+    pub release_ms: f32,
+    pub range_db: f32,
+    pub q: f32,
+}
+
+impl Default for DynamicEqBandConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            filter_type: FilterType::Peaking,
+            frequency: 1000.0,
+            static_gain_db: 0.0,
+            dynamic_gain_db: -6.0,
+            threshold_db: -20.0,
+            ratio: 2.0,
+            attack_ms: 10.0,
+            release_ms: 80.0,
+            range_db: 12.0,
+            q: 1.414,
+        }
+    }
+}
+
+/// Configuration for multi-band dynamic EQ.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct DynamicEqConfig {
+    pub enabled: bool,
+    pub bands: Vec<DynamicEqBandConfig>,
+}
+
 /// A named EQ preset, optionally scoped to a specific output device.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EqPreset {

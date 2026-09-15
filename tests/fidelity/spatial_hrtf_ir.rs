@@ -353,6 +353,7 @@ fn measured_corpus_replaces_the_synthetic_grid_and_renders_exactly() {
         sample_rate: 96_000,
         source: Some("acceptance-corpus".into()),
         measurements,
+        mesh_hint: None,
     };
     let ds = HrtfDataset::from_corpus(
         &corpus,

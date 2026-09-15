@@ -115,8 +115,12 @@ fn role_azimuth(role: ChannelId) -> f32 {
         BackCenter => 180.0_f32.to_radians(),
         TopFrontLeft => (-30.0_f32).to_radians(),
         TopFrontRight => 30.0_f32.to_radians(),
+        TopSideLeft => (-90.0_f32).to_radians(),
+        TopSideRight => 90.0_f32.to_radians(),
         TopRearLeft => (-135.0_f32).to_radians(),
         TopRearRight => 135.0_f32.to_radians(),
+        WideLeft => (-60.0_f32).to_radians(),
+        WideRight => 60.0_f32.to_radians(),
         Lfe => 0.0, // never used — the LFE role takes the fold path
         Unknown(_) => 0.0,
     }
@@ -315,6 +319,16 @@ impl BinauralRenderer {
     /// The active quality tier (spec §86).
     pub fn quality(&self) -> SpatialQuality {
         self.quality
+    }
+
+    /// Active HRTF quality mode corresponding to the renderer's spatial quality tier.
+    pub fn hrtf_quality_mode(&self) -> super::hrtf::HrtfQualityMode {
+        match self.quality {
+            SpatialQuality::Low => super::hrtf::HrtfQualityMode::Low64,
+            SpatialQuality::Medium => super::hrtf::HrtfQualityMode::Medium128,
+            SpatialQuality::High => super::hrtf::HrtfQualityMode::High512,
+            SpatialQuality::Ultra => super::hrtf::HrtfQualityMode::Ultra2048,
+        }
     }
 
     /// Attach a v3.26 baked scene (control path). When set, objects whose

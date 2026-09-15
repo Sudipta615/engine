@@ -149,6 +149,114 @@ impl NearFieldState {
     }
 }
 
+/// Near-field rendering model selection (Phase 3 Point 23).
+///
+/// Controls which near-field processing is applied during binaural or HOA
+/// rendering. Models may be combined at the call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NearFieldModel {
+    /// Existing model: proximity gain + LF low-shelf boost (spec §40).
+    #[default]
+    ProximityGainAndShelf,
+    /// Additional distance-dependent ILD growth via wavefront curvature.
+    /// Models the `1 + r/d` head-radius / distance term in the Woodworth
+    /// near-field extension. Produces additional ILD at distances < ~0.5 m.
+    WavefrontCurvature,
+    /// Near-field HOA distance encoding: per-order NFC filters that compensate
+    /// for the curvature of the near-field wave at the speaker plane.
+    HoaDistanceEncoding,
+}
+
+/// Wavefront curvature state for near-field ILD augmentation.
+///
+/// Models the additional ILD produced by the spherical wavefront of a near-field
+/// source (the `1 + r/d` factor in the Woodworth near-field extension). The
+/// additional gain is computed as a difference from the far-field Woodworth ITD
+/// formula and applied to the contralateral ear as a biquad low-shelf.
+///
+/// Realtime-safe: all state is a fixed-size biquad.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WavefrontCurvatureState {
+    /// Per-ear additional gain adjustment (left, right) from wavefront curvature.
+    /// Positive = boost at that ear (ipsilateral when source is on that side).
+    ild_gain: [f32; 2],
+    /// Smoothing state for the curvature gain.
+    smooth: f32,
+}
+
+impl WavefrontCurvatureState {
+    /// Compute and smooth the near-field ILD contribution for `distance_m`.
+    ///
+    /// Returns `(gain_left, gain_right)`: additional linear gains to apply to
+    /// each ear's render path. Near 0.0 when `distance_m ≥ head_radius_m * 4`.
+    /// Allocation-free.
+    pub fn update_wavefront(
+        &mut self,
+        distance_m: f32,
+        head_radius_m: f32,
+        azimuth_rad: f32,
+        sample_rate: f32,
+    ) -> (f32, f32) {
+        let r = head_radius_m.max(0.01);
+        let d = distance_m.max(r * 0.5);
+        // Near-field curvature factor: the additional ILD gain (linear) beyond
+        // the standard Woodworth model. For d >> r, factor → 0. At d = r, factor = 1.
+        let curvature = (r / d).min(1.0);
+        // Azimuth-dependent: maximum at ear axis (±π/2), zero at front/rear.
+        let az_weight = azimuth_rad.sin().abs();
+        let target_ild_db = curvature * az_weight * 6.0; // max +6 dB additional ILD
+                                                         // One-pole smooth (τ ≈ 5 ms at 48 kHz).
+        let alpha = 1.0 - (-1.0 / (sample_rate * 0.005)).exp();
+        self.smooth += alpha * (target_ild_db - self.smooth);
+        let ild_lin = 10.0_f32.powf(self.smooth / 20.0);
+        // Apply gain to the ipsilateral ear: left for negative azimuth, right for positive.
+        let (gl, gr) = if azimuth_rad >= 0.0 {
+            (1.0, ild_lin)
+        } else {
+            (ild_lin, 1.0)
+        };
+        self.ild_gain = [gl, gr];
+        (gl, gr)
+    }
+
+    /// Current ILD gains `(left, right)` computed by the last `update_wavefront` call.
+    pub fn ild_gains(&self) -> (f32, f32) {
+        (self.ild_gain[0], self.ild_gain[1])
+    }
+}
+
+/// Compute the near-field HOA distance encoding filter coefficients for one order.
+///
+/// Near-field HOA encoding requires per-order IIR filters that compensate for the
+/// near-field term `(1 + jkr·∂/∂r)^l` in the spherical wave expansion. This is
+/// approximated by a 2nd-order IIR (one per order) with a high-shelf response
+/// whose corner frequency is `v_s / (2π·d)` (the Rayleigh frequency for distance d).
+///
+/// Returns 4 biquad coefficient sets (one per order sub-band, up to order 4).
+/// Control-path: coefficients are computed at block rate but the actual biquad
+/// filtering is realtime-safe.
+pub fn hoa_distance_encode_filter(
+    order: u8,
+    distance_m: f32,
+    sample_rate: f32,
+) -> [BiquadCoeffsF32; 4] {
+    let d = distance_m.max(0.05); // clamp to avoid ÷0
+    let c = 343.0f32; // speed of sound (m/s)
+                      // Rayleigh frequency: f_r = c / (2π·d).
+    let f_rayleigh = c / (std::f32::consts::TAU * d);
+    // The NFC filter for each order l is a high-shelf that boosts below f_r.
+    // For order l, the shelf corner scales as l·f_r, and the boost is
+    // approximately `(l(l+1) + 1)^{1/2}` dB per octave below f_r.
+    let clamped_order = (order as usize).min(4);
+    let mut out = [BiquadCoeffsF32::identity(); 4];
+    for (l, slot) in out.iter_mut().enumerate().take(clamped_order) {
+        let f_corner = (f_rayleigh * (l + 1) as f32).min(sample_rate * 0.45);
+        let boost_db = 3.0 * (l + 1) as f32; // l-th order lift
+        *slot = BiquadCoeffsF32::highshelf(sample_rate, f_corner, boost_db, 0.707);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

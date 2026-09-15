@@ -213,11 +213,54 @@ pub fn import_sofa(bytes: &[u8], source: Option<String>) -> Result<HrtfCorpus, S
         });
     }
 
-    Ok(HrtfCorpus {
+    let mut corpus = HrtfCorpus {
         sample_rate: rate,
         source,
         measurements,
-    })
+        mesh_hint: None,
+    };
+    let detected = corpus.detect_mesh_kind();
+    corpus.mesh_hint = Some(detected);
+    Ok(corpus)
+}
+
+/// Mode controlling mesh interpretation when importing a SOFA file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SofaImportMode {
+    /// Auto-detect whether the dataset forms a regular Cartesian grid or irregular mesh.
+    #[default]
+    Auto,
+    /// Require a regular Cartesian grid (fail with error if irregular).
+    ForceRegular,
+    /// Treat the dataset as an irregular spherical mesh.
+    ForceIrregular,
+}
+
+/// Parse a NetCDF-classic `.sofa`/`.nc` byte buffer with explicit [`SofaImportMode`].
+pub fn import_sofa_with_mode(
+    bytes: &[u8],
+    source: Option<String>,
+    mode: SofaImportMode,
+) -> Result<HrtfCorpus, SofaImportError> {
+    let mut corpus = import_sofa(bytes, source)?;
+    let detected = corpus.detect_mesh_kind();
+    match mode {
+        SofaImportMode::Auto => {
+            corpus.mesh_hint = Some(detected);
+        }
+        SofaImportMode::ForceRegular => {
+            if detected != super::hrtf::HrtfMeshKind::RegularGrid {
+                return Err(SofaImportError::InvalidData(
+                    "expected regular Cartesian grid",
+                ));
+            }
+            corpus.mesh_hint = Some(super::hrtf::HrtfMeshKind::RegularGrid);
+        }
+        SofaImportMode::ForceIrregular => {
+            corpus.mesh_hint = Some(super::hrtf::HrtfMeshKind::IrregularMesh);
+        }
+    }
+    Ok(corpus)
 }
 
 /// Convert a SOFA spherical or cartesian source position to the engine's

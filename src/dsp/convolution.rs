@@ -47,6 +47,8 @@ pub struct ConvolutionEngine {
     sample_rate: f32,
     /// Maximum IR length allowed
     max_ir_length: usize,
+    /// Loaded impulse response length in samples
+    ir_length: usize,
 
     /// Partition block size (B)
     block_size: usize,
@@ -177,6 +179,7 @@ impl ConvolutionEngine {
             current_wet_mix: 1.0,
             sample_rate,
             max_ir_length,
+            ir_length: 0,
             block_size,
             fft_size,
             num_partitions: 1,
@@ -256,6 +259,7 @@ impl ConvolutionEngine {
             ));
         }
         let len = ir_samples.len().min(self.max_ir_length);
+        self.ir_length = len;
         let bs = self.block_size;
         let num_parts = len.div_ceil(bs);
         self.num_partitions = num_parts.max(1);
@@ -353,6 +357,7 @@ impl ConvolutionEngine {
             ));
         }
         let len = ir_samples.len().min(self.max_ir_length);
+        self.ir_length = len;
         let bs = self.block_size;
         let num_parts = len.div_ceil(bs);
         self.num_partitions = num_parts.max(1);
@@ -884,6 +889,41 @@ impl ConvolutionEngine {
 
     pub fn num_partitions(&self) -> usize {
         self.num_partitions
+    }
+
+    /// Intrinsic latency of the partitioned convolution engine in samples.
+    /// In UP-OLA this is exactly one partition block (`block_size`).
+    pub fn intrinsic_latency_samples(&self) -> usize {
+        if self.enabled && self.ir_loaded {
+            self.block_size
+        } else {
+            0
+        }
+    }
+
+    /// Partition latency in samples (the block size of the uniform partitions).
+    pub fn partition_latency_samples(&self) -> usize {
+        self.block_size
+    }
+
+    /// Algorithmic latency in samples introduced by the convolution architecture.
+    pub fn algorithmic_latency_samples(&self) -> usize {
+        self.intrinsic_latency_samples()
+    }
+
+    /// Total length of the loaded impulse response in samples.
+    pub fn ir_length_samples(&self) -> usize {
+        if self.ir_loaded {
+            self.ir_length
+        } else {
+            0
+        }
+    }
+
+    /// Length of the reverberation / filter tail in samples (IR length minus latency).
+    pub fn tail_length_samples(&self) -> usize {
+        self.ir_length_samples()
+            .saturating_sub(self.intrinsic_latency_samples())
     }
 
     /// Latency of the partitioned convolution engine in samples.

@@ -326,3 +326,119 @@ fn test_loudness_meter_reset() {
         "After reset, integrated LUFS should be effectively silent"
     );
 }
+
+#[test]
+fn test_multichannel_7_1_4_and_9_1_6_loudness() {
+    let sr = 48000.0f32;
+    // 7.1.4: 12 channels
+    let mut meter_714 = LoudnessMeter::new(sr, 12);
+    meter_714.set_channel_layout(&ChannelLayout::SevenPointOneFour);
+    let n = 48000 * 2;
+    let mut frames_714 = Vec::with_capacity(n * 12);
+    for i in 0..n {
+        let s = 0.1 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / sr).sin();
+        // 12 channels: FL, FR, C, LFE, SL, SR, RL, RR, TFL, TFR, TRL, TRR
+        for ch in 0..12 {
+            if ch == 3 {
+                frames_714.push(0.0); // silence on LFE
+            } else {
+                frames_714.push(s);
+            }
+        }
+    }
+    meter_714.process_interleaved(&frames_714, 12);
+    let m12 = meter_714.snapshot();
+    assert!(
+        m12.integrated_lufs.is_finite(),
+        "7.1.4 integrated loudness must be finite"
+    );
+    assert!(m12.integrated_lufs > -30.0 && m12.integrated_lufs < 0.0);
+
+    // 9.1.6: 16 channels
+    let mut meter_916 = LoudnessMeter::new(sr, 16);
+    meter_916.set_channel_layout(&ChannelLayout::NinePointOneSix);
+    let mut frames_916 = Vec::with_capacity(n * 16);
+    for i in 0..n {
+        let s = 0.1 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / sr).sin();
+        for ch in 0..16 {
+            if ch == 3 {
+                frames_916.push(0.0); // silence on LFE
+            } else {
+                frames_916.push(s);
+            }
+        }
+    }
+    meter_916.process_interleaved(&frames_916, 16);
+    let m16 = meter_916.snapshot();
+    assert!(
+        m16.integrated_lufs.is_finite(),
+        "9.1.6 integrated loudness must be finite"
+    );
+    // 9.1.6 with 15 active channels (11 of which weighted 1.41) should be louder than 7.1.4
+    assert!(
+        m16.integrated_lufs > m12.integrated_lufs,
+        "9.1.6 should be louder than 7.1.4"
+    );
+}
+
+#[test]
+fn test_ebu_tech_3342_lra_startup_window() {
+    let sr = 48000.0f32;
+    let mut meter = LoudnessMeter::new(sr, 2);
+
+    // 1. Feed 2.0 seconds of alternating signal (< 3.0s window).
+    let n_2s = 48000 * 2;
+    let mut samples_2s = Vec::with_capacity(n_2s * 2);
+    for i in 0..n_2s {
+        let s = 0.5 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / sr).sin();
+        samples_2s.extend_from_slice(&[s, s]);
+    }
+    meter.process_interleaved(&samples_2s, 2);
+    let snap_2s = meter.snapshot();
+    // At 2.0s, fewer than 30 hops have occurred (only 20 hops), so short-term window is incomplete.
+    assert!(
+        !snap_2s.lra_valid,
+        "LRA must not be valid before the 3.0s short-term window fills (<3.0s duration)"
+    );
+
+    // 2. Feed an additional 3.0 seconds with dynamic material (0.1 then 0.8 amplitude).
+    let n_3s = 48000 * 3;
+    let mut samples_3s = Vec::with_capacity(n_3s * 2);
+    for i in 0..n_3s {
+        let amp = if i < 48000 * 15 / 10 { 0.05 } else { 0.8 };
+        let s = amp * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / sr).sin();
+        samples_3s.extend_from_slice(&[s, s]);
+    }
+    meter.process_interleaved(&samples_3s, 2);
+    let snap_5s = meter.snapshot();
+    assert!(
+        snap_5s.lra_valid,
+        "LRA must be valid after 5.0s of dynamic signal (>3.0s duration)"
+    );
+    assert!(
+        snap_5s.lra_lu > 3.0,
+        "LRA should reflect dynamic range between 0.05 and 0.8 amplitude, got {:.2} LU",
+        snap_5s.lra_lu
+    );
+}
+
+#[test]
+fn test_bs1770_5_calibration_1khz_sine_minus_20dbfs() {
+    let sr = 48000.0f32;
+    let mut meter = LoudnessMeter::new(sr, 2);
+    let n = 48000 * 4; // 4 seconds
+    let amp = 0.1f32; // -20 dBFS
+    let mut samples = Vec::with_capacity(n * 2);
+    for i in 0..n {
+        let s = amp * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / sr).sin();
+        samples.extend_from_slice(&[s, s]);
+    }
+    meter.process_interleaved(&samples, 2);
+    let m = meter.snapshot();
+    // BS.1770-5 calibration for -20 dBFS stereo 1 kHz sine should be ~ -20.02 LUFS
+    assert!(
+        (m.integrated_lufs - (-20.02)).abs() < 0.5,
+        "Stereo 1 kHz sine at -20 dBFS must measure within ±0.5 LU of -20.02 LUFS, got {:.2} LUFS",
+        m.integrated_lufs
+    );
+}

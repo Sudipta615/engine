@@ -132,6 +132,29 @@ impl SpeakerLayout {
         ])
     }
 
+    /// A 9.1.6 layout: 7.1 plus 2 wides (WL/WR at ±60°) and 6 overheads
+    /// (TFL/TFR at ±30°, TSL/TSR at ±90°, TRL/TRR at ±135°).
+    pub fn nine_point_one_six() -> Self {
+        Self::custom_from_roles(vec![
+            ChannelId::FrontLeft,
+            ChannelId::FrontRight,
+            ChannelId::Center,
+            ChannelId::Lfe,
+            ChannelId::SideLeft,
+            ChannelId::SideRight,
+            ChannelId::RearLeft,
+            ChannelId::RearRight,
+            ChannelId::WideLeft,
+            ChannelId::WideRight,
+            ChannelId::TopFrontLeft,
+            ChannelId::TopFrontRight,
+            ChannelId::TopSideLeft,
+            ChannelId::TopSideRight,
+            ChannelId::TopRearLeft,
+            ChannelId::TopRearRight,
+        ])
+    }
+
     /// Build a layout from a list of semantic channel roles, mapping each
     /// role to the engine's conventional geometry. Used to derive named
     /// presets from [`ChannelId`]s so render output slots line up with the
@@ -217,8 +240,12 @@ fn geometric_position(role: ChannelId) -> Vec3 {
         ChannelId::BackCenter => horiz(180.0, 0.0),
         ChannelId::TopFrontLeft => horiz(-30.0, ELEV),
         ChannelId::TopFrontRight => horiz(30.0, ELEV),
+        ChannelId::TopSideLeft => horiz(-90.0, ELEV),
+        ChannelId::TopSideRight => horiz(90.0, ELEV),
         ChannelId::TopRearLeft => horiz(-135.0, ELEV),
         ChannelId::TopRearRight => horiz(135.0, ELEV),
+        ChannelId::WideLeft => horiz(-60.0, 0.0),
+        ChannelId::WideRight => horiz(60.0, 0.0),
         ChannelId::Unknown(_) => Vec3::ZERO,
     }
 }

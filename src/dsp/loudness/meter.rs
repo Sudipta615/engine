@@ -2,6 +2,7 @@ use super::types::{
     LoudnessMeasurement, LoudnessMetadata, LoudnessMode, ABSOLUTE_GATE_LUFS, MOMENTARY_BLOCK_SECS,
     MOMENTARY_HOP_SECS, RELATIVE_GATE_OFFSET_LU, SHORT_TERM_WINDOW_SECS,
 };
+use crate::buffer::MAX_CHANNELS;
 use crate::decode::ChannelLayout;
 use crate::dsp::true_peak::TruePeakMeter;
 use std::f32::consts::PI;
@@ -28,8 +29,8 @@ pub(crate) struct KWeightStage1 {
     a2: f64,
     // One filter state per channel (up to `MAX_CHANNELS`), in f64 to
     // match the main biquad's precision model.
-    z1: [f64; 8],
-    z2: [f64; 8],
+    z1: [f64; MAX_CHANNELS],
+    z2: [f64; MAX_CHANNELS],
 }
 
 impl KWeightStage1 {
@@ -58,13 +59,16 @@ impl KWeightStage1 {
             b2: ((vh - vb * k / q + kk) / norm) as f64,
             a1: (2.0 * (kk - 1.0) / norm) as f64,
             a2: ((1.0 - k / q + kk) / norm) as f64,
-            z1: [0.0; 8],
-            z2: [0.0; 8],
+            z1: [0.0; MAX_CHANNELS],
+            z2: [0.0; MAX_CHANNELS],
         }
     }
 
     #[inline]
     pub(crate) fn process(&mut self, sample: f32, ch: usize) -> f32 {
+        if ch >= MAX_CHANNELS {
+            return sample;
+        }
         let s = sample as f64;
         let out = self.b0 * s + self.z1[ch];
         self.z1[ch] = crate::buffer::flush_denormal_f64(self.b1 * s - self.a1 * out + self.z2[ch]);
@@ -84,8 +88,8 @@ pub(crate) struct KWeightStage2 {
     a1: f64,
     a2: f64,
     // One filter state per channel (up to `MAX_CHANNELS`), in f64.
-    z1: [f64; 8],
-    z2: [f64; 8],
+    z1: [f64; MAX_CHANNELS],
+    z2: [f64; MAX_CHANNELS],
 }
 
 impl KWeightStage2 {
@@ -111,13 +115,16 @@ impl KWeightStage2 {
             b2: (1.0 / norm) as f64,
             a1: (2.0 * (kk - 1.0) / norm) as f64,
             a2: ((1.0 - k / q + kk) / norm) as f64,
-            z1: [0.0; 8],
-            z2: [0.0; 8],
+            z1: [0.0; MAX_CHANNELS],
+            z2: [0.0; MAX_CHANNELS],
         }
     }
 
     #[inline]
     pub(crate) fn process(&mut self, sample: f32, ch: usize) -> f32 {
+        if ch >= MAX_CHANNELS {
+            return sample;
+        }
         let s = sample as f64;
         let out = self.b0 * s + self.z1[ch];
         self.z1[ch] = crate::buffer::flush_denormal_f64(self.b1 * s - self.a1 * out + self.z2[ch]);
@@ -423,26 +430,22 @@ impl LoudnessNormalizer {
 }
 
 /// Per-channel weighting as defined in ITU-R BS.1770-4 for a conventional
-/// 5.1 ordering.  Indices: 0=L, 1=R, 2=C, 3=LFE, 4=SL, 5=SR, 6=SBL, 7=SBR.
-///
-/// [`bs1770_weights_for_layout`] derives the same weights from *semantic*
-/// channel positions (BS.1770-4 weights by position, not by index), which
-/// is what the meter actually uses — the raw-index constant is kept only
-/// as the default for unknown/legacy layouts.
+/// 5.1 ordering.
 #[allow(dead_code)]
-const BS1770_WEIGHTS: [f32; 8] = [1.0, 1.0, 1.0, 0.0, 1.41, 1.41, 1.41, 1.41];
+const BS1770_WEIGHTS: [f32; MAX_CHANNELS] = [
+    1.0, 1.0, 1.0, 0.0, 1.41, 1.41, 1.41, 1.41, 1.41, 1.41, 1.41, 1.41, 1.41, 1.41, 1.41, 1.41,
+];
 
-/// BS.1770-4 channel weights derived from a semantic [`ChannelLayout`].
+/// BS.1770-5 channel weights derived from a semantic [`ChannelLayout`].
 ///
 /// The standard weights channels by *position*: LFE is excluded (0.0),
 /// front L/R/C use 1.0, and every surround/height channel (side, rear,
-/// top) uses 1.41.  This stays correct as layouts grow past the
-/// conventional 5.1 ordering — e.g. 7.1 (rear surround at 1.41) and
-/// immersive/height layouts.
-pub fn bs1770_weights_for_layout(layout: &ChannelLayout) -> [f32; 8] {
+/// top, wide) uses 1.41 (+1.5 dB).  This stays correct across all layouts up to
+/// [`MAX_CHANNELS`] (16), including 7.1.4 (12 ch) and 9.1.6 (16 ch).
+pub fn bs1770_weights_for_layout(layout: &ChannelLayout) -> [f32; MAX_CHANNELS] {
     use crate::decode::ChannelId;
-    let mut weights = [1.0f32; 8];
-    for (i, id) in layout.channel_ids().iter().enumerate().take(8) {
+    let mut weights = [1.0f32; MAX_CHANNELS];
+    for (i, id) in layout.channel_ids().iter().enumerate().take(MAX_CHANNELS) {
         weights[i] = match id {
             ChannelId::Lfe => 0.0,
             ChannelId::FrontLeft | ChannelId::FrontRight | ChannelId::Center => 1.0,
@@ -453,8 +456,12 @@ pub fn bs1770_weights_for_layout(layout: &ChannelLayout) -> [f32; 8] {
             | ChannelId::BackCenter
             | ChannelId::TopFrontLeft
             | ChannelId::TopFrontRight
+            | ChannelId::TopSideLeft
+            | ChannelId::TopSideRight
             | ChannelId::TopRearLeft
-            | ChannelId::TopRearRight => 1.41,
+            | ChannelId::TopRearRight
+            | ChannelId::WideLeft
+            | ChannelId::WideRight => 1.41,
             ChannelId::Unknown(_) => 1.0,
         };
     }
@@ -462,7 +469,7 @@ pub fn bs1770_weights_for_layout(layout: &ChannelLayout) -> [f32; 8] {
 }
 
 /// Absolute gate threshold per EBU R128: −70 LUFS.
-/// Full ITU-R BS.1770-4 / EBU R128 loudness meter.
+/// Full ITU-R BS.1770-5 / EBU R128 loudness meter.
 ///
 /// Call [`LoudnessMeter::process_stereo`] for each sample at audio-thread
 /// rate, then call [`LoudnessMeter::snapshot`] at any rate (e.g., every 100
@@ -479,7 +486,7 @@ pub fn bs1770_weights_for_layout(layout: &ChannelLayout) -> [f32; 8] {
 ///    mean of passing blocks → relative gate at (ungated_mean − 10 LU) →
 ///    integrated = mean of all blocks passing both gates.
 /// 7. LRA = 95th percentile − 10th percentile of the gated short-term
-///    histogram.
+///    histogram (EBU Tech 3342).
 pub struct LoudnessMeter {
     sample_rate: f32,
 
@@ -491,12 +498,7 @@ pub struct LoudnessMeter {
     block_samples: u64,
     block_capacity: u64, // samples per 400ms block
 
-    // Hop counter: fires every 100 ms. At non-standard sample rates the
-    // rounded integer sample count may differ from the exact 100 ms target
-    // by up to ±0.5 samples (e.g. at 22050 Hz, `hop_capacity` = 2205
-    // samples = 100.0227 ms). This ≤ 0.023% timing error is well within
-    // the EBU R128 ±0.5 LU tolerance and matches all reference
-    // implementations (libebur128, ffmpeg).
+    // Hop counter: fires every 100 ms.
     hop_samples: u64,
     hop_capacity: u64,
 
@@ -515,14 +517,18 @@ pub struct LoudnessMeter {
 
     // History of short-term loudness (3s window) values for EBU Tech 3342 LRA calculation
     short_term_history: Vec<f32>,
+    lra_scratch: Vec<f32>,
 
-    /// BS.1770-4 channel weights for the current layout (semantic, not
+    /// BS.1770-5 channel weights for the current layout (semantic, not
     /// raw index). Rebuilt by `set_channel_layout`.
-    channel_weights: [f32; 8],
+    channel_weights: [f32; MAX_CHANNELS],
     /// Per-channel true-peak detectors (shared `TruePeakMeter`
     /// implementation — the same one the limiter and the offline scanner
     /// use, so dBTP means the same thing everywhere).
-    true_peak_meters: [TruePeakMeter; 8],
+    true_peak_meters: [TruePeakMeter; MAX_CHANNELS],
+
+    cached_integrated_lufs: f32,
+    cached_lra: (f32, bool),
 }
 
 impl LoudnessMeter {
@@ -547,35 +553,40 @@ impl LoudnessMeter {
             momentary_ring: [(0.0, 0); 4],
             momentary_idx: 0,
             momentary_filled: 0,
-            block_history: Vec::with_capacity(4096),
+            block_history: Vec::with_capacity(65536),
             short_term_ring: vec![f32::NEG_INFINITY; short_term_len],
             short_term_idx: 0,
             short_term_filled: 0,
-            short_term_history: Vec::with_capacity(4096),
+            short_term_history: Vec::with_capacity(65536),
+            lra_scratch: Vec::with_capacity(65536),
             channel_weights: bs1770_weights_for_layout(&ChannelLayout::from_count(_channels)),
             true_peak_meters: std::array::from_fn(|_| TruePeakMeter::new()),
+            cached_integrated_lufs: f32::NEG_INFINITY,
+            cached_lra: (0.0, false),
         }
     }
 
-    /// Set the semantic channel layout, rebuilding the BS.1770-4 channel
+    /// Set the semantic channel layout, rebuilding the BS.1770 channel
     /// weights from channel *position* (LFE=0.0, front=1.0, surround=1.41).
     pub fn set_channel_layout(&mut self, layout: &ChannelLayout) {
         self.channel_weights = bs1770_weights_for_layout(layout);
     }
 
-    /// Feed one frame of interleaved PCM (up to 8 channels).
+    /// Feed one frame of interleaved PCM (up to [`MAX_CHANNELS`] channels).
     #[inline]
     pub fn process_interleaved(&mut self, samples: &[f32], n_channels: usize) {
-        let n_channels = n_channels.min(8);
+        let n_channels = n_channels.min(MAX_CHANNELS);
+        if n_channels == 0 {
+            return;
+        }
         let weights = self.channel_weights;
         for frame in samples.chunks_exact(n_channels) {
             let mut weighted_sum = 0.0f32;
-            for (ch, &s) in frame.iter().enumerate().take(n_channels) {
+            for (ch, &s) in frame.iter().enumerate() {
                 let w = weights[ch];
                 let k_weighted = self.stage2.process(self.stage1.process(s, ch), ch);
                 weighted_sum += w * k_weighted * k_weighted;
-                // True peak via the shared 4× polyphase FIR oversampler (the
-                // same detector the limiter and the offline scanner use).
+                // True peak via the shared 4× polyphase FIR oversampler.
                 self.true_peak_meters[ch].process_sample(s as f64);
             }
             self.block_sum += weighted_sum as f64;
@@ -648,9 +659,16 @@ impl LoudnessMeter {
         let short_term_lufs = Self::ms_to_lufs(short_term_ms);
 
         // Record short-term loudness for LRA once window is sufficiently populated and above absolute gate
-        if self.short_term_filled >= 10 && short_term_lufs > ABSOLUTE_GATE_LUFS {
+        // EBU Tech 3342: requires a full 3.0s window (30 hops of 100 ms) before recording short-term values.
+        if self.short_term_filled >= self.short_term_ring.len()
+            && short_term_lufs > ABSOLUTE_GATE_LUFS
+        {
             self.short_term_history.push(short_term_lufs);
         }
+
+        // Update cached integrated loudness and LRA
+        self.cached_integrated_lufs = self.compute_integrated();
+        self.cached_lra = self.compute_lra_internal();
 
         // Reset hop accumulator for next 100ms interval
         self.block_sum = 0.0;
@@ -711,9 +729,7 @@ impl LoudnessMeter {
         let short_term_ms = self.short_term_mean();
         let short_term_lufs = Self::ms_to_lufs(short_term_ms);
 
-        // Integrated loudness with dual-threshold gating (BS.1770-4 §3.2)
         let integrated_lufs = self.compute_integrated();
-
         let (lra_lu, lra_valid) = self.compute_lra();
 
         let mut tp = 0.0f64;
@@ -733,16 +749,11 @@ impl LoudnessMeter {
 
     /// Running true-peak detector for each channel.
     #[inline]
-    pub fn true_peak_meters(&self) -> &[TruePeakMeter; 8] {
+    pub fn true_peak_meters(&self) -> &[TruePeakMeter; MAX_CHANNELS] {
         &self.true_peak_meters
     }
 
     /// Compute integrated LUFS using dual-threshold gating (EBU R128 / BS.1770-4 §3.2).
-    ///
-    /// ## Non-RT contract
-    /// This method allocates (filters `block_history` into a new Vec). It is
-    /// designed to be called from the metering read path (UI/control thread at
-    /// ~10 Hz), **not** from the audio callback thread.
     fn compute_integrated(&self) -> f32 {
         if self.block_history.is_empty() {
             return f32::NEG_INFINITY;
@@ -774,21 +785,55 @@ impl LoudnessMeter {
         Self::ms_to_lufs(integrated_ms as f32)
     }
 
+    fn compute_lra_internal(&mut self) -> (f32, bool) {
+        if self.short_term_history.len() < 2 {
+            return (0.0, false);
+        }
+
+        let mean_energy: f64 = self
+            .short_term_history
+            .iter()
+            .map(|&lufs| 10.0_f64.powf((lufs as f64 + 0.691) / 10.0))
+            .sum::<f64>()
+            / self.short_term_history.len() as f64;
+        let abs_mean_lufs = Self::ms_to_lufs(mean_energy as f32);
+        let rel_gate = abs_mean_lufs - 20.0;
+
+        self.lra_scratch.clear();
+        self.lra_scratch.extend(
+            self.short_term_history
+                .iter()
+                .copied()
+                .filter(|&lufs| lufs > rel_gate),
+        );
+
+        if self.lra_scratch.len() < 2 {
+            return (0.0, false);
+        }
+
+        self.lra_scratch
+            .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        let low_idx = ((self.lra_scratch.len() as f32 * 0.10).floor() as usize)
+            .min(self.lra_scratch.len() - 1);
+        let high_idx = ((self.lra_scratch.len() as f32 * 0.95).ceil() as usize)
+            .min(self.lra_scratch.len() - 1);
+
+        let lra = (self.lra_scratch[high_idx] - self.lra_scratch[low_idx]).max(0.0);
+        (lra, true)
+    }
+
     /// Compute Loudness Range (LRA) per EBU Tech 3342.
     ///
     /// Returns `(lra_lu, lra_valid)` where `lra_valid` is `false` when the
     /// short-term history has fewer than 2 gated blocks (track too short or
     /// signal below gate). In that case `lra_lu` is 0.0 (undefined) and callers
     /// should not display the value.
-    fn compute_lra(&self) -> (f32, bool) {
+    pub fn compute_lra(&self) -> (f32, bool) {
         if self.short_term_history.len() < 2 {
-            // Track is too short or signal was below the absolute gate throughout.
-            // LRA is undefined for this programme material — return (0.0, false)
-            // rather than fabricating a value from momentary data.
             return (0.0, false);
         }
 
-        // Calculate absolute-gated mean of short-term values in linear energy directly
         let mean_energy: f64 = self
             .short_term_history
             .iter()
@@ -797,7 +842,6 @@ impl LoudnessMeter {
             / self.short_term_history.len() as f64;
         let abs_mean_lufs = Self::ms_to_lufs(mean_energy as f32);
 
-        // Relative gate per EBU Tech 3342: -20 LU below the absolute-gated short-term mean
         let rel_gate = abs_mean_lufs - 20.0;
 
         let mut gated: Vec<f32> = self
@@ -833,12 +877,15 @@ impl LoudnessMeter {
         self.short_term_idx = 0;
         self.short_term_filled = 0;
         self.short_term_history.clear();
+        self.lra_scratch.clear();
         // Reset K-weight filter state and true-peak detectors
         self.stage1 = KWeightStage1::new(self.sample_rate);
         self.stage2 = KWeightStage2::new(self.sample_rate);
         for m in &mut self.true_peak_meters {
             m.reset();
         }
+        self.cached_integrated_lufs = f32::NEG_INFINITY;
+        self.cached_lra = (0.0, false);
     }
 
     /// Update sample rate (rebuilds filters, resets state).

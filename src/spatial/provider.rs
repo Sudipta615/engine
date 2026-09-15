@@ -172,6 +172,7 @@ mod tests {
             sample_rate: 48_000,
             source: Some("test".into()),
             measurements: meas,
+            mesh_hint: None,
         };
         let opts = HrtfLoadOptions {
             taps: 16,

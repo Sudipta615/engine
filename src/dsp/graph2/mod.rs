@@ -68,7 +68,9 @@ pub mod validate;
 
 pub use edge::{EdgeDef, EdgeEndpoint, EdgeId};
 pub use exec::{OfflineExecutor, CONVOLUTION_FFT_THRESHOLD};
-pub use latency::{analyze, compensate, node_latency, LatencyReport};
+pub use latency::{
+    analyze, compensate, compensate_at, node_latency, node_latency_at, LatencyReport,
+};
 pub use node::{
     HrtfSource, NodeCapabilities, NodeDef, NodeId, NodeKind, NodeParams, PortDirection, PortId,
     PortSpec, ProdStage, SignalType, SourceParams, TestSignal,

@@ -92,6 +92,176 @@ impl AcousticTransmission {
     }
 }
 
+/// Type alias for backward compatibility (spec §43).
+pub type BroadbandOcclusion = Occlusion;
+
+/// Frequency-dependent diffraction around edges/barriers (Phase 3 Point 24).
+///
+/// Models edge diffraction where longer wavelengths (lower frequencies) bend around
+/// obstacles more readily than higher frequencies.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DiffractionOcclusion {
+    /// Number of diffracting edges in path (1 to 4). Higher order = sharper attenuation.
+    pub edge_order: u8,
+    /// Normalized diffraction amount [0.0, 1.0]: 0 = direct line of sight, 1 = deep shadow zone.
+    pub diffraction_amount: f32,
+    /// Effective low-pass order for the diffraction shadow filter (1 or 2).
+    pub low_pass_order: u8,
+}
+
+impl Default for DiffractionOcclusion {
+    fn default() -> Self {
+        Self {
+            edge_order: 1,
+            diffraction_amount: 0.0,
+            low_pass_order: 1,
+        }
+    }
+}
+
+/// Material-dependent acoustic transmission (Phase 3 Point 24).
+///
+/// Frequency-dependent transmission through physical partitions across 3 bands:
+/// low (< 250 Hz), mid (250 Hz - 3 kHz), and high (> 3 kHz).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MaterialTransmission {
+    /// Transmission linear gain for low frequencies (< 250 Hz). E.g. 0.8 for drywall.
+    pub low_gain: f32,
+    /// Transmission linear gain for mid frequencies (250 Hz - 3 kHz). E.g. 0.35 for drywall.
+    pub mid_gain: f32,
+    /// Transmission linear gain for high frequencies (> 3 kHz). E.g. 0.1 for drywall.
+    pub high_gain: f32,
+}
+
+impl Default for MaterialTransmission {
+    fn default() -> Self {
+        Self {
+            low_gain: 1.0,
+            mid_gain: 1.0,
+            high_gain: 1.0,
+        }
+    }
+}
+
+impl MaterialTransmission {
+    /// Transparent (100% transmission / no partition).
+    pub const TRANSPARENT: Self = Self {
+        low_gain: 1.0,
+        mid_gain: 1.0,
+        high_gain: 1.0,
+    };
+
+    /// Drywall / partition wall preset.
+    pub const DRYWALL: Self = Self {
+        low_gain: 0.8,
+        mid_gain: 0.35,
+        high_gain: 0.1,
+    };
+
+    /// Solid brick / concrete wall preset.
+    pub const CONCRETE: Self = Self {
+        low_gain: 0.4,
+        mid_gain: 0.08,
+        high_gain: 0.01,
+    };
+
+    /// Glass window preset.
+    pub const GLASS: Self = Self {
+        low_gain: 0.6,
+        mid_gain: 0.25,
+        high_gain: 0.15,
+    };
+
+    /// Wood door preset.
+    pub const WOOD: Self = Self {
+        low_gain: 0.7,
+        mid_gain: 0.3,
+        high_gain: 0.12,
+    };
+}
+
+/// Combined frequency-dependent occlusion and diffraction model (Phase 3 Point 24).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FrequencyDependentOcclusion {
+    /// Broadband occlusion fallback or baseline.
+    pub broadband: Occlusion,
+    /// Edge diffraction parameters.
+    pub diffraction: DiffractionOcclusion,
+    /// Material transmission parameters.
+    pub material: MaterialTransmission,
+}
+
+impl FrequencyDependentOcclusion {
+    /// Compute 3-band gains (low, mid, high) combining material transmission and diffraction.
+    pub fn band_gains(&self) -> (f32, f32, f32) {
+        let diff = self.diffraction.diffraction_amount.clamp(0.0, 1.0);
+        let order = self.diffraction.edge_order.clamp(1, 4) as f32;
+        // Low frequencies diffract well: attenuation is modest even in shadow.
+        let diff_low = 1.0 - 0.3 * diff * (order * 0.25);
+        // Mid frequencies diffract partially.
+        let diff_mid = 1.0 - 0.65 * diff * (order * 0.25);
+        // High frequencies diffract poorly: severe shadow attenuation.
+        let diff_high = 1.0 - 0.95 * diff * (order * 0.25);
+
+        let g_low = (self.material.low_gain * diff_low).clamp(0.0, 1.0);
+        let g_mid = (self.material.mid_gain * diff_mid).clamp(0.0, 1.0);
+        let g_high = (self.material.high_gain * diff_high).clamp(0.0, 1.0);
+
+        (g_low, g_mid, g_high)
+    }
+}
+
+/// Precomputed coefficients for the 3-band frequency-dependent occlusion filters.
+#[derive(Debug, Clone, Copy)]
+pub struct OcclusionBandCoeffs {
+    pub lp_250: BiquadCoeffsF32,
+    pub hp_250: BiquadCoeffsF32,
+    pub lp_3000: BiquadCoeffsF32,
+    pub hp_3000: BiquadCoeffsF32,
+    pub gains: (f32, f32, f32),
+}
+
+impl OcclusionBandCoeffs {
+    /// Construct crossover biquad coefficients at 250 Hz and 3 kHz.
+    pub fn new(sample_rate: f32, fd: &FrequencyDependentOcclusion) -> Self {
+        let q = 0.707;
+        Self {
+            lp_250: BiquadCoeffsF32::lowpass(sample_rate, 250.0, q),
+            hp_250: BiquadCoeffsF32::highpass(sample_rate, 250.0, q),
+            lp_3000: BiquadCoeffsF32::lowpass(sample_rate, 3000.0, q),
+            hp_3000: BiquadCoeffsF32::highpass(sample_rate, 3000.0, q),
+            gains: fd.band_gains(),
+        }
+    }
+}
+
+/// Realtime-safe per-object 3-band occlusion crossover filter state.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OcclusionBandState {
+    pub xover_low_lp: BiquadStateF32,
+    pub xover_low_hp: BiquadStateF32,
+    pub xover_mid_lp: BiquadStateF32,
+    pub xover_high_hp: BiquadStateF32,
+}
+
+impl OcclusionBandState {
+    /// Process a single audio sample through the 3-band crossover and apply band gains.
+    /// Realtime-safe: 4 biquad steps, zero allocations.
+    #[inline]
+    pub fn process(&mut self, sample: f32, coeffs: &OcclusionBandCoeffs) -> f32 {
+        let (g_low, g_mid, g_high) = coeffs.gains;
+        // Split at 250 Hz: low band vs (mid + high) band.
+        let low_band = self.xover_low_lp.process(sample, &coeffs.lp_250);
+        let rest = self.xover_low_hp.process(sample, &coeffs.hp_250);
+
+        // Split rest at 3000 Hz: mid band vs high band.
+        let mid_band = self.xover_mid_lp.process(rest, &coeffs.lp_3000);
+        let high_band = self.xover_high_hp.process(rest, &coeffs.hp_3000);
+
+        low_band * g_low + mid_band * g_mid + high_band * g_high
+    }
+}
+
 /// Renderer-owned per-object occlusion filter state (realtime-safe).
 #[derive(Debug, Clone, Copy)]
 pub struct OcclusionState {
@@ -99,6 +269,8 @@ pub struct OcclusionState {
     cutoff_log: f32,
     /// The actual one-pole low-pass biquad state.
     filter: BiquadStateF32,
+    /// Preallocated 3-band frequency-dependent crossover state.
+    pub band_state: OcclusionBandState,
 }
 
 impl Default for OcclusionState {
@@ -106,6 +278,7 @@ impl Default for OcclusionState {
         Self {
             cutoff_log: 0.0,
             filter: BiquadStateF32::default(),
+            band_state: OcclusionBandState::default(),
         }
     }
 }
@@ -132,6 +305,17 @@ impl OcclusionState {
     #[inline]
     pub fn process(&mut self, sample: f32, coeffs: &BiquadCoeffsF32) -> f32 {
         self.filter.process(sample, coeffs)
+    }
+
+    /// Filter one sample through the 3-band frequency-dependent model.
+    /// Realtime-safe, zero allocations.
+    #[inline]
+    pub fn process_frequency_dependent(
+        &mut self,
+        sample: f32,
+        coeffs: &OcclusionBandCoeffs,
+    ) -> f32 {
+        self.band_state.process(sample, coeffs)
     }
 }
 
@@ -220,6 +404,71 @@ mod tests {
             assert!(y.is_finite());
             assert!((y - prev).abs() < 0.5, "bounded step {}", (y - prev).abs());
             prev = y;
+        }
+    }
+
+    #[test]
+    fn frequency_dependent_zero_diffraction_transparent_is_unity() {
+        let fd = FrequencyDependentOcclusion {
+            broadband: Occlusion::default(),
+            diffraction: DiffractionOcclusion::default(),
+            material: MaterialTransmission::TRANSPARENT,
+        };
+        let (gl, gm, gh) = fd.band_gains();
+        assert!((gl - 1.0).abs() < 1e-4);
+        assert!((gm - 1.0).abs() < 1e-4);
+        assert!((gh - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn frequency_dependent_materials_attenuate_progressively() {
+        for mat in [
+            MaterialTransmission::DRYWALL,
+            MaterialTransmission::CONCRETE,
+            MaterialTransmission::GLASS,
+            MaterialTransmission::WOOD,
+        ] {
+            // Low frequencies transmit better than high frequencies for typical building materials.
+            assert!(mat.low_gain >= mat.mid_gain);
+            assert!(mat.mid_gain >= mat.high_gain);
+        }
+    }
+
+    #[test]
+    fn frequency_dependent_diffraction_shadow_low_vs_high() {
+        let fd = FrequencyDependentOcclusion {
+            broadband: Occlusion::default(),
+            diffraction: DiffractionOcclusion {
+                edge_order: 2,
+                diffraction_amount: 1.0,
+                low_pass_order: 1,
+            },
+            material: MaterialTransmission::TRANSPARENT,
+        };
+        let (gl, gm, gh) = fd.band_gains();
+        // Low frequencies bend around edge much better than high frequencies.
+        assert!(gl > gm);
+        assert!(gm > gh);
+    }
+
+    #[test]
+    fn occlusion_band_state_process_runs_without_divergence() {
+        let fd = FrequencyDependentOcclusion {
+            broadband: Occlusion::default(),
+            diffraction: DiffractionOcclusion {
+                edge_order: 1,
+                diffraction_amount: 0.5,
+                low_pass_order: 1,
+            },
+            material: MaterialTransmission::DRYWALL,
+        };
+        let coeffs = OcclusionBandCoeffs::new(48_000.0, &fd);
+        let mut state = OcclusionBandState::default();
+
+        for _ in 0..100 {
+            let out = state.process(0.5, &coeffs);
+            assert!(out.is_finite());
+            assert!(out.abs() <= 1.0);
         }
     }
 }

@@ -126,6 +126,44 @@ impl PluginHostNode {
         }
     }
 
+    /// Apply a batch of sample-accurate parameter automations.
+    pub fn apply_automation(&mut self, batch: &plugin_abi::ParamAutomationBatch) {
+        let Some(slot) = self.slots.first_mut() else {
+            return;
+        };
+        if !slot.enabled {
+            return;
+        }
+        let _ = slot.instance.dispatch_automation(batch);
+    }
+
+    /// Set bypass state on a specific slot.
+    pub fn set_slot_bypass(&mut self, slot_idx: usize, bypass: bool) {
+        if let Some(slot) = self.slots.get_mut(slot_idx) {
+            slot.instance.set_bypass(bypass);
+        }
+    }
+
+    /// Broadcast musical transport / tempo clock to all plugin slots.
+    pub fn update_transport(&mut self, transport: plugin_abi::TransportInfo) {
+        for slot in &mut self.slots {
+            slot.instance.set_transport(transport);
+        }
+    }
+
+    /// Process multi-bus audio block (main channels + optional sidechain).
+    pub fn process_busses_f32(&mut self, busses: &mut plugin_abi::AudioBussesMut) {
+        if !self.active {
+            return;
+        }
+        for slot in &mut self.slots {
+            if !slot.enabled {
+                continue;
+            }
+            let _ = unsafe { slot.instance.process_busses(busses) };
+        }
+    }
+
     fn recompute_active(&mut self) {
         self.active = self.runtime_enabled && self.slots.iter().any(|s| s.enabled);
     }

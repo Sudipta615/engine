@@ -54,7 +54,10 @@
 //! - `occlusion.rs` — [`Occlusion`], [`AcousticTransmission`], per-object
 //!   low-pass state (§43–44).
 //! - `spread.rs` — angular-region spread sampling + energy-normalized
-//!   aggregation (§29–30).
+//!   aggregation with constant-power spread (spec §29–30), including
+//!   [`SpreadMode`] (Point/Small/Medium/Wide/Diffuse), layout-proportional
+//!   half-angle via [`constant_spread_half_angle`], and
+//!   [`constant_power_spread_gains`] for variable ring-sample counts.
 //! - `bed.rs` — [`SpatialBed`] (channel-based content) routed by semantic
 //!   role, [`SpatialBedStore`] (§13.1).
 //! - `field.rs` — [`SpatialField`] (diffuse content) encoded into the
@@ -167,6 +170,7 @@ pub mod provider;
 pub mod quality;
 pub mod render;
 pub mod room;
+pub mod room_correction;
 pub mod scene;
 #[cfg(feature = "sofa-import")]
 pub mod sofa;
@@ -183,17 +187,19 @@ pub use acoustic::{
     DEFAULT_BAKE_CELL_M, MAX_PATHS, MAX_REFLECTION_ORDER, OCTAVE_BANDS, OCTAVE_BANDS_HZ,
 };
 pub use ambisonic::{
-    channel_count, encode_plane_wave, encode_plane_wave_n, rotate_bus_frame, rotate_bus_frame_n,
-    sh_foa, sh_n, AmbisonicDecoder, AmbisonicRenderer, DecoderPolicy, AMBISONIC_CHANNELS,
-    AMBISONIC_CHANNELS_ORDER_2, AMBISONIC_ORDER, MAX_AMBISONIC_ORDER,
+    channel_count, encode_plane_wave, encode_plane_wave_n, in_phase_window, max_re_window,
+    rotate_bus_frame, rotate_bus_frame_n, sh_foa, sh_n, AmbisonicDecoder, AmbisonicRenderer,
+    DecoderPolicy, HoaConfig, HoaDecoder, HoaDecoding, HoaEncoder, NearFieldCompensation,
+    PerSpeakerDelay, AMBISONIC_CHANNELS, AMBISONIC_CHANNELS_MAX, AMBISONIC_CHANNELS_ORDER_2,
+    AMBISONIC_ORDER, MAX_AMBISONIC_ORDER,
 };
 pub use automation::{
     AutomationMode, CurveQuat, CurveScalar, CurveVec3, SpatialAudioAutomationFrame,
     SpatialAutomation,
 };
 pub use bass::{
-    BassManager, CrossoverFilter, SpatialBassEngine, SubwooferDelay, SubwooferPhase,
-    MAX_BASS_CHANNELS, MAX_SUB_DELAY_SAMPLES,
+    BassManager, CrossoverFilter, PsychoacousticBassProcessor, SpatialBassEngine, SubwooferDelay,
+    SubwooferPhase, MAX_BASS_CHANNELS, MAX_SUB_DELAY_SAMPLES,
 };
 pub use bed::{BedId, SpatialBed, SpatialBedStore, MAX_BEDS};
 pub use binaural::{BinauralRenderer, VIRTUAL_RING_SPEAKERS};
@@ -209,32 +215,52 @@ pub use health::{
     SpatialHealthSnapshot,
 };
 pub use hrtf::{
-    ear_delay_sec, elevation_notch_depth_db, elevation_notch_hz, head_shadow_alpha,
-    load_hrtf_corpus_json, max_itd_sec, save_hrtf_corpus_json, woodworth_itd_sec, Ear,
-    ElevationNotch, HeadShadow, HrtfCorpus, HrtfDataset, HrtfLoadError, HrtfLoadOptions,
-    HrtfMeasurement, HrtfNormalize, DEFAULT_HEAD_RADIUS, DEFAULT_SPEED_OF_SOUND, MAX_HRTF_TAPS,
+    barycentric_sphere, decompose_corpus, decompose_single_ir, detect_onset_samples, ear_delay_sec,
+    elevation_notch_depth_db, elevation_notch_hz, excess_phase_from_ir, extract_itd,
+    head_shadow_alpha, load_hrtf_corpus_json, max_itd_sec, minimum_phase_from_ir, reconstruct_ir,
+    save_hrtf_corpus_json, triangulate_sphere, woodworth_itd_sec, Ear, ElevationNotch, HeadShadow,
+    HrirComponents, HrtfConvStrategy, HrtfCorpus, HrtfDataset, HrtfLoadError, HrtfLoadOptions,
+    HrtfMeasurement, HrtfMeshKind, HrtfNormalize, HrtfQualityMode, SphericalHrtfInterpolator,
+    SphericalTriangle, DEFAULT_HEAD_RADIUS, DEFAULT_HRTF_TAPS, DEFAULT_SPEED_OF_SOUND,
+    MAX_HRTF_TAPS,
 };
 pub use hybrid_renderer::HybridSpatialRenderer;
 pub use level::{AbsorptionState, AirAbsorption, AirRolloffModel, DistanceModel};
 pub use math::{Quat, Vec3};
 pub use metering::{SpatialMeterState, SpatialMeters};
-pub use nearfield::{NearField, NearFieldState, NEAR_FIELD_SHELF_HZ};
+pub use nearfield::{
+    hoa_distance_encode_filter, NearField, NearFieldModel, NearFieldState, WavefrontCurvatureState,
+    NEAR_FIELD_SHELF_HZ,
+};
 pub use object::{
     ObjectAudioRef, ObjectId, SpatialAudioObject, SpatialObjectStore, SpatialSourceType,
     MAX_SPATIAL_OBJECTS,
 };
-pub use occlusion::{AcousticTransmission, Occlusion};
+pub use occlusion::{
+    AcousticTransmission, BroadbandOcclusion, DiffractionOcclusion, FrequencyDependentOcclusion,
+    MaterialTransmission, Occlusion, OcclusionBandCoeffs, OcclusionBandState, OcclusionState,
+};
 pub use panner::BasicPanner;
 pub use provider::{HrtfCorpusProvider, HrtfDatasetProvider, HrtfProvider};
 pub use quality::SpatialQuality;
 pub use render::{HybridBlockInputs, RenderError, RendererKind, SpatialRenderer, VbapRenderer};
 pub use room::{EarlyReflections, Room, RoomLateField};
+pub use room_correction::{
+    analyze_ir, capture_impulse_response, compute_correction_filter, generate_inverse_filter,
+    generate_log_sweep, CorrectionMode, RoomCorrectionFilter, RoomCorrectionProcessor,
+    RoomCorrectionTarget, RoomIrAnalysis, SweepConfig,
+};
 pub use scene::{
     load_scene_json, save_scene_json, Listener, ListenerTransform, SceneFileError, SpatialScene,
 };
 #[cfg(feature = "sofa-import")]
-pub use sofa::{import_sofa, SofaImportError};
+pub use sofa::{import_sofa, import_sofa_with_mode, SofaImportError, SofaImportMode};
 pub use speaker::{LayoutCalibration, Speaker, SpeakerId, SpeakerLayout};
+pub use spread::{
+    add_gain, constant_power_spread_gains, constant_spread_half_angle, normalize_gains,
+    ring_directions, ring_directions_n, SpreadMode, MAX_SPREAD_GAINS, RING_SAMPLES,
+    SPREAD_MAX_HALF_ANGLE_RAD, SPREAD_RING_COUNTS,
+};
 pub use tracking::{HeadSample, HeadTracker, ListenerPose, TrackingConfig};
 pub use upmix::{UpmixMode, UpmixTrims};
 pub use voice::{BudgetCandidate, VoiceAdmission, VoiceBudget, VoicePlan, VoicePriority};

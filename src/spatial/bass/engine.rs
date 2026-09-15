@@ -7,10 +7,11 @@
 //!   and dynamic low-shelf EQ for headphones and small monitors.
 
 use super::management::BassManager;
+use super::psychoacoustic::PsychoacousticBassProcessor;
 use crate::dsp::biquad::{BiquadCoeffsF32, BiquadStateF32};
 use config::{BassManagementConfig, SpatialBassConfig, SpatialBassMode};
 
-/// Spatial Bass Engine implementing Pure, BassManaged, and BassImmersion modes.
+/// Spatial Bass Engine implementing Pure, BassManaged, BassImmersion, and Psychoacoustic modes.
 #[derive(Debug, Clone)]
 pub struct SpatialBassEngine {
     config: SpatialBassConfig,
@@ -36,6 +37,10 @@ pub struct SpatialBassEngine {
     // Envelope detector for dynamic excursion limiter
     envelope_l: f32,
     envelope_r: f32,
+
+    // Adaptive psychoacoustic bass processors
+    psychoacoustic_l: PsychoacousticBassProcessor,
+    psychoacoustic_r: PsychoacousticBassProcessor,
 }
 
 impl SpatialBassEngine {
@@ -55,6 +60,10 @@ impl SpatialBassEngine {
         };
 
         let manager = BassManager::new(&mgmt_cfg, sr, channel_count);
+        let psychoacoustic_l =
+            PsychoacousticBassProcessor::new(&config.psychoacoustic, config.harmonic_amount, sr);
+        let psychoacoustic_r =
+            PsychoacousticBassProcessor::new(&config.psychoacoustic, config.harmonic_amount, sr);
 
         let mut engine = Self {
             config: config.clone(),
@@ -71,6 +80,8 @@ impl SpatialBassEngine {
             shelf_state_r: BiquadStateF32::default(),
             envelope_l: 0.0,
             envelope_r: 0.0,
+            psychoacoustic_l,
+            psychoacoustic_r,
         };
         engine.recompute_immersion_filters();
         engine
@@ -94,6 +105,16 @@ impl SpatialBassEngine {
         };
 
         self.manager.update_config(&mgmt_cfg, self.sample_rate);
+        self.psychoacoustic_l = PsychoacousticBassProcessor::new(
+            &config.psychoacoustic,
+            config.harmonic_amount,
+            self.sample_rate,
+        );
+        self.psychoacoustic_r = PsychoacousticBassProcessor::new(
+            &config.psychoacoustic,
+            config.harmonic_amount,
+            self.sample_rate,
+        );
         self.recompute_immersion_filters();
     }
 
@@ -148,6 +169,27 @@ impl SpatialBassEngine {
                 self.process_immersion(mains);
 
                 // Subwoofer still receives LFE and object bass (if connected)
+                sub_out.fill(0.0);
+                if let Some(lfe) = direct_lfe {
+                    let n = sub_out.len().min(lfe.len());
+                    sub_out[..n].copy_from_slice(&lfe[..n]);
+                }
+                if let Some(ob) = object_bass {
+                    let n = sub_out.len().min(ob.len());
+                    for (s, o) in sub_out[..n].iter_mut().zip(ob[..n].iter()) {
+                        *s += *o;
+                    }
+                }
+            }
+            SpatialBassMode::Psychoacoustic => {
+                // Adaptive psychoacoustic bass on Left and Right main channels
+                if let Some(l) = mains.get_mut(0) {
+                    self.psychoacoustic_l.process_block(l);
+                }
+                if let Some(r) = mains.get_mut(1) {
+                    self.psychoacoustic_r.process_block(r);
+                }
+
                 sub_out.fill(0.0);
                 if let Some(lfe) = direct_lfe {
                     let n = sub_out.len().min(lfe.len());

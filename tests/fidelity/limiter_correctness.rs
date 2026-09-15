@@ -533,3 +533,90 @@ fn test_fir_detector_delay_is_compensated_in_audio_path() {
         "impulse must emerge after lookahead + detector delay"
     );
 }
+
+#[test]
+fn test_limiter_latency_sample_rate_correct() {
+    let sample_rates = [
+        44_100.0f32,
+        48_000.0,
+        88_200.0,
+        96_000.0,
+        176_400.0,
+        192_000.0,
+    ];
+    let lookahead_ms = 5.0f32;
+
+    for &sr in &sample_rates {
+        let expected_nominal_samples = (lookahead_ms * sr / 1000.0).round() as usize;
+
+        // 1. Sample peak mode (no FIR detector delay)
+        let mut lim_sp = LookaheadLimiter::new_with_mode(
+            sr,
+            lookahead_ms,
+            0.5,
+            100.0,
+            CEILING_DB,
+            LimiterMode::Transparent,
+        );
+        assert_eq!(
+            lim_sp.lookahead_window_samples(),
+            expected_nominal_samples,
+            "lookahead window samples at {sr} Hz must equal round(L_ms * sr / 1000)"
+        );
+        assert_eq!(
+            lim_sp.lookahead_samples(),
+            expected_nominal_samples,
+            "lookahead_samples in sample-peak mode must equal nominal lookahead"
+        );
+
+        // Verify impulse response peak emergence
+        let mut sp_out_index = None;
+        lim_sp.process(0.5, 0.5);
+        for i in 1..=(expected_nominal_samples * 2 + 10) {
+            let (out_l, _) = lim_sp.process(0.0, 0.0);
+            if out_l > 0.1 {
+                sp_out_index = Some(i);
+                break;
+            }
+        }
+        assert_eq!(
+            sp_out_index,
+            Some(expected_nominal_samples),
+            "measured impulse latency must match reported latency at {sr} Hz (sample-peak)"
+        );
+
+        // 2. Fir4x true peak mode (with FIR detector delay)
+        let mut lim_tp = LookaheadLimiter::new_with_mode(
+            sr,
+            lookahead_ms,
+            0.5,
+            100.0,
+            CEILING_DB,
+            LimiterMode::Transparent,
+        );
+        lim_tp.set_true_peak_mode(TruePeakMode::Fir4x);
+        let fir_delay = engine::dsp::true_peak::detector_delay_samples();
+        let expected_total_samples = expected_nominal_samples + fir_delay;
+
+        assert_eq!(
+            lim_tp.lookahead_samples(),
+            expected_total_samples,
+            "lookahead_samples in Fir4x mode must include detector delay at {sr} Hz"
+        );
+
+        let mut tp_out_index = None;
+        lim_tp.process(0.5, 0.5);
+        for i in 1..=(expected_total_samples * 2 + 10) {
+            let (out_l, _) = lim_tp.process(0.0, 0.0);
+            if out_l > 0.1 {
+                tp_out_index = Some(i);
+                break;
+            }
+        }
+        assert_eq!(
+            tp_out_index,
+            Some(expected_total_samples),
+            "measured impulse latency must match reported latency at {sr} Hz (true-peak FIR)"
+        );
+    }
+}

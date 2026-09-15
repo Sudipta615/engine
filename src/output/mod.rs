@@ -14,6 +14,7 @@ pub mod cpal_devices;
 pub mod cpal_output;
 pub mod device_match;
 pub mod device_monitor;
+pub mod drift;
 pub mod endpoint;
 pub mod format_converter;
 // The directory `src/output/` holds the `output.rs` core trait + factory
@@ -41,6 +42,7 @@ pub use capabilities::{OutputAccessMode, OutputCapabilities, OutputValidationErr
 pub use cpal_output::{CpalOutput, OutputError, OutputVolume};
 pub use device_match::{classify_device_name_match, DeviceNameMatch};
 pub use device_monitor::{DeviceDelta, DeviceMonitor};
+pub use drift::{DriftController, MAX_DRIFT_RATIO};
 pub use endpoint::{
     EndpointConfig, EndpointId, EndpointRegistry, EndpointRing, EndpointStats, EndpointWorker,
     VirtualEndpoint,

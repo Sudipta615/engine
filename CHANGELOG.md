@@ -2,6 +2,149 @@
 
 All notable changes to this project are documented in this file.
 
+## [5.1.0] — 2026-09-15
+
+### Added
+
+- **Phase 4: Advanced Engine, Modulation, Plugins & Intelligent Processing**:
+  - **Robust Adaptive Endpoint Clock Correction / ASRC (`output::drift`, `output::endpoint`)**:
+    - Implemented `DriftController` with dual-mode proportional-integral (PI) loop filter, dynamic gain scheduling (`FAST_KP/KI` vs `STEADY_KP/KI`), and conditional integration anti-windup clamping.
+    - Added cascaded 2-pole IIR low-pass jitter filter rejecting high-frequency scheduling jitter without introducing phase lag.
+    - Added slew-rate limiting bounding ratio updates to $\pm 2.0$ ppm per block to prevent audible pitch modulations.
+    - Added loss-of-clock detector tracking persistent ring buffer stall counts and safely falling back to nominal 1.0 ratio upon buffer freeze.
+    - Decomposed `endpoint.rs` down to 866 lines, preserving modularity guidelines and eliminating god-file tendencies.
+  - **Production-Grade Plugin Host Abstraction (`crates/plugin-abi`, `dsp::graph2::prod::arena::nodes::plugin_host_node`)**:
+    - Multi-bus audio routing: added `AudioBusses`, `AudioBusConfig`, and `BusLayout` supporting primary, auxiliary, and sidechain buses with up to 16 channels.
+    - Full MIDI & MPE event dispatch: added `MidiEvent`, `MidiEventType` (NoteOn/Off, CC, PitchBend, ChannelPressure, PolyPressure, ProgramChange), `MidiBuffer`, and `MpeProfile`.
+    - Musical transport synchronization: added `TransportInfo`, `MusicalTime`, `TimeSignature`, and playback state tracking tempo (BPM), beat position, bar start, and play state.
+    - Sample-offset automation: added `SampleOffsetAutomation` dispatching block-relative parameter changes with sub-block sample accuracy.
+    - Dynamic bypass & error isolation: integrated click-free crossfaded plugin bypass and host error isolation in `PluginHostNode`.
+  - **Tail-Length & Flush Semantics in DSP Graph (`dsp::graph2::latency`, `dsp::graph2::exec`)**:
+    - Tail analysis: implemented `node_tail_at`, `node_tail`, `TailReport`, `analyze_tail`, and `graph_tail_samples` traversing graph topologies to calculate sample-accurate decay tail requirements for delays, reverbs, and acoustic simulation nodes.
+    - Graph flush: implemented `OfflineExecutor::flush()` zeroing out all delay lines, acoustic room states, partitioned convolution IR partitions, and inter-node audio edges.
+    - Offline tail rendering: added `OfflineExecutor::render_tail(tail_samples)` to drain lingering acoustic and algorithmic tails into output buffers.
+  - **First-Class Sample-Accurate Automation (`dsp::timeline::curve`)**:
+    - Implemented `InterpolationMode` supporting `Step`, `Linear`, `Exponential`, and smooth cubic `SCurve` transitions.
+    - Added `AutomationKeyframe` and `AutomationTrack::render_block` generating sample-accurate continuous parameter modulation buffers with zero allocations on the audio thread.
+  - **Unified Modulation System (`dsp::modulation`)**:
+    - `Lfo`: multi-waveform low-frequency oscillator (`Sine`, `Triangle`, `Sawtooth`, `Square`, `SampleAndHold`) supporting free-running frequency and tempo-synchronized musical subdivisions with unipolar/bipolar modes.
+    - `AdsrEnvelope`: 4-stage attack-decay-sustain-release envelope with configurable sample-rate timing and retrigger support.
+    - `EnvelopeFollower`: peak and RMS follower with dual-mode attack and release time constants for dynamic tracking.
+    - `ModulationMatrix`: flexible routing matrix connecting modulation sources (`Lfo`, `Adsr`, `Follower`, `PitchBend`, `ModWheel`, `Aftertouch`, `Velocity`) to target parameter destinations with bipolar scaling and modulation summing.
+  - **Dedicated Creative Sound-Design DSP Layer (`fx`)**:
+    - Delay & spatial processing: `CombFilter` (feedback & feedforward comb filtering with damping) and `PingPongDelay` (stereo cross-feedback delay with tempo sync and feedback filtering).
+    - Modulation effects: `Chorus` (multi-voice delay modulation with quadrature LFOs), `Flanger` (short comb-delay modulation with feedback inversion), `Phaser` (cascaded allpass filter stages with feedback), and `RingModulator` (sine oscillator carrier with AM and four-quadrant multiplier).
+    - Nonlinear processing: `Saturator` providing tape, tube, soft clipping, hard clipping, and asymmetric wavefolding distortion modes with wet/dry blending.
+  - **Spectral / Psychoacoustic Analysis Layer (`dsp::analysis`)**:
+    - Spectral features: `spectral_centroid`, `spectral_spread`, `spectral_flux`, `spectral_rolloff`, `spectral_flatness`, and `sub_bass_energy_ratio`.
+    - Temporal dynamics: `crest_factor`, `dynamic_range_db`, `transient_density`, and `true_peak_density`.
+    - Harmonic content: `harmonicity` and `tonality_estimate` with autocorrelation harmonic energy detection.
+    - Analysis engine: `AnalysisEngine` computing comprehensive `AnalysisSnapshot` telemetry in real time without audio-thread heap allocations.
+  - **Perceptual, Numerical & Realtime QA Framework (`eval::measure`, `tests/fidelity/realtime_allocation.rs`)**:
+    - Numerical metrics: implemented `snr_db`, `intermod_distortion_smpte`, `ir_phase_rad`, `group_delay_samples`, `itd_error_samples`, and `ild_error_db` in `eval::measure`.
+    - Realtime allocation tests: added comprehensive test cases covering `DriftController`, `AutomationTrack`, creative FX, modulation processors, and `AnalysisEngine`, passing all 38 test suites with 0 heap allocations.
+
+## [5.0.0] — 2026-09-15
+
+### Added
+
+- **Phase 3: Spatial Audio Improvements**:
+  - **Constant-Spread Spatial Panning (`spatial::spread`, `spatial::panner`)**:
+    - Implemented `SpreadMode` (Point, Focused, Narrow, Medium, Wide, Enveloping, Diffuse) with ring count scaling (1, 3, 5, 8, 12, 16).
+    - Added `constant_spread_half_angle` dynamically bounded by physical speaker layout span.
+    - Added `constant_power_spread_gains` with energy-normalized gain distribution across discrete speaker positions.
+    - Integrated constant-spread algorithm into `BasicPanner::solve_spread` with energy preservation.
+  - **Higher-Order Ambisonics Beyond 3rd Order to Order 9 (`spatial::ambisonic`)**:
+    - Extended spherical harmonic basis (`sh_n`) up to order 9 (100 channels) using normalized associated Legendre polynomial recurrence.
+    - Implemented `max_re_window` and `in_phase_window` order-weighting tables up to order 9.
+    - Added `HoaConfig`, `HoaDecoding`, `HoaEncoder`, `HoaDecoder`, `NearFieldCompensation`, and `PerSpeakerDelay`.
+    - Eliminated the 1710-line `ambisonic.rs` god file, modularizing into `basis`, `encode`, `rotation`, `decoder`, `hoa`, and `mod` submodules.
+  - **Spherical & Irregular-Mesh HRTF Interpolation (`spatial::hrtf::interpolate`, `spatial::hrtf::dataset`)**:
+    - Implemented `SphericalHrtfInterpolator` using 3D convex hull spherical triangulation on $S^2$.
+    - Implemented `barycentric_sphere` solving exact spherical barycentric coordinates with normalized weighting.
+    - Added irregular mesh fallback with nearest-neighbor inverse-distance weighting.
+  - **Decomposed HRIR Representation (`spatial::hrtf::decompose`)**:
+    - Implemented `HrirComponents` separating impulse responses into fractional onset ITD, minimum-phase spectrum, and excess-phase allpass.
+    - Added threshold-based `detect_onset_samples` and `extract_itd`.
+    - Added `minimum_phase_from_ir` and `excess_phase_from_ir` using cepstral Hilbert transform reconstruction.
+    - Added `decompose_corpus` and `reconstruct_ir`.
+  - **Multi-Tap HRTF Quality Tiers & Strategies (`spatial::hrtf::quality`, `spatial::binaural`)**:
+    - Implemented `HrtfQualityMode` supporting `Low64`, `Medium128`, `High512`, and `Ultra2048` taps with up to 2048 taps ceiling (`MAX_HRTF_TAPS`).
+    - Added `HrtfConvStrategy` selecting between direct time-domain FIR convolution (<= 256 taps) and partitioned overlap-add frequency domain convolution (> 256 taps).
+    - Added `BinauralRenderer::hrtf_quality_mode` mapping spatial quality tiers to HRTF quality modes.
+  - **SOFA Irregular Mesh Compatibility (`spatial::sofa`)**:
+    - Added `SofaImportMode` (`Auto`, `ForceRegular`, `ForceIrregular`) and `import_sofa_with_mode`.
+    - Added auto-detection of non-Cartesian coordinate meshes setting `mesh_hint` on imported `HrtfCorpus`.
+  - **HRTF Subsystem Modularization (`spatial::hrtf`)**:
+    - Eliminated the 1574-line `hrtf.rs` god file, decomposing into `quality`, `corpus`, `interpolate`, `decompose`, `dataset`, and `mod` submodules.
+  - **Near-Field Wavefront Curvature (`spatial::nearfield`)**:
+    - Implemented `WavefrontCurvatureState` with distance-dependent spherical wavefront curvature (`1 + r/d`) providing additional near-field ILD boost.
+    - Added `NearFieldModel` enum (`ProximityGainAndShelf`, `WavefrontCurvature`, `HoaDistanceEncoding`) and `hoa_distance_encode_filter`.
+  - **Frequency-Dependent Diffraction & Material Transmission (`spatial::occlusion`)**:
+    - Implemented `MaterialTransmission` with presets (`TRANSPARENT`, `DRYWALL`, `CONCRETE`, `GLASS`, `WOOD`) and `DiffractionOcclusion`.
+    - Added 3-band crossover filtering (`OcclusionBandCoeffs`, `OcclusionBandState`) with sub-block cutoff smoothing and energy conservation.
+  - **Room Correction Measurement & Processing Infrastructure (`spatial::room_correction`)**:
+    - Added `measurement` module: log-sine sweep generation, matching inverse filter generation, and deconvolution via spectral division.
+    - Added `analysis` module: frequency response, Schroeder backward-integrated energy-time curve (ETC), RT60 estimation, phase, and group delay.
+    - Added `correction` module: FIR correction filter derivation with boost-clamping, smoothing, and target curve compliance, wrapped in `RoomCorrectionProcessor`.
+  - **Psychoacoustically Adaptive Bass Enhancement (`spatial::bass::psychoacoustic`, `config::spatial_render`)**:
+    - Added `SpatialBassMode::Psychoacoustic` and `PsychoacousticBassConfig` to `config` crate.
+    - Implemented `FundamentalDetector` with 4:1 decimation and linear autocorrelation peak tracking.
+    - Implemented `SpeakerCapabilityModel` (f3 cutoff, high-pass roll-off), `MaskingModel` (simultaneous masking threshold curve), and `HarmonicSelector` (2nd, 3rd, 4th synthetic harmonic generation).
+    - Added `PsychoacousticBassProcessor` integrated into left and right channel processing paths in `SpatialBassEngine`.
+  - **Realtime Safety Guarantees**:
+    - Added 6 realtime zero-allocation tests in `tests/fidelity/realtime_allocation.rs` verifying 0 heap allocations across all Phase 3 subsystems on the audio hot path.
+
+## [4.9.0] — 2026-09-15
+
+### Added
+
+- **Phase 2: DSP Quality & Professional Processing**:
+  - **Hybrid Time-Stretching & Pitch-Shifting Engine (`dsp::timestretch`)**:
+    - Added `PhaseVocoder` using `realfft` with Laroche-Dolson spectral peak detection, rigid phase locking, and inter-channel stereo coherence.
+    - Added `TransientDetector` based on short-time/long-time energy onset ratios with attack hold timing.
+    - Added `TimeStretchMode` (`Wsola`, `PhaseVocoder`, `Hybrid`) and optional formant preservation.
+    - Modularized `timestretch.rs` into cohesive submodules (`config_types`, `transient`, `phase_vocoder`, `stretcher`, `tests`) adhering strictly to the "No God Files" modularity standard.
+  - **Dynamic EQ (`dsp::equalizer::dynamic`)**:
+    - Implemented `DynamicEq` and `DynamicEqBand` with dynamic boost and cut modes, threshold, ratio, attack/release ballistics, and sidechain envelope tracking.
+    - Added sub-block parameter smoothing (32 frames) to eliminate zipper noise and avoid per-sample trigonometric coefficient recomputation.
+    - Added `DynamicEqConfig` and `DynamicEqBandConfig` to `config` crate.
+  - **Unified Dynamics Detector Architecture (`dsp::dynamics`)**:
+    - Implemented `DynamicsDetector`, `BallisticEnvelope`, `DetectionMode` (Peak, Rms, TruePeak), and `ChannelLinkMode` (Independent, LinkedAverage, LinkedMax).
+    - Integrated sidechain filtering (`SidechainFilter`: Flat, HighPass, LowPass, BandPass, Bell, HighShelf) with attack, release, and hold ballistic stages.
+  - **High-Quality Transparent Mastering Limiter (`dsp::limiter`)**:
+    - Expanded `LimiterMode` with `Safety`, `Mastering`, and `ClipperLimiter`.
+    - Added program-dependent dual-stage release (crest factor over RMS history), adaptive recovery, variable stereo link controls, and pre-limiter soft clipping for peak shaving.
+  - **Expanded Dither and Noise Shaping (`dsp::dither`)**:
+    - Added `DitherType::NoiseShaped16`, `DitherType::NoiseShaped20`, and `DitherType::NoiseShaped24`.
+    - Implemented Wannamaker 4-tap F-weighting noise shaping for 16-bit, 3-tap for 20-bit, and 2-tap for 24-bit with error feedback filtering across stereo and mono f32/f64 paths.
+  - **Selectable Crossover Architectures (`dsp::crossover`)**:
+    - Implemented `Crossover2Way`, `Crossover3Way`, `CrossoverArchitecture` (Linkwitz-Riley 12/24/48 dB/oct, Linear-Phase FIR with windowed-sinc, and Mixed-Phase).
+    - Verified perfect reconstruction across crossover bands and exact linear phase.
+  - **Late-Reverberation Engine Upgrade (`spatial::room`)**:
+    - Upgraded late field to an 8-line Feedback Delay Network (FDN) with mutually prime coprime delay lengths.
+    - Integrated orthogonal Householder feedback matrix ($A = I - \frac{2}{N}\mathbf{1}\mathbf{1}^T$) ensuring energy conservation and maximal cross-channel diffusion.
+    - Added frequency-dependent one-pole absorption damping and dual series allpass input diffusers.
+    - Modularized `room.rs` into `src/spatial/room/` submodules (`mod`, `early`, `late`, `tests`), fully eliminating god files and preserving 100% zero-allocation guarantees on the audio path.
+
+## [4.8.0] — 2026-09-15
+
+### Added
+
+- **Phase 1: Correctness, Realtime Safety & Infrastructure**:
+  - **Resampler Latency Provider Trait (`dsp::LatencyProvider`)**: Added `LatencyProvider` trait exposing exact resampler latency (filter group delay + buffering delay) across all sample rate ratios and quality tiers, implemented on `AudioResampler<T>`, `GenericResampler`, and `ResamplerNode`.
+  - **Convolution Engine Latency Distinction**: Added explicit accessors distinguishing `intrinsic_latency_samples()`, `partition_latency_samples()`, `algorithmic_latency_samples()`, `ir_length_samples()`, and `tail_length_samples()` in `ConvolutionEngine`.
+  - **Multichannel Professional Metering Beyond 8 Channels**: Extended `KWeightStage1`, `KWeightStage2`, `bs1770_weights_for_layout`, `LoudnessMeter`, and `ProfessionalMeters` to 16 channels (`MAX_CHANNELS`), adding native support for Mono, Stereo, 5.1, 7.1, 7.1.4 (12 ch), and 9.1.6 (16 ch).
+  - **Lock-Free Triple-Buffered Professional Metering Telemetry**: Replaced `Mutex<MeterState>` in `ProfessionalMeters` with an atomic triple-buffered snapshot exchange and CAS processing guard, guaranteeing zero mutex acquisition and zero heap allocations on the audio processing hot path.
+
+### Fixed
+
+- **Hybrid Spatial Zero-Allocation Hot Path**: Eliminated dynamic vector allocations in `HybridSpatialRenderer::process_hybrid_block` via fixed-size stack arrays; verified zero allocations across 2, 8, 12, 16 channels and all standard block sizes.
+- **Hybrid Spatial Bass Configuration Preservation**: Ensured `HybridSpatialRenderer::prepare` preserves active custom `SpatialBassConfig` across reconfigurations, and correctly prepares child binaural renderers with stereo master layout.
+- **Graph 2.0 Terminal Latency Accounting**: Updated `dsp::graph2::latency::analyze` to evaluate total graph latency across all sink/terminal branches using `max(upstream + taps)`, ensuring intrinsic taps of terminal limiters and resamplers are included in graph latency.
+- **Limiter Lookahead Sample Calculation**: Corrected `lookahead_samples` calculation from `.ceil()` to `.round()` in `LookaheadLimiter`, ensuring reported delay matches impulse peak emergence across 44.1, 48, 88.2, 96, 176.4, and 192 kHz sample-peak and true-peak modes.
+- **EBU Tech 3342 LRA Startup Window**: Fixed `LoudnessMeter::commit_hop` to require a completely populated 3.0 s sliding window (30 hops of 100 ms) before recording short-term values for Loudness Range calculation.
+
 ## [4.7.0] — 2026-09-15
 
 ### Added
