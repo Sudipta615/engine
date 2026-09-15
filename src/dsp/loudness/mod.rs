@@ -4,14 +4,19 @@
 //! pre-computed loudness metadata. The normaliser runs in the playback pipeline
 //! and applies smooth gain transitions.
 
+pub mod analysis;
 pub mod meter;
 #[cfg(test)]
 mod tests;
 pub mod types;
 
 // Re-export public API
+pub use analysis::{
+    AnalysisMode, GatingDiagnostics, LoudnessAnalysisResult, LoudnessAnalyzer,
+    LoudnessComplianceProfile, LoudnessComplianceResult, LoudnessTimePoint, PeakTimePoint,
+};
 pub use meter::{bs1770_weights_for_layout, LoudnessMeter, LoudnessNormalizer};
-pub use types::{LoudnessMeasurement, LoudnessMetadata, LoudnessMode};
+pub use types::{LoudnessMeasurement, LoudnessMetadata, LoudnessMode, LoudnessStandard};
 
 // Re-exports used by tests
 #[cfg(test)]

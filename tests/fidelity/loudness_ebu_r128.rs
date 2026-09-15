@@ -1,6 +1,9 @@
-//! EBU R128 / ITU-R BS.1770-4 Compliance Tests
+//! EBU R128 / ITU-R BS.1770-5 Compliance Tests
 
-use engine::dsp::loudness::{LoudnessMeasurement, LoudnessMeter};
+use engine::dsp::loudness::{
+    AnalysisMode, LoudnessAnalyzer, LoudnessComplianceProfile, LoudnessMeasurement, LoudnessMeter,
+    LoudnessStandard,
+};
 
 #[test]
 fn test_ebu_r128_silence_gating() {
@@ -19,7 +22,7 @@ fn test_ebu_r128_silence_gating() {
 
 #[test]
 fn test_ebu_r128_1khz_sine_calibration() {
-    // BS.1770-4 §2.1: LKFS = -0.691 + 10 log10 (Σ_i G_i·z̄_i), where z̄_i is the
+    // BS.1770-5 §2.1: LKFS = -0.691 + 10 log10 (Σ_i G_i·z̄_i), where z̄_i is the
     // per-channel mean square and the SUM over channels is used (stereo
     // dual-mono measures 3 dB louder than mono by design).
     //
@@ -160,7 +163,7 @@ fn test_ebu_r128_multichannel_5_1_and_7_1_weighting() {
     meter_51.set_channel_layout(&ChannelLayout::FivePointOne);
 
     let n = 48000 * 3;
-    // Signal on only LFE channel (index 3). Per BS.1770-4, LFE has 0.0 weight
+    // Signal on only LFE channel (index 3). Per BS.1770-5, LFE has 0.0 weight
     let mut lfe_only = vec![0.0f32; n * 6];
     for i in 0..n {
         let s = (2.0 * std::f32::consts::PI * 80.0 * i as f32 / sr).sin();
@@ -178,7 +181,7 @@ fn test_ebu_r128_multichannel_5_1_and_7_1_weighting() {
     let mut meter_71 = LoudnessMeter::new(sr, 8);
     meter_71.set_channel_layout(&ChannelLayout::SevenPointOne);
 
-    // Signal on rear surround channels (RL, RR at indices 6, 7). Per BS.1770-4,
+    // Signal on rear surround channels (RL, RR at indices 6, 7). Per BS.1770-5,
     // rear surround channels receive 1.41 weighting (+1.5 dB power).
     let mut rear_only = vec![0.0f32; n * 8];
     for i in 0..n {
@@ -199,4 +202,38 @@ fn test_ebu_r128_multichannel_5_1_and_7_1_weighting() {
         "Rear surround with 1.41 weight should measure louder than stereo front: got {:.2} LUFS",
         rear_snap.integrated_lufs
     );
+}
+
+#[test]
+fn test_loudness_analysis_subsystem_and_standards() {
+    let sr = 48000.0f32;
+    let mut analyzer = LoudnessAnalyzer::new(
+        sr,
+        2,
+        LoudnessStandard::ItuBs1770_5,
+        AnalysisMode::Programme,
+        LoudnessComplianceProfile::EbuR128,
+    );
+
+    // Feed 3 seconds of a 1 kHz stereo sine wave at -20 dBFS (amplitude = 0.1)
+    let n_frames = (sr * 3.0) as usize;
+    let amp = 0.1f32;
+    let samples: Vec<f32> = (0..n_frames)
+        .flat_map(|i| {
+            let s = amp * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / sr).sin();
+            [s, s]
+        })
+        .collect();
+
+    analyzer.process_interleaved(&samples, 2);
+    let result = analyzer.finish();
+
+    assert_eq!(result.standard, LoudnessStandard::ItuBs1770_5);
+    assert_eq!(result.mode, AnalysisMode::Programme);
+    assert!((result.duration_secs - 3.0).abs() < 0.1);
+    assert!(result.integrated_lufs.is_finite());
+    // -20 dBFS stereo sine will measure near -17.0 to -20.0 LUFS
+    assert!(result.integrated_lufs > -25.0 && result.integrated_lufs < -15.0);
+    assert!(result.max_true_peak_dbtp.is_finite());
+    assert_eq!(result.channel_contributions_lufs.len(), 2);
 }

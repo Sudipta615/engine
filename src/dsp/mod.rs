@@ -11,6 +11,7 @@ pub mod correction;
 pub mod crossfade;
 pub mod crossfeed;
 pub mod crossover;
+pub mod deterministic;
 pub mod device_profile;
 pub mod dither;
 pub mod dynamics;
@@ -28,6 +29,7 @@ pub mod pipeline;
 #[cfg(feature = "resample")]
 pub mod resampler;
 pub mod resampler_handle;
+pub mod safety;
 pub mod simd;
 pub mod stereo;
 pub mod timeline;
@@ -79,5 +81,7 @@ pub use timestretch::{TimeStretchConfig, TimeStretcher};
 pub use true_peak::TruePeakMeter;
 
 pub use crossfeed::Crossfeed;
+pub use deterministic::{compare_buffers, DeterministicMode, EquivalenceClass};
 pub use meters::{ProfessionalMeterSnapshot, ProfessionalMeters};
 pub use multiband_compressor::MultibandCompressor;
+pub use safety::{contain_non_finite_block, FloatSafetyMode, NonFiniteIncident, NonFinitePolicy};

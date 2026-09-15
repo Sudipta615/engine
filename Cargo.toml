@@ -3,7 +3,7 @@ members = [".", "crates/config", "crates/plugin-abi", "crates/plugin-test-echo"]
 
 [package]
 name = "engine"
-version = "5.1.0"
+version = "5.2.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"
@@ -242,6 +242,10 @@ path = "src/bin/replaygain_scanner.rs"
 # feature when the binary is built.
 required-features = ["tag-write"]
 
+[[bin]]
+name = "release-qualification"
+path = "src/bin/release_qualification.rs"
+
 [[bench]]
 name = "dsp_bench"
 harness = false
@@ -256,6 +260,10 @@ harness = false
 
 [[bench]]
 name = "spatial_bench"
+harness = false
+
+[[bench]]
+name = "performance_budget"
 harness = false
 
 [[test]]
@@ -509,3 +517,11 @@ path = "tests/fidelity/meters.rs"
 [[test]]
 name = "offline_render"
 path = "tests/offline_render.rs"
+
+[[test]]
+name = "independent_references"
+path = "tests/fidelity/independent_references.rs"
+
+[[test]]
+name = "fuzz_expanded"
+path = "tests/fidelity/fuzz_expanded.rs"

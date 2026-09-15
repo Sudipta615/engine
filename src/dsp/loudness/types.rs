@@ -40,14 +40,18 @@ pub(crate) const MOMENTARY_HOP_SECS: f32 = 0.100;
 /// Short-term window duration: 3 s.
 pub(crate) const SHORT_TERM_WINDOW_SECS: f32 = 3.0;
 
+pub use crate::standards::LoudnessStandard;
+
 /// Output of a single `LoudnessMeter::snapshot()` call.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct LoudnessMeasurement {
+    /// Formally implemented standard for this measurement.
+    pub standard: LoudnessStandard,
     /// Momentary LUFS (400 ms block ending now).
     pub momentary_lufs: f32,
     /// Short-term LUFS (3 s window ending now).
     pub short_term_lufs: f32,
-    /// Integrated LUFS since last `reset()` (gated per BS.1770-4).
+    /// Integrated LUFS since last `reset()` (gated per ITU-R BS.1770-5).
     pub integrated_lufs: f32,
     /// Loudness Range in LU (10th–95th percentile of gated short-term blocks).
     ///
@@ -68,6 +72,20 @@ pub struct LoudnessMeasurement {
     pub lra_valid: bool,
     /// Instantaneous true-peak estimate (linear, not in dBTP yet).
     pub true_peak_linear: f32,
+}
+
+impl Default for LoudnessMeasurement {
+    fn default() -> Self {
+        Self {
+            standard: LoudnessStandard::ItuBs1770_5,
+            momentary_lufs: -70.0,
+            short_term_lufs: -70.0,
+            integrated_lufs: -70.0,
+            lra_lu: 0.0,
+            lra_valid: false,
+            true_peak_linear: 0.0,
+        }
+    }
 }
 
 impl LoudnessMeasurement {

@@ -342,8 +342,7 @@ mod tests {
         for (i, sample) in smpte_two_tone.iter_mut().enumerate() {
             let t = i as f64 / sr;
             *sample = (0.8 * (2.0 * std::f64::consts::PI * f1 * t).sin()
-                + 0.2 * (2.0 * std::f64::consts::PI * f2 * t).sin())
-                as f32;
+                + 0.2 * (2.0 * std::f64::consts::PI * f2 * t).sin()) as f32;
         }
         let imd = intermod_distortion_smpte(&smpte_two_tone, sr, f1, f2);
         assert!(imd < 0.01, "Clean signal IMD should be < 1%, got {imd}");

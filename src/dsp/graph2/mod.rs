@@ -64,12 +64,15 @@ pub mod node;
 pub mod prod;
 pub mod rt;
 pub mod sort;
+pub mod transaction;
 pub mod validate;
 
 pub use edge::{EdgeDef, EdgeEndpoint, EdgeId};
 pub use exec::{OfflineExecutor, CONVOLUTION_FFT_THRESHOLD};
 pub use latency::{
-    analyze, compensate, compensate_at, node_latency, node_latency_at, LatencyReport,
+    analyze, analyze_unified, compensate, compensate_at, node_latency, node_latency_at,
+    node_latency_breakdown, LatencyMeasurementKind, LatencyReport, NodeLatencyBreakdown,
+    UnifiedLatencyReport,
 };
 pub use node::{
     HrtfSource, NodeCapabilities, NodeDef, NodeId, NodeKind, NodeParams, PortDirection, PortId,
@@ -77,6 +80,7 @@ pub use node::{
 };
 pub use rt::{RtExecutor, RtPlan, RtPlanError, RtScenes};
 pub use sort::{topological_order, ExecutionOrder};
+pub use transaction::{GraphTransaction, TransactionError, TransactionReport};
 pub use validate::{validate, Graph2Error, ValidationReport};
 
 use std::collections::BTreeMap;

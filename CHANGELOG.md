@@ -2,6 +2,46 @@
 
 All notable changes to this project are documented in this file.
 
+## [5.2.0] — 2026-09-15
+
+### Added
+
+- **Stage 1: Correctness and Foundations Upgrade**:
+  - **Dedicated Standards & Version Framework (`src/standards/`)**:
+    - Created formal, typed standards subsystem containing `standards::loudness` (ITU-R BS.1770-5, EBU R128, ReplayGain 2.0), `standards::true_peak` (ITU-R BS.1770-5 Annex 2, EBU Tech 3341), `standards::channel_layout` (ITU-R BS.775, ITU-R BS.2051-3, SMPTE ST 2036-2), `standards::spatial` (Right-Handed Cartesian, Polar, ACN/SN3D/N3D/Max-rE), `standards::adm` (ITU-R BS.2076-1/2 Audio Definition Model complete data structures), and `standards::metadata` (BWF, BW64, iXML, ID3v2.4, VorbisComment).
+    - Added `StandardizedComponent` trait for declaring standards adherence and machine-readable version queries.
+  - **Complete Loudness Analysis & Compliance Subsystem (`dsp::loudness::analysis`)**:
+    - Implemented `LoudnessAnalyzer` computing integrated LUFS, momentary LUFS, short-term LUFS, Loudness Range (LRA per EBU Tech 3342), maximum inter-sample true peak (dBTP per BS.1770-5 Annex 2), maximum discrete sample peak (dBFS), loudness timelines, peak timelines, gating diagnostics (% gated frames, ungated mean), and per-channel energy contributions.
+    - Added `LoudnessComplianceProfile` and `LoudnessComplianceResult` evaluating broadcast (EBU R128), streaming (-14 LUFS), and ReplayGain compliance.
+  - **Unified Latency & Plugin Delay Compensation (PDC) Architecture (`dsp::graph2::latency`)**:
+    - Added `NodeLatencyBreakdown` decomposing latency into intrinsic, lookahead, plugin, resampler, HRTF, convolution, device, and output transport samples.
+    - Added `LatencyMeasurementKind` (`Reported`, `Actual`, `Estimated`, `Measured`) and `UnifiedLatencyReport` providing deterministic per-node and graph-wide latency introspection.
+  - **Transactional Graph Editing Runtime (`dsp::graph2::transaction`)**:
+    - Implemented `GraphTransaction` enforcing atomic transaction pipeline: modify &rarr; validate &rarr; PDC delay compensation &rarr; preallocate runtime state (`RtPlan`) &rarr; warm up &rarr; publish generation.
+    - Added fail-safe isolation ensuring failed validations or allocations abort gracefully without interrupting playback on the active audio graph.
+  - **Deterministic Processing Mode & Numerical Equivalence (`dsp::deterministic`)**:
+    - Implemented `EquivalenceClass` (`BitExact`, `NumericallyEquivalent`, `PerceptuallyEquivalent`, `Divergent`) and `DeterministicMode` (`StrictBitExact`, `Numerical`, `Perceptual`) with automated buffer comparison and SNR evaluation.
+  - **Realtime Float Safety & Non-Finite Containment (`dsp::safety`, `diagnostics`)**:
+    - Implemented `FloatSafetyMode` (`FlushToZero`, `DenormalSuppress`, `StrictIEEE`) with hardware FTZ/DAZ thread enforcement.
+    - Implemented `NonFinitePolicy` (`Ignore`, `Detect`, `Clamp`, `Silence`, `BypassNode`) and zero-allocation inline block sanitizer `contain_non_finite_block`.
+    - Added `NonFiniteIncident` structured diagnostics identifying offending node ID, channel, sample offset, and graph generation.
+    - Expanded `DiagnosticKind` with `Dsp`, `Clock`, `Plugin`, `Graph`, and `Security` categories.
+  - **Independent Reference Oracle Test Suite (`tests/fidelity/independent_references.rs`)**:
+    - Independent analytical mathematical oracles for synthetic BS.1770-5 loudness, direct O(N²) DFT vs FFT, analytical Z-plane biquad transfer functions, brickwall limiter ceiling guarantees, and spherical harmonics basis functions.
+  - **Expanded Mutation Fuzzing Suite (`tests/fidelity/fuzz_expanded.rs`)**:
+    - Multi-target mutation fuzzing testing CUE sheet parsing, Graph2 JSON deserialization, SpatialScene deserialization, AdmDocument deserialization, TTA headers, and DSD/DSF container readers.
+  - **Formal Performance Budget Benchmarks (`benches/performance_budget.rs`)**:
+    - Comprehensive Criterion benchmarks scaling across block sizes (16..1024), sample rates (44.1k..384k), and multichannel speaker layouts (stereo, 5.1, 7.1, 7.1.4, 9.1.6).
+  - **Release Qualification Pipeline Engine & CLI (`eval::qualification`, `src/bin/release_qualification.rs`)**:
+    - Automated release qualification pipeline generating machine-readable JSON status summaries (`qualification_report.json`).
+  - **Canonical Engineering Specification (`docs/ENGINE_SPEC.md`)**:
+    - Authoritative 21-section engineering contract defining the audio model, thread model, realtime guarantees, buffer semantics, precision, graph semantics, latency/PDC, tails, automation, plugin ABI, spatial coordinates, channel layouts, loudness standards, output matrix, diagnostics, errors, serialization, determinism, compatibility, security, and verification requirements.
+
+### Changed
+
+- Upgraded loudness metering and true peak documentation across `dsp::loudness` and `dsp::true_peak` to strictly reference **ITU-R BS.1770-5** (superseding superseded BS.1770-4 references).
+- Upgraded `LoudnessMeasurement` to include `standard: LoudnessStandard` defaulting to `ItuBs1770_5`.
+
 ## [5.1.0] — 2026-09-15
 
 ### Added

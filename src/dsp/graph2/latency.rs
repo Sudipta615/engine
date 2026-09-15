@@ -23,6 +23,7 @@
 //! node — the "latency arrives here" quantity the renderer cares about —
 //! plus the graph total and per-node taps, for diagnostics.
 
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use super::edge::{EdgeDef, EdgeEndpoint, EdgeId};
@@ -455,6 +456,172 @@ pub fn compensate_at(graph: &Graph2, sample_rate: f32) -> Result<Graph2, Graph2E
             .unwrap_or(Graph2Error::Cycle(Vec::new())));
     }
     Ok(out)
+}
+
+/// Nature or methodology of a latency observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LatencyMeasurementKind {
+    /// Nominal latency reported by node descriptors / algorithms.
+    #[default]
+    Reported,
+    /// Realized sample-delay verified through signal tracking or test impulse.
+    Actual,
+    /// Model-based heuristic estimate (e.g. adaptive buffers or variable resamplers).
+    Estimated,
+    /// Physical loopback or hardware time-of-flight measurement.
+    Measured,
+}
+
+/// Granular decomposition of latency contributors for a single node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct NodeLatencyBreakdown {
+    /// Fixed algorithm pipeline delay in samples.
+    pub intrinsic_samples: u64,
+    /// Lookahead window buffer delay in samples (e.g. brickwall limiter).
+    pub lookahead_samples: u64,
+    /// Latency introduced by hosted external/native plugins in samples.
+    pub plugin_samples: u64,
+    /// FIR/polyphase resampler filter group delay in samples.
+    pub resampler_samples: u64,
+    /// Binaural head-related transfer function FIR alignment delay in samples.
+    pub hrtf_samples: u64,
+    /// Partitioned / direct convolution filter latency in samples.
+    pub convolution_samples: u64,
+    /// Output endpoint or hardware driver buffer latency in samples.
+    pub device_samples: u64,
+    /// Ring-buffer or transport queue latency in samples.
+    pub output_samples: u64,
+}
+
+impl NodeLatencyBreakdown {
+    /// Total DSP-domain latency in samples (excluding hardware driver / transport).
+    pub fn dsp_total_samples(&self) -> u64 {
+        self.intrinsic_samples
+            + self.lookahead_samples
+            + self.plugin_samples
+            + self.resampler_samples
+            + self.hrtf_samples
+            + self.convolution_samples
+    }
+
+    /// Complete end-to-end latency in samples including output buffers.
+    pub fn total_samples(&self) -> u64 {
+        self.dsp_total_samples() + self.device_samples + self.output_samples
+    }
+
+    /// Latency in milliseconds at the specified sample rate.
+    pub fn to_ms(&self, sample_rate: f32) -> f32 {
+        if sample_rate > 0.0 {
+            (self.total_samples() as f32 / sample_rate) * 1000.0
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Compute granular latency breakdown for a given node at `sample_rate`.
+pub fn node_latency_breakdown(node: &NodeDef, sample_rate: f32) -> NodeLatencyBreakdown {
+    let mut bd = NodeLatencyBreakdown::default();
+    let sr = if sample_rate > 0.0 {
+        sample_rate
+    } else {
+        48_000.0
+    };
+
+    match &node.params {
+        NodeParams::Delay { samples } => bd.intrinsic_samples = *samples as u64,
+        NodeParams::Convolution { kernel } => bd.convolution_samples = kernel.len() as u64,
+        NodeParams::HRTF {
+            left,
+            right,
+            source,
+        } => {
+            bd.hrtf_samples = match source {
+                HrtfSource::Inline => left.len().max(right.len()) as u64,
+                HrtfSource::Dataset { taps, .. } => *taps as u64,
+            };
+        }
+        NodeParams::Resampler { quality, .. } => bd.resampler_samples = *quality as u64,
+        _ => match node.kind {
+            NodeKind::Prod(ProdStage::PluginHost) => {
+                if let Some(host) = super::prod::resolve_host(&node.name) {
+                    bd.plugin_samples = host.descriptor().latency_samples as u64;
+                }
+            }
+            NodeKind::Prod(ProdStage::Limiter) => {
+                bd.lookahead_samples = ((5.0 / 1000.0) * sr).round() as u64;
+            }
+            NodeKind::Prod(ProdStage::Convolution) => {
+                bd.convolution_samples = crate::dsp::convolution::DEFAULT_PARTITION_SIZE as u64;
+            }
+            _ => {}
+        },
+    }
+    bd
+}
+
+/// Unified, architecture-wide latency analysis report.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UnifiedLatencyReport {
+    /// Granular breakdown per node.
+    pub per_node: BTreeMap<NodeId, NodeLatencyBreakdown>,
+    /// Cumulative upstream latency arriving at each node's inputs.
+    pub upstream: BTreeMap<NodeId, u64>,
+    /// Total DSP pipeline latency in samples.
+    pub dsp_latency_samples: u64,
+    /// Total DSP pipeline latency in milliseconds.
+    pub dsp_latency_ms: f32,
+    /// Output endpoint and driver latency in samples.
+    pub device_latency_samples: u64,
+    /// Output endpoint and driver latency in milliseconds.
+    pub device_latency_ms: f32,
+    /// Total end-to-end system latency in samples.
+    pub total_latency_samples: u64,
+    /// Total end-to-end system latency in milliseconds.
+    pub total_latency_ms: f32,
+    /// Measurement classification (Reported, Actual, Estimated, Measured).
+    pub measurement_kind: LatencyMeasurementKind,
+}
+
+/// Analyze graph and output pipeline to generate a [`UnifiedLatencyReport`].
+pub fn analyze_unified(
+    graph: &Graph2,
+    sample_rate: f32,
+    device_samples: u64,
+    output_samples: u64,
+    measurement_kind: LatencyMeasurementKind,
+) -> Result<UnifiedLatencyReport, Graph2Error> {
+    let rep = analyze(graph, sample_rate)?;
+    let mut per_node = BTreeMap::new();
+
+    for (id, node) in &graph.nodes {
+        per_node.insert(*id, node_latency_breakdown(node, sample_rate));
+    }
+
+    let dsp_latency_samples = rep.total_samples;
+    let dsp_latency_ms = rep.total_ms;
+    let dev_samples = device_samples + output_samples;
+    let dev_ms = if sample_rate > 0.0 {
+        (dev_samples as f32 / sample_rate) * 1000.0
+    } else {
+        0.0
+    };
+
+    let total_latency_samples = dsp_latency_samples + dev_samples;
+    let total_latency_ms = dsp_latency_ms + dev_ms;
+
+    Ok(UnifiedLatencyReport {
+        per_node,
+        upstream: rep.upstream,
+        dsp_latency_samples,
+        dsp_latency_ms,
+        device_latency_samples: dev_samples,
+        device_latency_ms: dev_ms,
+        total_latency_samples,
+        total_latency_ms,
+        measurement_kind,
+    })
 }
 
 #[cfg(test)]

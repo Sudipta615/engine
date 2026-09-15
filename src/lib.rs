@@ -21,6 +21,7 @@ pub mod profile;
 pub mod sink;
 pub mod source;
 pub mod spatial;
+pub mod standards;
 pub mod track_cache;
 
 // Re-exports for convenience

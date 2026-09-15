@@ -9,7 +9,7 @@ use std::f32::consts::PI;
 
 /// Second-order high shelf (stage 1 of K-weighting)
 ///
-/// Uses the DeMan coefficients from ITU-R BS.1770-4: the RBJ-cookbook
+/// Uses the DeMan coefficients from ITU-R BS.1770-5: the RBJ-cookbook
 /// shelf response does not match the ITU-specified response, so the
 /// shelf is implemented as a biquad in transposed direct form II.
 ///
@@ -139,7 +139,7 @@ impl KWeightStage2 {
 /// Supports ReplayGain (track/album) and EBU R128 modes.
 ///
 /// This is a **gain-application stage only**.  Loudness *measurement* lives
-/// in [`LoudnessMeter`] (which implements the full BS.1770-4 gating
+/// in [`LoudnessMeter`] (which implements the full BS.1770-5 gating
 /// algorithm and the shared true-peak detector); the normaliser consumes
 /// the resulting metadata (`LoudnessMetadata`) and applies a smoothed
 /// linear gain.  Keeping one measurement implementation prevents the
@@ -429,7 +429,7 @@ impl LoudnessNormalizer {
     }
 }
 
-/// Per-channel weighting as defined in ITU-R BS.1770-4 for a conventional
+/// Per-channel weighting as defined in ITU-R BS.1770-5 for a conventional
 /// 5.1 ordering.
 #[allow(dead_code)]
 const BS1770_WEIGHTS: [f32; MAX_CHANNELS] = [
@@ -738,6 +738,7 @@ impl LoudnessMeter {
         }
 
         LoudnessMeasurement {
+            standard: crate::standards::LoudnessStandard::ItuBs1770_5,
             momentary_lufs,
             short_term_lufs,
             integrated_lufs,
@@ -753,7 +754,7 @@ impl LoudnessMeter {
         &self.true_peak_meters
     }
 
-    /// Compute integrated LUFS using dual-threshold gating (EBU R128 / BS.1770-4 §3.2).
+    /// Compute integrated LUFS using dual-threshold gating (EBU R128 / BS.1770-5 §3.2).
     fn compute_integrated(&self) -> f32 {
         if self.block_history.is_empty() {
             return f32::NEG_INFINITY;
@@ -896,5 +897,15 @@ impl LoudnessMeter {
         self.block_capacity = block_capacity;
         self.hop_capacity = hop_capacity;
         self.reset();
+    }
+}
+
+impl crate::standards::StandardizedComponent for LoudnessMeter {
+    fn declared_standard(&self) -> &'static str {
+        crate::standards::LoudnessStandard::ItuBs1770_5.name()
+    }
+
+    fn standard_version(&self) -> &'static str {
+        crate::standards::LoudnessStandard::ItuBs1770_5.version()
     }
 }

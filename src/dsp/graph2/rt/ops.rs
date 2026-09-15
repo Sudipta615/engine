@@ -127,6 +127,11 @@ impl RtExecutor {
         self.swaps.load(Ordering::Acquire)
     }
 
+    /// Extract the active plan (control side).
+    pub fn into_plan(self) -> RtPlan {
+        *self.active
+    }
+
     /// Audio thread: adopt a published plan, if any. The retired plan is
     /// handed to the control thread for reclamation; no allocation
     /// happens here. Returns `true` when a swap occurred.

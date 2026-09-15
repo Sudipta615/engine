@@ -48,6 +48,16 @@ pub enum DiagnosticKind {
     Spatial,
     /// Loudness scanning / normalisation failure.
     Loudness,
+    /// Digital signal processing failure or arithmetic anomaly.
+    Dsp,
+    /// Clock synchronization, drift, or jitter issue.
+    Clock,
+    /// Plugin host, ABI, or sandboxing failure.
+    Plugin,
+    /// Graph topology, compilation, or cycle violation.
+    Graph,
+    /// Security validation or untrusted input rejection.
+    Security,
 }
 
 impl DiagnosticKind {
@@ -64,6 +74,11 @@ impl DiagnosticKind {
             DiagnosticKind::Configuration => "configuration",
             DiagnosticKind::Spatial => "spatial",
             DiagnosticKind::Loudness => "loudness",
+            DiagnosticKind::Dsp => "dsp",
+            DiagnosticKind::Clock => "clock",
+            DiagnosticKind::Plugin => "plugin",
+            DiagnosticKind::Graph => "graph",
+            DiagnosticKind::Security => "security",
         }
     }
 }

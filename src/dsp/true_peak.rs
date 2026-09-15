@@ -1,4 +1,4 @@
-//! Shared true-peak measurement (ITU-R BS.1770-4 §2.3).
+//! Shared true-peak measurement (ITU-R BS.1770-5 Annex 2).
 //!
 //! The ITU recommendation defines **true peak** as the maximum of the
 //! *reconstructed* waveform — i.e. the peaks a DAC's reconstruction filter
@@ -233,6 +233,16 @@ impl TruePeakMeter {
         } else {
             -144.0
         }
+    }
+}
+
+impl crate::standards::StandardizedComponent for TruePeakMeter {
+    fn declared_standard(&self) -> &'static str {
+        crate::standards::TruePeakStandard::ItuBs1770_5_Annex2.name()
+    }
+
+    fn standard_version(&self) -> &'static str {
+        "5.0"
     }
 }
 
