@@ -305,6 +305,16 @@ impl Graph2ControlHandle {
     pub fn set_duck(&self, cfg: Option<DuckState>) {
         self.inner.set_duck(cfg);
     }
+    pub fn set_slot_automation_at_frame(
+        &self,
+        input: u8,
+        target: crate::dsp::graph2::prod::arena::nodes::AutomationTarget,
+        points: &[crate::dsp::graph2::prod::arena::nodes::AutomationPoint],
+        initial_frame: usize,
+    ) {
+        self.inner
+            .set_slot_automation_at_frame(input, target, points, initial_frame);
+    }
     pub fn set_slot_automation(
         &self,
         input: u8,

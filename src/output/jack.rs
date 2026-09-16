@@ -159,6 +159,19 @@ impl JackOutput {
         }
     }
 
+    /// Open a JACK output with default configuration or specified server/target.
+    pub fn open(
+        buffer: Arc<FixedFrameBuffer>,
+        target_device: Option<&str>,
+    ) -> Result<Self, OutputError> {
+        Self::probe_daemon(target_device)?;
+        let mut config = JackClientConfig::default();
+        if let Some(dev) = target_device {
+            config.server_name = Some(dev.to_string());
+        }
+        Ok(Self::new(buffer, config))
+    }
+
     /// Probe whether a JACK daemon is currently accessible.
     ///
     /// If no JACK server is running, returns an `OutputError::DeviceUnavailable`
@@ -316,8 +329,8 @@ impl Output for JackOutput {
             verified: true,
         };
         OutputInfo {
-            requested_backend: Some(AudioBackend::Auto),
-            actual_backend: Some(AudioBackend::Auto),
+            requested_backend: Some(AudioBackend::Jack),
+            actual_backend: Some(AudioBackend::Jack),
             requested_rate: self.sample_rate(),
             actual_rate: self.sample_rate(),
             channels: self.config.channels,

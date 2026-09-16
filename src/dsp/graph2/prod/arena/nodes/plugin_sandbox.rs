@@ -17,6 +17,8 @@ use crate::dsp::graph2::prod::arena::node::DspNode;
 use crate::dsp::pipeline::{DspStageCapability, StageChannelSupport, StagePrecision};
 
 use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 /// Maximum channels preserved in the realtime dry-passthrough scratch buffer.
 pub const MAX_SANDBOX_CHANNELS: usize = 8;
@@ -379,6 +381,13 @@ impl DspNode for PluginSandboxNode {
     }
 }
 
+pub const IPC_CMD_PREPARE: u8 = 1;
+pub const IPC_CMD_PARAM: u8 = 2;
+pub const IPC_CMD_PROCESS: u8 = 3;
+pub const IPC_CMD_RESET: u8 = 4;
+pub const IPC_CMD_HEARTBEAT: u8 = 5;
+pub const IPC_CMD_SHUTDOWN: u8 = 6;
+
 /// Out-of-process / isolated realtime worker sandbox for plugins (§12.1, Item 10).
 ///
 /// Wraps an isolated plugin process communicating via shared memory / lock-free IPC
@@ -394,6 +403,10 @@ pub struct PluginProcessSandbox {
     channels: usize,
     worker_alive: bool,
     last_restart_attempt_ms: u64,
+    worker_child: Option<Child>,
+    worker_stdin: Option<ChildStdin>,
+    worker_stdout: Option<ChildStdout>,
+    worker_exe: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -411,7 +424,61 @@ impl PluginProcessSandbox {
             channels: 2,
             worker_alive: true,
             last_restart_attempt_ms: 0,
+            worker_child: None,
+            worker_stdin: None,
+            worker_stdout: None,
+            worker_exe: None,
         }
+    }
+
+    /// Spawn a genuine child worker process communicating via anonymous stdio pipes.
+    pub fn spawn_worker(&mut self, exe_path: &str) -> Result<(), std::io::Error> {
+        let mut child = Command::new(exe_path)
+            .arg("--plugin-worker")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+
+        let mut stdin = child.stdin.take().expect("child stdin");
+        let stdout = child.stdout.take().expect("child stdout");
+
+        // Send initial prepare: [IPC_CMD_PREPARE, channels(u32), max_frames(u32), sr(f32)]
+        let mut prep_buf = [0u8; 13];
+        prep_buf[0] = IPC_CMD_PREPARE;
+        prep_buf[1..5].copy_from_slice(&(self.channels as u32).to_le_bytes());
+        prep_buf[5..9].copy_from_slice(&(MAX_AUDIO_BLOCK_FRAMES as u32).to_le_bytes());
+        prep_buf[9..13].copy_from_slice(&self.sample_rate.to_bits().to_le_bytes());
+        stdin.write_all(&prep_buf)?;
+        stdin.flush()?;
+
+        // Replay cached params
+        for (&idx, &val) in &self.cached_params {
+            let mut p_buf = [0u8; 9];
+            p_buf[0] = IPC_CMD_PARAM;
+            p_buf[1..5].copy_from_slice(&idx.to_le_bytes());
+            p_buf[5..9].copy_from_slice(&val.to_bits().to_le_bytes());
+            stdin.write_all(&p_buf)?;
+            stdin.flush()?;
+        }
+
+        self.worker_child = Some(child);
+        self.worker_stdin = Some(stdin);
+        self.worker_stdout = Some(stdout);
+        self.worker_exe = Some(exe_path.to_string());
+        self.worker_alive = true;
+        Ok(())
+    }
+
+    /// Terminate active worker child process if running.
+    pub fn kill_worker(&mut self) {
+        if let Some(mut child) = self.worker_child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.worker_stdin = None;
+        self.worker_stdout = None;
+        self.worker_alive = false;
     }
 
     pub fn config(&self) -> &PluginSandboxConfig {
@@ -428,6 +495,14 @@ impl PluginProcessSandbox {
 
     pub fn set_param(&mut self, index: u32, value: f32) {
         self.cached_params.insert(index, value);
+        if let Some(stdin) = &mut self.worker_stdin {
+            let mut p_buf = [0u8; 9];
+            p_buf[0] = IPC_CMD_PARAM;
+            p_buf[1..5].copy_from_slice(&index.to_le_bytes());
+            p_buf[5..9].copy_from_slice(&value.to_bits().to_le_bytes());
+            let _ = stdin.write_all(&p_buf);
+            let _ = stdin.flush();
+        }
     }
 
     pub fn is_worker_alive(&self) -> bool {
@@ -455,7 +530,13 @@ impl PluginProcessSandbox {
             && now_ms.saturating_sub(self.state.last_fault_timestamp_ms) >= effective_backoff_ms
         {
             self.last_restart_attempt_ms = now_ms;
-            self.worker_alive = true;
+            if let Some(exe) = self.worker_exe.clone() {
+                if self.spawn_worker(&exe).is_err() {
+                    return false;
+                }
+            } else {
+                self.worker_alive = true;
+            }
             self.state.reset();
             self.state.dry_passthrough = false;
             true
@@ -498,7 +579,77 @@ impl PluginProcessSandbox {
             return Err(PluginFaultKind::Crash);
         }
 
-        // Apply processing (simulated worker IPC transfer)
+        // Out-of-process execution through genuine worker child process if present
+        if let Some(child) = &mut self.worker_child {
+            if let Ok(Some(_status)) = child.try_wait() {
+                self.kill_worker();
+                self.trigger_crash(now_ms);
+                self.restore_dry(planes, num_channels, num_frames);
+                return Err(PluginFaultKind::Crash);
+            }
+
+            let stdin = self.worker_stdin.as_mut();
+            let stdout = self.worker_stdout.as_mut();
+            if stdin.is_none() || stdout.is_none() {
+                self.kill_worker();
+                self.trigger_crash(now_ms);
+                self.restore_dry(planes, num_channels, num_frames);
+                return Err(PluginFaultKind::Crash);
+            }
+            let stdin = stdin.unwrap();
+            let stdout = stdout.unwrap();
+
+            let mut proc_hdr = [0u8; 9];
+            proc_hdr[0] = IPC_CMD_PROCESS;
+            proc_hdr[1..5].copy_from_slice(&(num_channels as u32).to_le_bytes());
+            proc_hdr[5..9].copy_from_slice(&(num_frames as u32).to_le_bytes());
+            if stdin.write_all(&proc_hdr).is_err() {
+                self.kill_worker();
+                self.trigger_crash(now_ms);
+                self.restore_dry(planes, num_channels, num_frames);
+                return Err(PluginFaultKind::Crash);
+            }
+
+            for plane in planes[..num_channels].iter() {
+                let p = &plane[..num_frames];
+                for &s in p {
+                    if stdin.write_all(&s.to_bits().to_le_bytes()).is_err() {
+                        self.kill_worker();
+                        self.trigger_crash(now_ms);
+                        self.restore_dry(planes, num_channels, num_frames);
+                        return Err(PluginFaultKind::Crash);
+                    }
+                }
+            }
+            if stdin.flush().is_err() {
+                self.kill_worker();
+                self.trigger_crash(now_ms);
+                self.restore_dry(planes, num_channels, num_frames);
+                return Err(PluginFaultKind::Crash);
+            }
+
+            let mut float_buf = [0u8; 4];
+            let mut read_failed = false;
+            for plane in planes[..num_channels].iter_mut() {
+                for sample in plane[..num_frames].iter_mut() {
+                    if stdout.read_exact(&mut float_buf).is_err() {
+                        read_failed = true;
+                        break;
+                    }
+                    *sample = f32::from_bits(u32::from_le_bytes(float_buf));
+                }
+                if read_failed {
+                    break;
+                }
+            }
+            if read_failed {
+                self.kill_worker();
+                self.trigger_crash(now_ms);
+                self.restore_dry(planes, num_channels, num_frames);
+                return Err(PluginFaultKind::Crash);
+            }
+        }
+
         // Check corruption
         let mut corrupted = false;
         for plane in planes[..num_channels].iter() {
@@ -525,6 +676,64 @@ impl PluginProcessSandbox {
         for (ch, plane) in planes[..num_channels].iter_mut().enumerate() {
             let dry_slice = &self.dry_scratch[ch][..num_frames];
             plane[..num_frames].copy_from_slice(dry_slice);
+        }
+    }
+}
+
+/// Standard input/output loop for the isolated plugin subprocess worker.
+pub fn run_plugin_worker_stdio() {
+    let mut stdin = std::io::stdin().lock();
+    let mut stdout = std::io::stdout().lock();
+    let mut cmd_buf = [0u8; 1];
+    let mut gain = 1.0f32;
+
+    while stdin.read_exact(&mut cmd_buf).is_ok() {
+        match cmd_buf[0] {
+            IPC_CMD_PREPARE => {
+                let mut buf = [0u8; 12];
+                if stdin.read_exact(&mut buf).is_err() {
+                    break;
+                }
+            }
+            IPC_CMD_PARAM => {
+                let mut buf = [0u8; 8];
+                if stdin.read_exact(&mut buf).is_err() {
+                    break;
+                }
+                let val_bits = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+                gain = f32::from_bits(val_bits);
+            }
+            IPC_CMD_PROCESS => {
+                let mut hdr = [0u8; 8];
+                if stdin.read_exact(&mut hdr).is_err() {
+                    break;
+                }
+                let channels = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as usize;
+                let frames = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as usize;
+                let total_floats = channels * frames;
+                let mut float_buf = [0u8; 4];
+                for _ in 0..total_floats {
+                    if stdin.read_exact(&mut float_buf).is_err() {
+                        return;
+                    }
+                    let bits = u32::from_le_bytes(float_buf);
+                    let val = f32::from_bits(bits) * gain;
+                    if stdout.write_all(&val.to_bits().to_le_bytes()).is_err() {
+                        return;
+                    }
+                }
+                if stdout.flush().is_err() {
+                    return;
+                }
+            }
+            IPC_CMD_RESET => {}
+            IPC_CMD_HEARTBEAT => {
+                if stdout.write_all(&[1u8]).is_err() || stdout.flush().is_err() {
+                    break;
+                }
+            }
+            IPC_CMD_SHUTDOWN => break,
+            _ => break,
         }
     }
 }
@@ -597,5 +806,40 @@ mod tests {
         let res = sandbox.process(&mut planes, 50);
         assert_eq!(res, Err(PluginFaultKind::BufferCorrupted));
         assert!(sandbox.state().dry_passthrough);
+    }
+
+    #[test]
+    fn plugin_process_sandbox_genuine_subprocess_crash_detection() {
+        let config = PluginSandboxConfig {
+            mode: plugin_abi::PluginSandboxMode::SandboxedIpc,
+            max_execution_time_us: 2_000,
+            max_consecutive_faults: 2,
+            restart_attempts: 2,
+            backoff_ms: 100,
+            dry_passthrough_on_fault: true,
+        };
+
+        let mut sandbox = PluginProcessSandbox::new(config, 48000.0);
+        // Point worker to /bin/false which immediately exits
+        let false_bin = std::path::Path::new("/bin/false");
+        if false_bin.exists() {
+            let res = sandbox.spawn_worker("/bin/false");
+            assert!(res.is_ok());
+
+            let mut ch0 = vec![0.42f32; 128];
+            let mut ch1 = vec![0.84f32; 128];
+            let mut planes: [&mut [f32]; 2] = [&mut ch0, &mut ch1];
+
+            // Wait a moment for /bin/false to terminate
+            std::thread::sleep(std::time::Duration::from_millis(20));
+
+            // Process must detect child termination, restore dry audio and return Crash error
+            let proc_res = sandbox.process(&mut planes, 100);
+            assert_eq!(proc_res, Err(PluginFaultKind::Crash));
+            assert!(!sandbox.is_worker_alive());
+            // Dry audio preserved intact!
+            assert_eq!(planes[0][0], 0.42);
+            assert_eq!(planes[1][0], 0.84);
+        }
     }
 }

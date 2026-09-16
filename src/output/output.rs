@@ -413,6 +413,30 @@ pub fn create_output(
             }
         }
     }
+    #[cfg(target_os = "linux")]
+    if backend == config::AudioBackend::PipeWire {
+        match super::pipewire::PipeWireOutput::open(buffer.clone(), target_device) {
+            Ok(out) => {
+                log::info!("Audio output: using native PipeWire pro-audio backend");
+                return Ok(Box::new(out));
+            }
+            Err(e) => {
+                log::warn!("Native PipeWire backend unavailable ({e}); falling back to cpal");
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if backend == config::AudioBackend::Jack {
+        match super::jack::JackOutput::open(buffer.clone(), target_device) {
+            Ok(out) => {
+                log::info!("Audio output: using native JACK pro-audio backend");
+                return Ok(Box::new(out));
+            }
+            Err(e) => {
+                log::warn!("Native JACK backend unavailable ({e}); falling back to cpal");
+            }
+        }
+    }
     #[cfg(target_os = "macos")]
     if backend == config::AudioBackend::ExclusiveCoreAudioHog {
         match super::coreaudio_output::CoreAudioOutput::new(buffer.clone(), backend, target_device)

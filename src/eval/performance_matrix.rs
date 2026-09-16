@@ -24,9 +24,13 @@ use config::EngineConfig;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MatrixFormat {
+    Mono,
     Stereo,
+    TwoPointOne,
     Multichannel5Point1,
+    Multichannel7Point1,
     Multichannel7Point1Point4,
+    Multichannel9Point1Point6,
     BinauralHrtf,
     HoaOrder1,
     HoaOrder2,
@@ -36,9 +40,13 @@ pub enum MatrixFormat {
 impl MatrixFormat {
     pub const fn channel_count(&self) -> usize {
         match self {
+            Self::Mono => 1,
             Self::Stereo | Self::BinauralHrtf => 2,
+            Self::TwoPointOne => 3,
             Self::Multichannel5Point1 => 6,
+            Self::Multichannel7Point1 => 8,
             Self::Multichannel7Point1Point4 => 12,
+            Self::Multichannel9Point1Point6 => 16,
             Self::HoaOrder1 => 4,
             Self::HoaOrder2 => 9,
             Self::HoaOrder3 => 16,
@@ -47,9 +55,13 @@ impl MatrixFormat {
 
     pub const fn name(&self) -> &'static str {
         match self {
+            Self::Mono => "Mono (1ch)",
             Self::Stereo => "Stereo (2ch)",
+            Self::TwoPointOne => "2.1 Stereo (3ch)",
             Self::Multichannel5Point1 => "5.1 Surround (6ch)",
+            Self::Multichannel7Point1 => "7.1 Surround (8ch)",
             Self::Multichannel7Point1Point4 => "7.1.4 Immersive (12ch)",
+            Self::Multichannel9Point1Point6 => "9.1.6 Immersive (16ch)",
             Self::BinauralHrtf => "Binaural HRTF (2ch)",
             Self::HoaOrder1 => "HOA Order 1 (4ch)",
             Self::HoaOrder2 => "HOA Order 2 (9ch)",
@@ -161,12 +173,16 @@ impl Default for PerformanceMatrixConfig {
         Self {
             block_sizes: vec![16, 32, 64, 128, 256, 512, 1024],
             sample_rates: vec![
-                44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0, 384000.0,
+                44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0, 352800.0, 384000.0,
             ],
             formats: vec![
+                MatrixFormat::Mono,
                 MatrixFormat::Stereo,
+                MatrixFormat::TwoPointOne,
                 MatrixFormat::Multichannel5Point1,
+                MatrixFormat::Multichannel7Point1,
                 MatrixFormat::Multichannel7Point1Point4,
+                MatrixFormat::Multichannel9Point1Point6,
                 MatrixFormat::BinauralHrtf,
                 MatrixFormat::HoaOrder1,
                 MatrixFormat::HoaOrder2,
@@ -222,10 +238,14 @@ pub fn benchmark_cell(
     // Warmup
     for _ in 0..warmup {
         match format {
-            MatrixFormat::Stereo => {
+            MatrixFormat::Mono | MatrixFormat::Stereo => {
                 pipeline.process_block(&mut left, &mut right);
             }
-            MatrixFormat::Multichannel5Point1 | MatrixFormat::Multichannel7Point1Point4 => {
+            MatrixFormat::TwoPointOne
+            | MatrixFormat::Multichannel5Point1
+            | MatrixFormat::Multichannel7Point1
+            | MatrixFormat::Multichannel7Point1Point4
+            | MatrixFormat::Multichannel9Point1Point6 => {
                 pipeline.process_block_multichannel(&mut mc_buf, channels);
             }
             MatrixFormat::BinauralHrtf => {
@@ -258,10 +278,14 @@ pub fn benchmark_cell(
 
         let t0 = Instant::now();
         match format {
-            MatrixFormat::Stereo => {
+            MatrixFormat::Mono | MatrixFormat::Stereo => {
                 pipeline.process_block(&mut left, &mut right);
             }
-            MatrixFormat::Multichannel5Point1 | MatrixFormat::Multichannel7Point1Point4 => {
+            MatrixFormat::TwoPointOne
+            | MatrixFormat::Multichannel5Point1
+            | MatrixFormat::Multichannel7Point1
+            | MatrixFormat::Multichannel7Point1Point4
+            | MatrixFormat::Multichannel9Point1Point6 => {
                 pipeline.process_block_multichannel(&mut mc_buf, channels);
             }
             MatrixFormat::BinauralHrtf => {

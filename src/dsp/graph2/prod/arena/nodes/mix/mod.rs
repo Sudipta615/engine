@@ -231,6 +231,7 @@ pub enum MixInputCmd {
         target: AutomationTarget,
         points: [AutomationPoint; MAX_AUTOMATION_POINTS],
         count: usize,
+        initial_frame: usize,
     },
     /// Remove the slot's automation track.
     ClearAutomation,
@@ -638,18 +639,25 @@ impl MixBusNode {
                 target,
                 points,
                 count,
+                initial_frame,
             } => {
                 let count = count.min(MAX_AUTOMATION_POINTS);
                 slot.automation = if count == 0 {
                     None
                 } else {
-                    Some(SlotAutomation {
+                    let mut auto = SlotAutomation {
                         target,
                         points,
                         count,
-                        pos: 0,
+                        pos: initial_frame,
                         cursor: 0,
-                    })
+                    };
+                    while auto.cursor + 1 < count
+                        && auto.points[auto.cursor + 1].frame <= initial_frame
+                    {
+                        auto.cursor += 1;
+                    }
+                    Some(auto)
                 };
             }
             MixInputCmd::ClearAutomation => slot.automation = None,

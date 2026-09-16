@@ -1056,6 +1056,8 @@ pub extern "C" fn engine_upsert_endpoint(
         2 => config::AudioBackend::ExclusiveAlsa,
         3 => config::AudioBackend::ExclusiveCoreAudioHog,
         4 => config::AudioBackend::ExclusiveAsio,
+        5 => config::AudioBackend::PipeWire,
+        6 => config::AudioBackend::Jack,
         _ => return EngineStatus::InvalidArgument as i32,
     };
     h.handle.set_endpoint(config::EndpointConfig {

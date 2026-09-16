@@ -699,7 +699,7 @@ impl AudioEngine {
                 slot,
                 kind,
                 curve,
-                time_secs: _,
+                time_secs,
             } => {
                 let target = match kind {
                     0 => crate::dsp::graph2::prod::AutomationTarget::Gain,
@@ -707,16 +707,19 @@ impl AudioEngine {
                     _ => crate::dsp::graph2::prod::AutomationTarget::Send,
                 };
                 if let Some(c) = curve {
+                    let sr = (self.output_sample_rate as f32).max(1.0);
+                    let initial_frame = (time_secs.max(0.0) * sr) as usize;
                     let points: Vec<crate::dsp::graph2::prod::AutomationPoint> = c
                         .keyframes()
                         .iter()
                         .take(crate::dsp::graph2::prod::MAX_AUTOMATION_POINTS)
                         .map(|&(t, v)| crate::dsp::graph2::prod::AutomationPoint {
-                            frame: (t.max(0.0) * 48000.0) as usize,
+                            frame: (t.max(0.0) * sr) as usize,
                             value: v,
                         })
                         .collect();
-                    self.graph.set_slot_automation(slot, target, &points);
+                    self.graph
+                        .set_slot_automation_at_frame(slot, target, &points, initial_frame);
                 } else {
                     self.graph.clear_slot_automation(slot);
                 }

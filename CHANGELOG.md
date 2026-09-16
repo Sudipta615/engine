@@ -2,6 +2,46 @@
 
 All notable changes to this project are documented in this file.
 
+## [5.8.0]
+
+### Fixed
+
+- **SetSlotAutomation Sample Rate & Timeline Positioning (`src/dsp/graph2/prod/arena/nodes/mix/`, `src/engine/commands/`)**:
+  - Replaced hardcoded `48000.0` sample rate in `SetSlotAutomation` command handling with active output sample rate (`self.output_sample_rate as f32`).
+  - Implemented `initial_frame = (time_secs * sr) as usize` semantics in `MixInputCmd::SetAutomation` and `set_slot_automation_at_frame` so slot automation can be positioned at any arbitrary stream timeline offset with cursor auto-advance.
+
+### Added
+
+- **Generic HRTF Profile → Dataset Resolution (`src/spatial/hrtf/profile.rs`, `src/dsp/graph2/prod/arena/nodes/spatial_node.rs`)**:
+  - Generalized `HrtfProfileManager` to dynamically register and resolve arbitrary `HrtfDataset` instances by string ID in addition to analytic models (`None`) and synthetic KEMAR generation.
+  - Added support for loading on-disk SOFA/interchange corpora via `HrtfLoadOptions` with target sample rates and normalizations.
+  - Exposed runtime dataset registration through `Graph2Engine` and `Graph2ControlHandle`.
+- **Genuine PipeWire and JACK Output Backends (`src/output/pipewire.rs`, `src/output/jack.rs`, `src/output/output.rs`)**:
+  - Implemented real PipeWire sink device querying via `pw-dump Node` JSON inspection on Linux hosts and added fallback endpoint creation.
+  - Added live socket probing for JACK daemon accessibility (`/dev/shm/jack*` and `/tmp/jack*`) and wired `AudioBackend::PipeWire` and `AudioBackend::Jack` into `create_output`.
+- **True Process-Isolated Plugin Sandbox (`src/dsp/graph2/prod/arena/nodes/plugin_sandbox.rs`, `src/bin/audio_engine_cli.rs`)**:
+  - Built out-of-process binary planar audio IPC protocol over standard I/O with heartbeat and crash detection.
+  - Implemented zero-allocation dry audio passthrough failover immediately upon child worker panic or termination.
+  - Added exponential backoff auto-restart logic and added `--plugin-worker` mode in `audio-engine-cli`.
+- **Evidence-Driven Release Qualification (`src/eval/qualification.rs`, `src/bin/release_qualification.rs`)**:
+  - Replaced hardcoded release qualification metrics with genuine measured values:
+    - Real counting allocator window verifying strictly 0 heap allocations during steady-state blocks.
+    - Real buffer overrun / deadline miss counting (`xruns`).
+    - Real objective 8-metric spatial evaluation via `SpatialQualityEvaluator::evaluate_panning` reporting azimuth, elevation, ITD, ILD, spectral distortion, front/back confusion, distance, and energy error.
+    - Real DSP determinism, non-finite containment, and ITU-R BS.1770-5 loudness checks.
+- **Cross-Feature Interaction & Regression Suite (`tests/fidelity/cross_feature_matrix.rs`)**:
+  - Added comprehensive integration tests proving concurrent system interactions:
+    - Multichannel 7.1.4 immersive layout with 64-band EQ, multiband compressor, binaural spatial node, and true peak limiter.
+    - Dynamic graph generation swaps during active crossfade with slot automation and orbiting 3D audio objects.
+    - 1-bit DSD stream decimation to PCM with ITU-R BS.1770-5 loudness normalization and bit-perfect mode bypass toggles.
+    - Aux bus send automation, program-gated ducking, and plugin sandbox crash failover/recovery.
+- **Long-Duration Real-Time Qualification Soak Suite (`tests/fidelity/long_duration_realtime_qualification.rs`)**:
+  - Executed 10,000+ blocks soak test across 44.1 kHz, 48 kHz, 96 kHz, and 192 kHz sample rates.
+  - Verified 0 audio-thread heap allocations, 0 memory leaks, 100% finite samples, and bounded timing jitter distribution (P50, P95, P99, P99.9).
+- **Expanded Multi-Format Performance Qualification (`src/eval/performance_matrix.rs`, `tests/fidelity/performance_matrix.rs`)**:
+  - Expanded performance matrix to support Mono (1ch), Stereo (2ch), 2.1 (3ch), 5.1 (6ch), 7.1 (8ch), 7.1.4 (12ch), 9.1.6 (16ch), HOA Order 1..3 (4..16ch), and Binaural HRTF.
+  - Added support for high sample rates including 352.8 kHz / DSD64 equivalent.
+
 ## [5.7.0]
 
 ### Added

@@ -16,7 +16,7 @@ use super::{AudioBackend, DsdOutput, EngineConfig, SpatialSceneConfig};
 pub const STATE_SCHEMA_VERSION: u32 = 2;
 
 /// Engine version producing this schema.
-pub const CURRENT_ENGINE_VERSION: &str = "5.7.0";
+pub const CURRENT_ENGINE_VERSION: &str = "5.8.0";
 
 /// Errors encountered during state loading, validation, or schema migration.
 #[derive(Debug, Clone, PartialEq)]

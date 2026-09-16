@@ -148,11 +148,18 @@ fn parse_backend(s: &str) -> Option<config::AudioBackend> {
         "alsa" | "alsa-exclusive" => Some(config::AudioBackend::ExclusiveAlsa),
         "coreaudio" | "coreaudio-hog" => Some(config::AudioBackend::ExclusiveCoreAudioHog),
         "asio" | "asio-exclusive" => Some(config::AudioBackend::ExclusiveAsio),
+        "pipewire" => Some(config::AudioBackend::PipeWire),
+        "jack" => Some(config::AudioBackend::Jack),
         _ => None,
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().any(|a| a == "--plugin-worker") {
+        engine::dsp::graph2::prod::run_plugin_worker_stdio();
+        return Ok(());
+    }
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let args: Vec<String> = std::env::args().collect();

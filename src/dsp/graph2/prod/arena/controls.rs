@@ -1337,15 +1337,13 @@ impl GraphControlHandle {
         self.enqueue(node_id::MIX, NodeCmd::SetDuck(cfg));
     }
 
-    /// Replace a slot's automation track. `points` are clamped
-    /// to [`MAX_AUTOMATION_POINTS`]; an empty slice clears the track. The
-    /// points must be monotonically non-decreasing in `frame`; values are
-    /// linearly interpolated on the audio side.
-    pub fn set_slot_automation(
+    /// Replace a slot's automation track starting at an initial timeline frame.
+    pub fn set_slot_automation_at_frame(
         &self,
         input: u8,
         target: AutomationTarget,
         points: &[AutomationPoint],
+        initial_frame: usize,
     ) {
         let mut buf = [AutomationPoint {
             frame: 0,
@@ -1361,9 +1359,23 @@ impl GraphControlHandle {
                     target,
                     points: buf,
                     count,
+                    initial_frame,
                 },
             },
         );
+    }
+
+    /// Replace a slot's automation track. `points` are clamped
+    /// to [`MAX_AUTOMATION_POINTS`]; an empty slice clears the track. The
+    /// points must be monotonically non-decreasing in `frame`; values are
+    /// linearly interpolated on the audio side.
+    pub fn set_slot_automation(
+        &self,
+        input: u8,
+        target: AutomationTarget,
+        points: &[AutomationPoint],
+    ) {
+        self.set_slot_automation_at_frame(input, target, points, 0);
     }
 
     /// Remove a slot's automation track.
@@ -2230,6 +2242,25 @@ impl DspGraph {
         self.control_handle().spatial_enabled()
     }
 
+    /// Set the active HRTF profile on the spatial node.
+    pub fn set_hrtf_profile(&mut self, profile_id: &str) -> bool {
+        self.spatial_mut().set_hrtf_profile(profile_id)
+    }
+
+    /// Register a custom HRTF profile on the spatial node.
+    pub fn register_hrtf_profile(&mut self, profile: crate::spatial::hrtf::HrtfProfile) {
+        self.spatial_mut().register_hrtf_profile(profile);
+    }
+
+    /// Register a custom HRTF dataset on the spatial node.
+    pub fn register_hrtf_dataset(
+        &mut self,
+        key: impl Into<String>,
+        dataset: Arc<crate::spatial::hrtf::HrtfDataset>,
+    ) {
+        self.spatial_mut().register_hrtf_dataset(key, dataset);
+    }
+
     // ── Plugin host ────────────────────────────────────────
 
     /// Live toggle of the plugin host insert (all slots). Disabled = the
@@ -2271,6 +2302,18 @@ impl DspGraph {
     /// Configure program-gated ducking.
     pub fn set_duck(&self, cfg: Option<DuckState>) {
         self.control_handle().set_duck(cfg);
+    }
+
+    /// Replace a slot's automation track starting at `initial_frame`.
+    pub fn set_slot_automation_at_frame(
+        &self,
+        input: u8,
+        target: AutomationTarget,
+        points: &[AutomationPoint],
+        initial_frame: usize,
+    ) {
+        self.control_handle()
+            .set_slot_automation_at_frame(input, target, points, initial_frame);
     }
 
     /// Replace a slot's automation track.

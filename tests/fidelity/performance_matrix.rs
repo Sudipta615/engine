@@ -59,8 +59,13 @@ fn test_formal_performance_matrix_cell_stereo_rates_and_blocks() {
 #[test]
 fn test_formal_performance_matrix_multichannel_and_spatial() {
     let formats = [
+        MatrixFormat::Mono,
+        MatrixFormat::Stereo,
+        MatrixFormat::TwoPointOne,
         MatrixFormat::Multichannel5Point1,
+        MatrixFormat::Multichannel7Point1,
         MatrixFormat::Multichannel7Point1Point4,
+        MatrixFormat::Multichannel9Point1Point6,
         MatrixFormat::BinauralHrtf,
         MatrixFormat::HoaOrder1,
         MatrixFormat::HoaOrder2,

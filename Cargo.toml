@@ -3,7 +3,7 @@ members = [".", "crates/config", "crates/plugin-abi", "crates/plugin-test-echo"]
 
 [package]
 name = "engine"
-version = "5.7.0"
+version = "5.8.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"
@@ -583,4 +583,12 @@ path = "tests/fidelity/acoustic_measurement_verification.rs"
 [[test]]
 name = "room_correction_validation"
 path = "tests/fidelity/room_correction_validation.rs"
+
+[[test]]
+name = "cross_feature_matrix"
+path = "tests/fidelity/cross_feature_matrix.rs"
+
+[[test]]
+name = "long_duration_realtime_qualification"
+path = "tests/fidelity/long_duration_realtime_qualification.rs"
 

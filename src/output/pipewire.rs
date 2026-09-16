@@ -152,8 +152,78 @@ impl PipeWireOutput {
         }
     }
 
+    /// Open a PipeWire output with automatic configuration or specified target device.
+    pub fn open(
+        buffer: Arc<FixedFrameBuffer>,
+        target_device: Option<&str>,
+    ) -> Result<Self, OutputError> {
+        let mut config = PipeWireConfig::default();
+        if let Some(dev) = target_device {
+            config.node_name = dev.to_string();
+        }
+        let mut out = Self::new(buffer, config);
+        out.state = PipeWireStreamState::Connecting;
+        Ok(out)
+    }
+
     /// Enumerate sink nodes available in the PipeWire graph (§10.2).
     pub fn enumerate_nodes() -> Vec<PipeWireNodeInfo> {
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(output) = std::process::Command::new("pw-dump").arg("Node").output() {
+                if output.status.success() {
+                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+                        if let Some(arr) = val.as_array() {
+                            let mut nodes = Vec::new();
+                            for item in arr {
+                                let id =
+                                    item.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                                if let Some(props) = item.get("info").and_then(|i| i.get("props")) {
+                                    let media_class = props
+                                        .get("media.class")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    if media_class == "Audio/Sink" {
+                                        let name = props
+                                            .get("node.name")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("unknown")
+                                            .to_string();
+                                        let description = props
+                                            .get("node.description")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or(&name)
+                                            .to_string();
+                                        let channels = props
+                                            .get("audio.channels")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(2)
+                                            as u16;
+                                        let sample_rate = props
+                                            .get("audio.rate")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(48000)
+                                            as u32;
+                                        nodes.push(PipeWireNodeInfo {
+                                            id,
+                                            name,
+                                            description,
+                                            media_class: media_class.to_string(),
+                                            channels,
+                                            sample_rate,
+                                        });
+                                    }
+                                }
+                            }
+                            if !nodes.is_empty() {
+                                return nodes;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         vec![
             PipeWireNodeInfo {
                 id: 42,
@@ -276,8 +346,8 @@ impl Output for PipeWireOutput {
             verified: true,
         };
         OutputInfo {
-            requested_backend: Some(AudioBackend::Auto),
-            actual_backend: Some(AudioBackend::Auto),
+            requested_backend: Some(AudioBackend::PipeWire),
+            actual_backend: Some(AudioBackend::PipeWire),
             requested_rate: self.sample_rate(),
             actual_rate: self.sample_rate(),
             channels: self.config.channels,

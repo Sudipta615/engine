@@ -16,6 +16,9 @@
 //! └── personalization
 //! ```
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use super::dataset::{Ear, HrtfDataset};
 use crate::spatial::math::Vec3;
 use serde::{Deserialize, Serialize};
@@ -286,12 +289,13 @@ impl HrtfProfile {
     }
 }
 
-/// Profile registry and glitch-safe switcher (§4.6).
+/// Profile registry, dataset resolver, and glitch-safe switcher (§4.6).
 #[derive(Debug, Clone, Default)]
 pub struct HrtfProfileManager {
     profiles: Vec<HrtfProfile>,
     active_profile_id: String,
     pub switching_crossfade_ms: f32,
+    datasets: HashMap<String, Arc<HrtfDataset>>,
 }
 
 impl HrtfProfileManager {
@@ -302,6 +306,7 @@ impl HrtfProfileManager {
             profiles: vec![default_kemar, HrtfProfile::spherical_head_model(48000)],
             active_profile_id: active_id,
             switching_crossfade_ms: 20.0,
+            datasets: HashMap::new(),
         }
     }
 
@@ -311,6 +316,99 @@ impl HrtfProfileManager {
         } else {
             self.profiles.push(profile);
         }
+    }
+
+    /// Register a named dataset in memory (by URI, ID, or file key).
+    pub fn register_dataset(&mut self, key: impl Into<String>, dataset: Arc<HrtfDataset>) {
+        self.datasets.insert(key.into(), dataset);
+    }
+
+    /// Access a registered in-memory dataset by key.
+    pub fn get_dataset(&self, key: &str) -> Option<Arc<HrtfDataset>> {
+        self.datasets.get(key).cloned()
+    }
+
+    /// Generically resolve an HRTF dataset for a profile at `target_sample_rate`.
+    ///
+    /// Resolution order:
+    /// 1. If `profile.dataset_ref` is `None`: returns `Ok(None)` (analytic head model).
+    /// 2. If `profile.dataset_ref` matches an in-memory registered dataset: returns `Ok(Some(dataset))`.
+    /// 3. If `dataset_ref` indicates a synthetic or built-in model ("builtin://kemar", "synthetic://..."):
+    ///    generates a synthetic KEMAR dataset resampled at `target_sample_rate`.
+    /// 4. If `dataset_ref` starts with "file://" or points to an existing file:
+    ///    loads via `load_hrtf_corpus_json`.
+    /// 5. Fallback: if reference or profile ID contains "kemar", generates synthetic dataset.
+    pub fn resolve_dataset(
+        &self,
+        profile: &HrtfProfile,
+        target_sample_rate: u32,
+    ) -> Result<Option<Arc<HrtfDataset>>, String> {
+        let Some(ref_str) = profile.dataset_ref.as_deref() else {
+            return Ok(None);
+        };
+
+        if let Some(ds) = self.datasets.get(ref_str) {
+            return Ok(Some(Arc::clone(ds)));
+        }
+
+        if let Some(ds) = self.datasets.get(&profile.id) {
+            return Ok(Some(Arc::clone(ds)));
+        }
+
+        if ref_str == "builtin://kemar"
+            || ref_str == "kemar"
+            || ref_str.starts_with("synthetic://")
+            || profile.id == "kemar_reference"
+        {
+            let sr = target_sample_rate.max(1);
+            let ds = HrtfDataset::synthetic(sr, 64, 15.0, 15.0);
+            return Ok(Some(Arc::new(ds)));
+        }
+
+        let file_path = if let Some(stripped) = ref_str.strip_prefix("file://") {
+            stripped
+        } else {
+            ref_str
+        };
+
+        let path = std::path::Path::new(file_path);
+        if path.exists() {
+            match super::corpus::load_hrtf_corpus_json(path) {
+                Ok(corpus) => {
+                    let opts = super::corpus::HrtfLoadOptions {
+                        taps: 64,
+                        target_sample_rate: target_sample_rate.max(1),
+                        normalize: super::corpus::HrtfNormalize::None,
+                    };
+                    match HrtfDataset::from_corpus(&corpus, &opts) {
+                        Ok(ds) => return Ok(Some(Arc::new(ds))),
+                        Err(e) => {
+                            return Err(format!(
+                                "Failed to build HRTF dataset from corpus {}: {:?}",
+                                file_path, e
+                            ));
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "Failed to load HRTF corpus from {}: {:?}",
+                        file_path, e
+                    ));
+                }
+            }
+        }
+
+        if ref_str.contains("kemar") || profile.id.contains("kemar") {
+            let sr = target_sample_rate.max(1);
+            let ds = HrtfDataset::synthetic(sr, 64, 15.0, 15.0);
+            return Ok(Some(Arc::new(ds)));
+        }
+
+        Err(format!(
+            "Could not resolve HRTF dataset reference: '{}'",
+            ref_str
+        ))
     }
 
     pub fn active_profile(&self) -> Option<&HrtfProfile> {
@@ -356,5 +454,33 @@ mod tests {
 
         let bad_switch = mgr.set_active_profile("non_existent");
         assert!(!bad_switch);
+    }
+
+    #[test]
+    fn profile_manager_generic_dataset_resolution() {
+        let mut mgr = HrtfProfileManager::new();
+
+        // 1. Synthetic KEMAR profile
+        let kemar = HrtfProfile::kemar_reference(48000);
+        let ds = mgr.resolve_dataset(&kemar, 48000).unwrap();
+        assert!(ds.is_some());
+        assert_eq!(ds.unwrap().taps(), 64);
+
+        // 2. Analytic spherical model (no dataset)
+        let sphere = HrtfProfile::spherical_head_model(48000);
+        let ds_none = mgr.resolve_dataset(&sphere, 48000).unwrap();
+        assert!(ds_none.is_none());
+
+        // 3. Custom in-memory registered dataset
+        let custom_ds = Arc::new(HrtfDataset::synthetic(96000, 32, 30.0, 30.0));
+        mgr.register_dataset("memory://custom_dataset_1", Arc::clone(&custom_ds));
+
+        let mut custom_profile = HrtfProfile::kemar_reference(96000);
+        custom_profile.id = "custom_profile".to_string();
+        custom_profile.dataset_ref = Some("memory://custom_dataset_1".to_string());
+
+        let resolved_custom = mgr.resolve_dataset(&custom_profile, 96000).unwrap();
+        assert!(resolved_custom.is_some());
+        assert_eq!(resolved_custom.unwrap().taps(), 32);
     }
 }

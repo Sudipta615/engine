@@ -214,22 +214,40 @@ impl SpatialNode {
     /// Set the active HRTF profile and sync head model / dataset into the renderer (§4.6, Item 21).
     pub fn set_hrtf_profile(&mut self, profile_id: &str) -> bool {
         if self.hrtf_manager.set_active_profile(profile_id) {
-            if let Some(profile) = self.hrtf_manager.active_profile() {
+            if let Some(profile) = self.hrtf_manager.active_profile().cloned() {
                 let radius =
                     profile.anthropometry.head_radius_m * profile.personalization.itd_scaling;
                 self.binaural
                     .set_head_parameters(radius, DEFAULT_SPEED_OF_SOUND);
-                if profile.id == "kemar_reference" {
-                    let ds =
-                        HrtfDataset::synthetic(self.sample_rate.max(1.0) as u32, 64, 15.0, 15.0);
-                    self.binaural.use_dataset(Some(Arc::new(ds)));
-                } else if profile.id == "spherical_model" {
-                    self.binaural.use_dataset(None);
+                match self
+                    .hrtf_manager
+                    .resolve_dataset(&profile, self.sample_rate.max(1.0) as u32)
+                {
+                    Ok(ds_opt) => {
+                        self.binaural.use_dataset(ds_opt);
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to resolve HRTF dataset for profile '{}': {}",
+                            profile.id,
+                            e
+                        );
+                    }
                 }
                 return true;
             }
         }
         false
+    }
+
+    /// Register a custom HRTF profile into the node's profile manager.
+    pub fn register_hrtf_profile(&mut self, profile: HrtfProfile) {
+        self.hrtf_manager.register_profile(profile);
+    }
+
+    /// Register a custom HRTF dataset into the node's profile manager.
+    pub fn register_hrtf_dataset(&mut self, key: impl Into<String>, dataset: Arc<HrtfDataset>) {
+        self.hrtf_manager.register_dataset(key, dataset);
     }
 
     /// Access active HRTF profile (if any).

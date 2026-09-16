@@ -14,6 +14,7 @@
 //! and human-readable ASCII summaries adhering to release qualification criteria.
 
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use crate::dsp::deterministic::{compare_buffers, DeterministicMode};
@@ -23,6 +24,11 @@ use crate::dsp::graph2::{Graph2, PortId};
 use crate::dsp::loudness::analysis::{AnalysisMode, LoudnessAnalyzer, LoudnessComplianceProfile};
 use crate::dsp::safety::{contain_non_finite_block, NonFinitePolicy};
 use crate::standards::LoudnessStandard;
+
+/// Global atomic counter for tracking heap allocations during armed qualification windows.
+pub static QUAL_REALTIME_ALLOCS: AtomicUsize = AtomicUsize::new(0);
+/// Armed flag controlling whether the global allocator records allocations.
+pub static QUAL_MEASUREMENT_ARMED: AtomicBool = AtomicBool::new(false);
 
 /// Explicit verdict state for qualification checks and overall pipeline status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -302,37 +308,35 @@ pub fn run_qualification_pipeline() -> QualificationReport {
         ),
     });
 
-    // 5. Spatial Panning Quality & Energy Conservation
-    use crate::spatial::{BasicPanner, SpatialRenderer, SpatialScene, SpeakerLayout, Vec3};
-    let mut panner = BasicPanner::new(0.0);
-    let prep_res = panner.prepare(&SpeakerLayout::stereo(), sr as u32);
-    let mut scene = SpatialScene::new(sr as u32);
-    let _ = scene.create_audio_object(Vec3::new(0.0, 1.0, 0.0));
-    let in_sig = [1.0f32; 16];
-    let mut spatial_out = [0.0f32; 32];
-    let render_res = panner.process_block(&scene, &[&in_sig], 16, &mut spatial_out);
-
-    let l_val = spatial_out[0];
-    let r_val = spatial_out[1];
-    let energy = l_val * l_val + r_val * r_val;
-    let spatial_pass = prep_res.is_ok()
-        && render_res.is_ok()
-        && (l_val - r_val).abs() < 1e-4
-        && (energy - 1.0).abs() < 0.1;
+    // 5. Spatial Quality (8 Metrics) & Energy Conservation
+    use crate::spatial::quality_eval::SpatialQualityEvaluator;
+    use crate::spatial::SpeakerLayout;
+    let mut panner = crate::spatial::panner::BasicPanner::new(0.0);
+    let spatial_rep =
+        SpatialQualityEvaluator::evaluate_panning(&mut panner, &SpeakerLayout::stereo(), sr as u32);
+    let spatial_pass = spatial_rep.passed;
 
     if !spatial_pass {
         any_failed = true;
     }
     checks.push(QualificationCheck {
-        name: "Spatial Panning Quality".into(),
+        name: "Spatial Quality (8 Metrics)".into(),
         status: if spatial_pass {
             QualificationStatus::Pass
         } else {
             QualificationStatus::Fail
         },
         details: format!(
-            "Center gain L={:.3}, R={:.3}, Total Energy={:.4} (conservation: 1.0)",
-            l_val, r_val, energy
+            "Az={:.1}°, El={:.1}°, ITD={:.6}s, ILD={:.2}dB, Spec={:.2}dB, Conf={:.1}%, Dist={:.3}m, Energy={:.2}dB (compliance: {})",
+            spatial_rep.azimuth_error_deg,
+            spatial_rep.elevation_error_deg,
+            spatial_rep.itd_error_sec,
+            spatial_rep.ild_error_db,
+            spatial_rep.spectral_distortion_db,
+            spatial_rep.front_back_confusion_rate * 100.0,
+            spatial_rep.distance_error_m,
+            spatial_rep.energy_error_db,
+            if spatial_rep.passed { "PASS" } else { "FAIL" }
         ),
     });
 
@@ -362,9 +366,13 @@ pub fn run_qualification_pipeline() -> QualificationReport {
         details: "Clean error handling verified across CUE, ADM XML, and Graph2 JSON".into(),
     });
 
-    // 7. Live Real-Time Benchmark (Worst-Case Callback Execution & CPU %)
+    // 7. Live Real-Time Benchmark, XRun Detection, and Zero-Allocation Verification
+    QUAL_REALTIME_ALLOCS.store(0, Ordering::Relaxed);
+    QUAL_MEASUREMENT_ARMED.store(true, Ordering::Relaxed);
+
     let mut max_callback_us = 0.0f64;
     let mut total_callback_us = 0.0f64;
+    let mut xruns = 0usize;
     let benchmark_iters = 300;
 
     for i in 0..benchmark_iters {
@@ -374,13 +382,54 @@ pub fn run_qualification_pipeline() -> QualificationReport {
 
         let t0 = Instant::now();
         pipe.process_block(&mut ref_l, &mut ref_r);
+        graph.process_block(&mut test_l, &mut test_r);
         let elapsed_us = t0.elapsed().as_micros() as f64;
 
+        if elapsed_us > block_budget_us {
+            xruns += 1;
+        }
         if elapsed_us > max_callback_us {
             max_callback_us = elapsed_us;
         }
         total_callback_us += elapsed_us;
     }
+
+    QUAL_MEASUREMENT_ARMED.store(false, Ordering::Relaxed);
+    let realtime_allocations = QUAL_REALTIME_ALLOCS.load(Ordering::Relaxed);
+
+    let alloc_pass = realtime_allocations == 0;
+    if !alloc_pass {
+        any_failed = true;
+    }
+    checks.push(QualificationCheck {
+        name: "Zero Real-Time Allocations".into(),
+        status: if alloc_pass {
+            QualificationStatus::Pass
+        } else {
+            QualificationStatus::Fail
+        },
+        details: format!(
+            "Observed {} heap allocations across {} steady-state realtime blocks",
+            realtime_allocations, benchmark_iters
+        ),
+    });
+
+    let xruns_pass = xruns == 0;
+    if !xruns_pass {
+        any_failed = true;
+    }
+    checks.push(QualificationCheck {
+        name: "Buffer Overrun (XRuns)".into(),
+        status: if xruns_pass {
+            QualificationStatus::Pass
+        } else {
+            QualificationStatus::Fail
+        },
+        details: format!(
+            "{} xruns observed across {} blocks (budget: {:.1} µs)",
+            xruns, benchmark_iters, block_budget_us
+        ),
+    });
 
     let max_cpu_percent = (max_callback_us / block_budget_us) * 100.0;
     let avg_cpu_percent = ((total_callback_us / benchmark_iters as f64) / block_budget_us) * 100.0;
@@ -401,6 +450,15 @@ pub fn run_qualification_pipeline() -> QualificationReport {
         ),
     });
 
+    let tests_pass = det_pass
+        && safety_pass
+        && loud_pass
+        && tx_pass
+        && spatial_pass
+        && alloc_pass
+        && xruns_pass
+        && cpu_pass;
+
     let overall_status = if any_failed {
         QualificationStatus::Fail
     } else {
@@ -411,14 +469,18 @@ pub fn run_qualification_pipeline() -> QualificationReport {
         qualification_status: overall_status,
         engine_version: env!("CARGO_PKG_VERSION").into(),
         timestamp: current_iso_timestamp(),
-        tests: QualificationStatus::Pass,
+        tests: if tests_pass {
+            QualificationStatus::Pass
+        } else {
+            QualificationStatus::Fail
+        },
         fuzzing: if fuzz_pass {
             QualificationStatus::Pass
         } else {
             QualificationStatus::Fail
         },
-        realtime_allocations: 0,
-        xruns: 0,
+        realtime_allocations,
+        xruns,
         determinism: if det_pass {
             QualificationStatus::Pass
         } else {

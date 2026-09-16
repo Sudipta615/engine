@@ -203,6 +203,37 @@ impl Graph2Engine {
         self.inner.set_spatial_air(air);
     }
 
+    /// Select active HRTF profile by ID.
+    pub fn set_hrtf_profile(&mut self, profile_id: &str) -> bool {
+        self.inner.set_hrtf_profile(profile_id)
+    }
+
+    /// Register custom HRTF profile into the spatial node.
+    pub fn register_hrtf_profile(&mut self, profile: crate::spatial::hrtf::HrtfProfile) {
+        self.inner.register_hrtf_profile(profile);
+    }
+
+    /// Register custom HRTF dataset into the spatial node.
+    pub fn register_hrtf_dataset(
+        &mut self,
+        key: impl Into<String>,
+        dataset: std::sync::Arc<crate::spatial::hrtf::HrtfDataset>,
+    ) {
+        self.inner.register_hrtf_dataset(key, dataset);
+    }
+
+    /// Replace a slot's automation track starting at `initial_frame`.
+    pub fn set_slot_automation_at_frame(
+        &self,
+        input: u8,
+        target: AutomationTarget,
+        points: &[AutomationPoint],
+        initial_frame: usize,
+    ) {
+        self.inner
+            .set_slot_automation_at_frame(input, target, points, initial_frame);
+    }
+
     /// Replace a slot's automation track. Mirrors
     /// `DspGraph::set_slot_automation`.
     pub fn set_slot_automation(

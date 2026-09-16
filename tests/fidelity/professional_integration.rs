@@ -70,7 +70,7 @@ fn test_p1_parameter_metadata_bidirectional_conversion() {
 #[test]
 fn test_p1_versioned_state_v0_v1_v2_migrations() {
     assert_eq!(STATE_SCHEMA_VERSION, 2);
-    assert_eq!(CURRENT_ENGINE_VERSION, "5.7.0");
+    assert_eq!(CURRENT_ENGINE_VERSION, "5.8.0");
 
     // Test legacy unversioned / v0 schema payload
     let v0_json = serde_json::json!({

@@ -44,6 +44,7 @@ pub use performance_matrix::{
 };
 pub use qualification::{
     run_qualification_pipeline, QualificationCheck, QualificationReport, QualificationStatus,
+    QUAL_MEASUREMENT_ARMED, QUAL_REALTIME_ALLOCS,
 };
 pub use registry::{MetricSpec, ReferenceVector, ReferenceVectorRegistry};
 

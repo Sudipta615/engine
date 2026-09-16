@@ -20,6 +20,10 @@ pub enum AudioBackend {
     ExclusiveCoreAudioHog,
     /// ASIO direct output when the optional ASIO feature is compiled in.
     ExclusiveAsio,
+    /// Native Linux PipeWire pro-audio output backend.
+    PipeWire,
+    /// Native Linux JACK pro-audio output backend.
+    Jack,
     /// Reserved for an application-provided backend; currently maps to the
     /// platform default shared output in the built-in engine.
     Custom,
