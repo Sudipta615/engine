@@ -592,3 +592,7 @@ path = "tests/fidelity/cross_feature_matrix.rs"
 name = "long_duration_realtime_qualification"
 path = "tests/fidelity/long_duration_realtime_qualification.rs"
 
+[[test]]
+name = "song_evaluation"
+path = "tests/song_evaluation.rs"
+

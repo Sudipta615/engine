@@ -13,7 +13,7 @@ bus node provides per-send automation and an insert seam, and a multi-endpoint
 output matrix fans the master out to several devices, each with its own realtime
 thread and clock-drift-corrected resampler. Since v3.52 the engine's graph is a
 `Graph2Engine` (Graph 2.0): its execution plans are *lowered* from a Graph2
-topology. Since v4.0.0 (Phase 48) the legacy `dsp::graph` module is gone —
+topology. Since v4.0.0 the legacy `dsp::graph` module is gone —
 the node arena lives as the crate-private `dsp::graph2::prod::arena`, the
 Graph2 lowering is the only plan source, and the former public surface is
 re-exported from `dsp::graph2::prod`. A stable C FFI
@@ -22,12 +22,11 @@ lets non-Rust hosts drive the whole surface.
 ```
 ├── Cargo.toml                  # workspace + `engine` crate (the library/bins)
 ├── crates/config/              # `config` crate — Serde-serializable engine & DSP config models
-├── crates/plugin-abi/          # `plugin-abi` crate — Phase 49: the Rust-native
+├── crates/plugin-abi/          # `plugin-abi` crate — the Rust-native
 │                               #   plugin spec (C-ABI vtables, safe host facade,
 │                               #   dlopen loader, static registry)
 ├── crates/plugin-test-echo/    # `plugin-test-echo` crate — the reference
-│                               #   delay+gain plugin (cdylib + rlib; the
-│                               #   `worst-case` feature allocates on purpose)
+│                               #   delay+gain plugin (cdylib + rlib)
 ├── src/                        # `engine` crate
 │   ├── lib.rs                  # crate root + prelude re-exports
 │   ├── commands.rs             # `EngineCommand` — the full host-control surface
@@ -52,16 +51,15 @@ lets non-Rust hosts drive the whole surface.
 │   │                           #   + rt/ (realtime executor: immutable
 │   │                           #   preallocated RtPlan, atomic publish/
 │   │                           #   swap/retire, zero-alloc enum dispatch)
-│   │                           #   + prod/ (Phases 46–48, v3.51–v4.0.0:
+│   │                           #   + prod/ (v3.51–v4.0.0:
 │   │                           #   the production engine ON Graph 2.0 —
 │   │                           #   NodeKind::Prod stage kinds, the chain as
 │   │                           #   a real Graph2 topology, plan LOWERING
-│   │                           #   onto the arena PlanSet (the ONLY plan
-│   │                           #   source since Phase 48), Graph2Engine +
+│   │                           #   onto the arena PlanSet, Graph2Engine +
 │   │                           #   Graph2ControlHandle, and arena/ — the
 │   │                           #   former `dsp::graph` module as a
 │   │                           #   crate-private node-arena internal)
-│   ├── spatial/                # speaker-independent spatial layer (Phases 8–19):
+│   ├── spatial/                # speaker-independent spatial layer:
 │   │                           #   math/ (Vec3+Quat+one coordinate system),
 │   │                           #   scene/object/speaker/level/render + panner/
 │   │                           #   (BasicPanner, equal-power) + vbap/
