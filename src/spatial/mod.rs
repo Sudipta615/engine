@@ -146,11 +146,16 @@
 //! or trademarks — it is an independent implementation (§3, §115).
 
 pub mod acoustic;
+pub mod acoustics;
+pub mod adm;
 pub mod ambisonic;
 pub mod automation;
 pub mod bass;
 pub mod bed;
 pub mod binaural;
+pub mod buffers;
+pub mod bw64;
+pub mod channels;
 pub mod cue;
 pub mod diagnostics;
 pub mod directivity;
@@ -168,7 +173,9 @@ pub mod occlusion;
 pub mod panner;
 pub mod provider;
 pub mod quality;
+pub mod quality_eval;
 pub mod render;
+pub mod representation;
 pub mod room;
 pub mod room_correction;
 pub mod scene;
@@ -186,6 +193,7 @@ pub use acoustic::{
     MaterialSpectrum, PathFlags, PathKind, Portal, Wall, ACOUSTIC_IR_LEN, ALL_WALLS,
     DEFAULT_BAKE_CELL_M, MAX_PATHS, MAX_REFLECTION_ORDER, OCTAVE_BANDS, OCTAVE_BANDS_HZ,
 };
+pub use acoustics::{analyze_acoustics, AcousticReport};
 pub use ambisonic::{
     channel_count, encode_plane_wave, encode_plane_wave_n, in_phase_window, max_re_window,
     rotate_bus_frame, rotate_bus_frame_n, sh_foa, sh_n, AmbisonicDecoder, AmbisonicRenderer,
@@ -246,9 +254,11 @@ pub use quality::SpatialQuality;
 pub use render::{HybridBlockInputs, RenderError, RendererKind, SpatialRenderer, VbapRenderer};
 pub use room::{EarlyReflections, Room, RoomLateField};
 pub use room_correction::{
-    analyze_ir, capture_impulse_response, compute_correction_filter, generate_inverse_filter,
-    generate_log_sweep, CorrectionMode, RoomCorrectionFilter, RoomCorrectionProcessor,
-    RoomCorrectionTarget, RoomIrAnalysis, SweepConfig,
+    analyze_ir, average_frequency_responses, capture_impulse_response, compute_correction_filter,
+    fit_parametric_eq, generate_inverse_filter, generate_log_sweep, synthesize_channel_correction,
+    BiquadFitBand, ChannelCorrectionMetrics, CorrectionMode, CorrectionProfile, FilterSynthConfig,
+    RoomCorrectionFilter, RoomCorrectionProcessor, RoomCorrectionTarget, RoomIrAnalysis,
+    SpatialAverageStrategy, SweepConfig, TargetCurve, TargetCurveKind,
 };
 pub use scene::{
     load_scene_json, save_scene_json, Listener, ListenerTransform, SceneFileError, SpatialScene,
@@ -264,3 +274,19 @@ pub use spread::{
 pub use tracking::{HeadSample, HeadTracker, ListenerPose, TrackingConfig};
 pub use upmix::{UpmixMode, UpmixTrims};
 pub use voice::{BudgetCandidate, VoiceAdmission, VoiceBudget, VoicePlan, VoicePriority};
+
+// Stage 3 Spatial / Interchange additions (§4.1–§4.7):
+pub use adm::{parse_adm_xml, to_adm_xml, AdmError, AdmSceneConverter};
+pub use buffers::{BinauralBuffer, HoaBuffer, ObjectBuffer, PhysicalBuffer};
+pub use bw64::{
+    BextChunk, Bw64ContainerType, Bw64Error, Bw64File, Bw64Metadata, ChnaChunk, ChnaTrackUid,
+};
+pub use channels::{
+    BusChannelCount, ObjectCount, PhysicalChannelCount, SpatialFieldOrder, MAX_HOA_CHANNELS,
+    MAX_OBJECT_COUNT, MAX_PHYSICAL_CHANNELS, MAX_SPATIAL_FIELD_ORDER,
+};
+pub use quality_eval::{SpatialQualityEvaluator, SpatialQualityReport};
+pub use representation::{
+    RepresentationConversion, SpatialInputDescriptor, SpatialRepresentation,
+    SpatialRepresentationKind,
+};

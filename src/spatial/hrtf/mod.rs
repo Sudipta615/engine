@@ -11,6 +11,7 @@ pub mod corpus;
 pub mod dataset;
 pub mod decompose;
 pub mod interpolate;
+pub mod profile;
 pub mod quality;
 
 pub use corpus::{
@@ -24,6 +25,11 @@ pub use decompose::{
 };
 pub use interpolate::{
     barycentric_sphere, triangulate_sphere, SphericalHrtfInterpolator, SphericalTriangle,
+};
+pub use profile::{
+    AnthropometricMetadata, HrtfInterpolationMethod, HrtfLatencyAlignment, HrtfPersonalization,
+    HrtfPhaseMode, HrtfProfile, HrtfProfileManager, HrtfQualityMetrics, HrtfSubjectInfo,
+    HrtfSubjectType,
 };
 pub use quality::{HrtfConvStrategy, HrtfQualityMode, DEFAULT_HRTF_TAPS, MAX_HRTF_TAPS};
 

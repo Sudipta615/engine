@@ -283,8 +283,8 @@ fn graph_publish_coalesces_pending_generations() {
 
     assert_eq!(handle.generation(), 0, "still nothing swapped");
 
-    let mut l = vec![0.3f32; 256];
-    let mut r = vec![0.3f32; 256];
+    let mut l = vec![0.3f32; 512];
+    let mut r = vec![0.3f32; 512];
     graph.process_block(&mut l, &mut r);
     assert_eq!(
         handle.generation(),

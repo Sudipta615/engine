@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 use super::DiagnosticKind;
 
 /// Severity classification for structured diagnostic events.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticSeverity {
     #[default]
@@ -211,14 +213,16 @@ impl RealtimeDiagnosticQueue {
 
         // Advance tail if queue is full to preserve bounded memory
         if head.wrapping_sub(tail) >= DIAGNOSTIC_QUEUE_CAPACITY {
-            self.read_tail.store(tail.wrapping_add(1), Ordering::Release);
+            self.read_tail
+                .store(tail.wrapping_add(1), Ordering::Release);
         }
 
         let idx = head % DIAGNOSTIC_QUEUE_CAPACITY;
         unsafe {
             *self.buffer[idx].get() = Some(event);
         }
-        self.write_head.store(head.wrapping_add(1), Ordering::Release);
+        self.write_head
+            .store(head.wrapping_add(1), Ordering::Release);
         true
     }
 

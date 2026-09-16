@@ -204,6 +204,9 @@ fn plugin_runs_in_production_plan_and_toggles_bit_exact() {
     assert!(!graph.plugin().runtime_enabled() || true);
     // After the swap the runtime mirror replays the DISABLED state.
     graph.drain_queued_control();
+    // Process across the 10ms (480 frames at 48kHz) transition crossfade
+    // to reach the steady-state post-swap generation.
+    let _ = process_stereo(&mut graph, 512);
     let (l3, _r3) = process_stereo(&mut graph, 64);
     for v in &l3 {
         assert!((v - 0.25).abs() < 1e-7, "toggle must survive the swap");

@@ -10,8 +10,8 @@
 //! - Discrete step snapping and validation
 //! - Centralized [`ParameterRegistry`].
 
-use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Stable identifier for a DSP or plugin parameter.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -103,10 +103,11 @@ pub enum ParameterCurve {
 }
 
 /// Real-time smoothing strategy to prevent clicks and zipper noise.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ParameterSmoothing {
     /// No smoothing; changes step instantly at block or sample boundary.
+    #[default]
     None,
     /// Exponential 1-pole low-pass filter with time constant `tau_ms`.
     OnePole { tau_ms: f32 },
@@ -114,12 +115,6 @@ pub enum ParameterSmoothing {
     LinearRamp { duration_ms: f32 },
     /// Slew-rate limiting bounding maximum change per second.
     SlewRateLimit { max_change_per_sec: f32 },
-}
-
-impl Default for ParameterSmoothing {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 /// Complete parameter metadata descriptor (§9.1, Item 17).
@@ -152,7 +147,13 @@ pub struct ParameterDescriptor {
 }
 
 impl ParameterDescriptor {
-    pub fn new(id: impl Into<ParameterId>, name: impl Into<String>, min: f32, max: f32, default: f32) -> Self {
+    pub fn new(
+        id: impl Into<ParameterId>,
+        name: impl Into<String>,
+        min: f32,
+        max: f32,
+        default: f32,
+    ) -> Self {
         Self {
             id: id.into(),
             name: name.into(),

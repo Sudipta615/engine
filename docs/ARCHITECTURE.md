@@ -215,6 +215,9 @@ src/
 │   │                         #   temporal.rs (crest factor, dynamic range, transients),
 │   │                         #   harmonic.rs (harmonicity, tonality estimation),
 │   │                         #   mod.rs (AnalysisEngine real-time telemetry)
+│   ├── simd/                 # Hierarchical vectorization architecture (§8.2, Item 29):
+│   │                         #   AVX-512, AVX2/FMA, SSE2, ARM NEON, and Scalar tiers
+│   │                         #   with bit-exact fallbacks, dynamic detection, and runtime dispatch
 │   └── graph2/               # Graph 2.0 (Phase 25, v3.27): general-purpose
 │   │                         #   audio graph topology — nodes with explicit
 │   │                         #   typed ports (node.rs: PortSpec/SignalType/
@@ -526,14 +529,36 @@ src/
 │   │                         #   cos(elevation) off-plane term; writes into a
 │   │                         #   caller-supplied interleaved buffer so the
 │   │                         #   steady-state hot path allocates nothing.
-│   └── vbap.rs               # VbapRenderer — 3-triplet VBAP (3D layouts),
-│                             #   2D azimuth-pair reduction (coplanar), and a
-│                             #   deterministic nearest-speaker out-of-
-│                             #   coverage fallback; geometry preprocessed at
-│                             #   prepare (per-triplet inverses + Delaunay
-│                             #   empty-triangle region filter), allocation-
-│                             #   free render path with max-min-gain triplet
-│                             #   selection and energy normalization.
+│   ├── vbap.rs               # VbapRenderer — 3-triplet VBAP (3D layouts),
+│   │                         #   2D azimuth-pair reduction (coplanar), and a
+│   │                         #   deterministic nearest-speaker out-of-coverage fallback
+│   ├── representation.rs     # Formal spatial representations (Guide §4.3, Item 21):
+│   │                         #   ChannelBased, ObjectBased, Hoa, Binaural, Hybrid
+│   │                         #   + RepresentationConversion paths
+│   ├── channels.rs           # Physical vs spatial channel separation (Guide §4.4, Item 22):
+│   │                         #   PhysicalChannelCount (1..=32) vs SpatialFieldOrder (0..=9,
+│   │                         #   up to 100 channels) and ObjectCount
+│   ├── buffers.rs            # Dedicated spatial audio buffers: PhysicalBuffer,
+│   │                         #   HoaBuffer (order 0..=9), ObjectBuffer, BinauralBuffer
+│   ├── adm.rs                # ADM XML parser/serializer & AdmSceneConverter
+│   │                         #   per ITU-R BS.2076 (Guide §4.1, Item 23)
+│   ├── bw64.rs               # BWF / BW64 container support (ITU-R BS.2088) with
+│   │                         #   ds64, bext, chna, axml, ixml (Guide §4.2, Item 24)
+│   ├── quality_eval.rs       # Objective spatial quality evaluation (§4.7, Item 27):
+│   │                         #   azimuth, ILD, ITD, energy error & machine report
+│   ├── acoustics/            # Complete acoustic measurement subsystem (§11.1, Item 34):
+│   │                         #   sweep, mls, impulse, transfer function, coherence,
+│   │                         #   magnitude/phase, group delay, ISO 3382-1 RT60, EDT,
+│   │                         #   clarity (C50/C80/D50/TS), ETC envelope & AcousticReport
+│   └── room_correction/      # Profile-driven target curve room/output correction (§11.2, Item 35):
+│                             #   Harman/Diffuse-Field target curves, multi-point spatial
+│                             #   averaging, regularized FIR synthesis & OutputCalibration export
+│
+├── network_audio/            # ── Professional Network Audio (AES67 / RTP / PTP) (§10.4, Item 33) ──
+│   ├── rtp.rs                # RFC 3550 RTP packet builder/parser, L16 & L24 codecs
+│   ├── aes67.rs              # AES67 profiles, RFC 4566 SDP generation & parsing
+│   ├── clock.rs              # IEEE 1588-2008 PTP clock, delay/offset/PPM drift estimation
+│   └── session.rs            # RFC 2974 SAP announcer/listener & AdaptiveJitterBuffer (PLC)
 │
 ├── output/                   # ── Output backends ──
 │   ├── mod.rs                # Module wiring + re-exports
@@ -557,9 +582,12 @@ src/
 │   ├── wasapi_loopback.rs    # WASAPI loopback capture (system mix)
 │   ├── asio_output/          # Native ASIO (COM vtable, native DSD)
 │   ├── coreaudio_output/     # Native CoreAudio hog-mode
+│   ├── pipewire.rs           # Native PipeWire pro-audio backend (§10.2, Item 30)
+│   ├── jack.rs               # JACK pro-audio client backend (§10.3, Item 31)
 │   ├── wav_writer.rs         # Streaming float32 WAV file writer (capture)
 │   ├── device_monitor.rs     # Hotplug monitoring
-│   └── output_profile.rs     # Per-device output profiles
+│   ├── output_profile.rs     # Per-device output profiles
+│   └── calibration.rs        # Output calibration trims & target layouts (§10.5, Item 28)
 │
 ├── buffer/                   # ── Buffers (submodules of `buffer.rs`) ──
 │   ├── pcm_ring.rs           # Lock-free SPSC ring (cache-padded atomics)

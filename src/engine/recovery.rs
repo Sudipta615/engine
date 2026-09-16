@@ -330,10 +330,16 @@ impl AudioEngine {
             self.graph.update_sample_rate(actual_rate as f32);
             self.clock.set_output_sample_rate(actual_rate);
             if old_rate != actual_rate && old_rate > 0 && actual_rate > 0 {
-                self.clock.output_frames =
-                    crate::output::recovery::rescale_clock_frames(self.clock.output_frames, old_rate, actual_rate);
-                self.clock.latency_frames =
-                    crate::output::recovery::rescale_clock_frames(self.clock.latency_frames, old_rate, actual_rate);
+                self.clock.output_frames = crate::output::recovery::rescale_clock_frames(
+                    self.clock.output_frames,
+                    old_rate,
+                    actual_rate,
+                );
+                self.clock.latency_frames = crate::output::recovery::rescale_clock_frames(
+                    self.clock.latency_frames,
+                    old_rate,
+                    actual_rate,
+                );
                 if let Some(PlaybackStream::Transitioning {
                     crossfade_frames_remaining,
                     crossfade_total_frames,

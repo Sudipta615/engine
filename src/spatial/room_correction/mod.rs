@@ -25,12 +25,22 @@
 
 pub mod analysis;
 pub mod correction;
+pub mod filter_synth;
 pub mod measurement;
+pub mod profile;
+pub mod spatial_average;
+pub mod target_curve;
 
 pub use analysis::{analyze_ir, RoomCorrectionTarget, RoomIrAnalysis};
 pub use correction::{
     compute_correction_filter, CorrectionMode, RoomCorrectionFilter, RoomCorrectionProcessor,
 };
+pub use filter_synth::{
+    fit_parametric_eq, synthesize_channel_correction, BiquadFitBand, FilterSynthConfig,
+};
 pub use measurement::{
     capture_impulse_response, generate_inverse_filter, generate_log_sweep, SweepConfig,
 };
+pub use profile::{ChannelCorrectionMetrics, CorrectionProfile};
+pub use spatial_average::{average_frequency_responses, SpatialAverageStrategy};
+pub use target_curve::{TargetCurve, TargetCurveKind};

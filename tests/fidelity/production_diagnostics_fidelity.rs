@@ -23,22 +23,22 @@ use std::thread;
 use std::time::Duration;
 
 use engine::diagnostics::{
-    DiagnosticKind, DiagnosticSeverity, RawDiagnosticEvent,
-    RealtimeDiagnosticQueue, RealtimeHealthMonitor,
+    DiagnosticKind, DiagnosticSeverity, RawDiagnosticEvent, RealtimeDiagnosticQueue,
+    RealtimeHealthMonitor,
 };
 use engine::dsp::graph2::diagnostics::NodeDiagnostics;
 use engine::dsp::graph2::transitions::{
-    measure_max_discontinuity, ContinuousParameterSmoother, TransitionConfig,
-    TransitionCrossfader, TransitionCurve,
+    measure_max_discontinuity, ContinuousParameterSmoother, TransitionConfig, TransitionCrossfader,
+    TransitionCurve,
 };
-use engine::dsp::parameters::
-    {ParameterCurve, ParameterDescriptor, ParameterId, ParameterRegistry, ParameterUnit};
+use engine::dsp::parameters::{
+    ParameterCurve, ParameterDescriptor, ParameterId, ParameterRegistry, ParameterUnit,
+};
 use engine::output::recovery::{
     rescale_clock_frames, OutputRecoveryController, PreservedPlaybackSnapshot, RecoveryPhase,
 };
 use engine::state::{
-    NodeState, StateMigrationError, VersionedEnvelope,
-    CURRENT_ENGINE_VERSION, STATE_SCHEMA_VERSION,
+    NodeState, StateMigrationError, VersionedEnvelope, CURRENT_ENGINE_VERSION, STATE_SCHEMA_VERSION,
 };
 
 #[test]
@@ -178,7 +178,10 @@ fn test_pillar5_versioned_state_and_preset_serialization() {
         }
     }"#;
     let res: Result<VersionedEnvelope<NodeState>, _> = VersionedEnvelope::from_json(future_json);
-    assert!(matches!(res, Err(StateMigrationError::UnsupportedSchema { found: 42, .. })));
+    assert!(matches!(
+        res,
+        Err(StateMigrationError::UnsupportedSchema { found: 42, .. })
+    ));
 }
 
 #[test]
@@ -200,7 +203,10 @@ fn test_pillar6_seamless_graph_transitions() {
     assert!(!fader.is_active());
     // Discontinuity should be smoothly spread over 240 frames
     let max_delta = measure_max_discontinuity(&out_buf);
-    assert!(max_delta < 0.05, "maximum delta {max_delta} indicates a click!");
+    assert!(
+        max_delta < 0.05,
+        "maximum delta {max_delta} indicates a click!"
+    );
 
     // Test parameter smoother
     let mut smoother = ContinuousParameterSmoother::new(0.0, 5.0, 48000.0);

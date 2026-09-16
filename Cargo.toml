@@ -3,7 +3,7 @@ members = [".", "crates/config", "crates/plugin-abi", "crates/plugin-test-echo"]
 
 [package]
 name = "engine"
-version = "5.3.0"
+version = "5.5.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"
@@ -11,6 +11,8 @@ repository = "https://github.com/Sudipta615/engine"
 [features]
 default = ["audio-output", "resample", "all-codecs"]
 audio-output = ["cpal", "thread-priority"]
+pipewire = ["audio-output"]
+jack = ["audio-output"]
 # Dynamic plugin library loading (dlopen / LoadLibrary). The
 # static-registry path (`static:<uid>` sources) works without this
 # feature; enabling it adds the libloading-based loader.
@@ -529,4 +531,12 @@ path = "tests/fidelity/fuzz_expanded.rs"
 [[test]]
 name = "production_diagnostics_fidelity"
 path = "tests/fidelity/production_diagnostics_fidelity.rs"
+
+[[test]]
+name = "spatial_interchange_fidelity"
+path = "tests/fidelity/spatial_interchange_fidelity.rs"
+
+[[test]]
+name = "stage4_professional_io_fidelity"
+path = "tests/fidelity/stage4_professional_io_fidelity.rs"
 

@@ -12,6 +12,7 @@ pub mod events;
 #[cfg(feature = "c-ffi")]
 pub mod ffi;
 pub mod fx;
+pub mod network_audio;
 #[cfg(feature = "audio-output")]
 pub mod output;
 pub mod paths;

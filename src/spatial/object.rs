@@ -111,6 +111,64 @@ pub struct SpatialAudioObject {
     pub importance: f32,
     pub enabled: bool,
     pub source_type: SpatialSourceType,
+    /// Head-locked flag: when true, source position/orientation is locked to listener head.
+    pub head_locked: bool,
+    /// Screen-relative positioning flag: when true, positions are relative to a display screen.
+    pub screen_relative: bool,
+    /// Screen reference geometry for screen-relative objects.
+    pub screen_ref: Option<ScreenReference>,
+    /// ITU-R BS.2076 divergence parameter in `[0.0, 1.0]`.
+    pub divergence: f32,
+    /// 3D extent (width, height, depth) for extended sources.
+    pub extent: ObjectExtent,
+    /// Diffuseness factor in `[0.0, 1.0]` for energy routed to diffuse field.
+    pub diffuseness: f32,
+    /// Absolute distance override in metres (optional).
+    pub absolute_distance: Option<f32>,
+    /// Zone exclusion bounding box.
+    pub zone_exclusion: Option<ZoneExclusion>,
+}
+
+/// Screen reference geometry for screen-relative spatial objects (§4.5).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ScreenReference {
+    pub screen_id: String,
+    pub aspect_ratio: f32,
+    pub width_m: f32,
+    pub height_m: f32,
+}
+
+impl Default for ScreenReference {
+    fn default() -> Self {
+        Self {
+            screen_id: "default_screen".to_string(),
+            aspect_ratio: 16.0 / 9.0,
+            width_m: 2.0,
+            height_m: 1.125,
+        }
+    }
+}
+
+/// 3D bounding extents (width, height, depth) for extended audio sources (§4.5).
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub struct ObjectExtent {
+    /// Width in metres or angular radians.
+    pub width: f32,
+    /// Height in metres or angular radians.
+    pub height: f32,
+    /// Depth in metres or angular radians.
+    pub depth: f32,
+}
+
+/// 3D exclusion zone bounding box in world coordinates (§4.5).
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub struct ZoneExclusion {
+    pub min_x: f32,
+    pub max_x: f32,
+    pub min_y: f32,
+    pub max_y: f32,
+    pub min_z: f32,
+    pub max_z: f32,
 }
 
 impl SpatialAudioObject {
@@ -138,7 +196,59 @@ impl SpatialAudioObject {
             importance: 1.0,
             enabled: true,
             source_type: SpatialSourceType::Point,
+            head_locked: false,
+            screen_relative: false,
+            screen_ref: None,
+            divergence: 0.0,
+            extent: ObjectExtent::default(),
+            diffuseness: 0.0,
+            absolute_distance: None,
+            zone_exclusion: None,
         }
+    }
+
+    pub fn with_head_locked(mut self, head_locked: bool) -> Self {
+        self.head_locked = head_locked;
+        self
+    }
+
+    pub fn with_screen_relative(
+        mut self,
+        screen_relative: bool,
+        screen_ref: Option<ScreenReference>,
+    ) -> Self {
+        self.screen_relative = screen_relative;
+        self.screen_ref = screen_ref;
+        self
+    }
+
+    pub fn with_divergence(mut self, divergence: f32) -> Self {
+        self.divergence = divergence.clamp(0.0, 1.0);
+        self
+    }
+
+    pub fn with_extent(mut self, width: f32, height: f32, depth: f32) -> Self {
+        self.extent = ObjectExtent {
+            width: width.max(0.0),
+            height: height.max(0.0),
+            depth: depth.max(0.0),
+        };
+        self
+    }
+
+    pub fn with_diffuseness(mut self, diffuseness: f32) -> Self {
+        self.diffuseness = diffuseness.clamp(0.0, 1.0);
+        self
+    }
+
+    pub fn with_absolute_distance(mut self, distance_m: f32) -> Self {
+        self.absolute_distance = Some(distance_m.max(0.0));
+        self
+    }
+
+    pub fn with_zone_exclusion(mut self, zone: ZoneExclusion) -> Self {
+        self.zone_exclusion = Some(zone);
+        self
     }
 
     /// The listener-to-object distance in metres implied by this block's
@@ -146,7 +256,11 @@ impl SpatialAudioObject {
     /// listener frame). The renderer computes this from the transformed
     /// position; this helper documents the unit convention.
     pub fn distance_from_origin(&self, listener_space_pos: Vec3) -> f32 {
-        listener_space_pos.length()
+        if let Some(abs_dist) = self.absolute_distance {
+            abs_dist
+        } else {
+            listener_space_pos.length()
+        }
     }
 }
 

@@ -142,4 +142,72 @@ pub struct AdmDocument {
     pub channel_formats: Vec<AudioChannelFormat>,
     pub stream_formats: Vec<AudioStreamFormat>,
     pub track_formats: Vec<AudioTrackFormat>,
+    #[serde(default)]
+    pub zones: Vec<AdmZoneExclusion>,
+}
+
+/// 3D exclusion zone definition in ADM (ITU-R BS.2076 §3.6).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AdmZoneExclusion {
+    pub min_x: f32,
+    pub max_x: f32,
+    pub min_y: f32,
+    pub max_y: f32,
+    pub min_z: f32,
+    pub max_z: f32,
+}
+
+/// Screen reference geometry in ADM.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScreenReferenceAdm {
+    pub screen_id: String,
+    pub aspect_ratio: f32,
+    pub width_m: f32,
+    pub height_m: f32,
+}
+
+impl Default for ScreenReferenceAdm {
+    fn default() -> Self {
+        Self {
+            screen_id: "screen_0".to_string(),
+            aspect_ratio: 16.0 / 9.0,
+            width_m: 2.0,
+            height_m: 1.125,
+        }
+    }
+}
+
+/// Convert ADM polar coordinates (azimuth, elevation, distance) to engine Cartesian coordinates.
+/// ITU-R BS.2076: Azimuth counter-clockwise from front (+Y), Elevation positive upwards (+Z).
+/// Engine coordinate frame: +X right, +Y front, +Z up.
+pub fn adm_polar_to_cartesian(
+    azimuth_deg: f32,
+    elevation_deg: f32,
+    distance_m: f32,
+) -> (f32, f32, f32) {
+    let az_rad = azimuth_deg.to_radians();
+    let el_rad = elevation_deg.to_radians();
+    let r = distance_m.max(0.0);
+
+    // BS.2076 polar coordinates:
+    // x = -r * cos(el) * sin(az)  (where az > 0 is left, so +X right is -sin(az))
+    // y =  r * cos(el) * cos(az)  (front)
+    // z =  r * sin(el)            (up)
+    // When standard right-handed ADM defines az = 0 (front), az = -90 (right):
+    let x = -r * el_rad.cos() * az_rad.sin();
+    let y = r * el_rad.cos() * az_rad.cos();
+    let z = r * el_rad.sin();
+    (x, y, z)
+}
+
+/// Convert engine Cartesian coordinates (+X right, +Y front, +Z up) to ADM polar coordinates.
+pub fn cartesian_to_adm_polar(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
+    let dist = (x * x + y * y + z * z).sqrt();
+    if dist < 1e-6 {
+        return (0.0, 0.0, 0.0);
+    }
+    let el_deg = (z / dist).asin().to_degrees();
+    // az = -atan2(x, y) in degrees
+    let az_deg = (-x).atan2(y).to_degrees();
+    (az_deg, el_deg, dist)
 }

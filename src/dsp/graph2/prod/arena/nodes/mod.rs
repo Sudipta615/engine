@@ -10,6 +10,7 @@ pub mod limiter_node;
 pub mod loudness_node;
 pub mod mix;
 pub mod plugin_host_node;
+pub mod plugin_sandbox;
 pub mod resampler_node;
 pub mod routing_node;
 pub mod spatial_node;
@@ -31,6 +32,8 @@ pub use mix::{
     MixTransitionCmd, PanLaw, MAX_AUTOMATION_POINTS, MAX_DUCK_TARGETS, MAX_MIX_SLOTS,
 };
 pub use plugin_host_node::{PluginHostNode, MAX_PLUGIN_SLOTS};
+#[allow(unused_imports)]
+pub use plugin_sandbox::{PluginSandboxNode, SandboxedPluginInstance, MAX_SANDBOX_CHANNELS};
 pub use resampler_node::ResamplerNode;
 pub use routing_node::RoutingNode;
 pub use spatial_node::SpatialNode;

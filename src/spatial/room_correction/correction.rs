@@ -12,8 +12,10 @@
 use super::analysis::{RoomCorrectionTarget, RoomIrAnalysis};
 use crate::dsp::convolution::{ConvolutionEngine, ConvolutionError};
 
+use serde::{Deserialize, Serialize};
+
 /// Correction filter phase mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum CorrectionMode {
     /// Minimum-phase filter: minimum latency, cannot correct group delay.
     MinimumPhase,

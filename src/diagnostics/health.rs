@@ -151,9 +151,7 @@ impl RealtimeHealthMonitor {
 
         // Calculate nominal deadline = (frames / sample_rate) in nanoseconds
         if sample_rate > 0 {
-            let deadline_ns = (frames as u64)
-                .saturating_mul(1_000_000_000)
-                / (sample_rate as u64);
+            let deadline_ns = (frames as u64).saturating_mul(1_000_000_000) / (sample_rate as u64);
             self.deadline_ns.store(deadline_ns, Ordering::Relaxed);
 
             if deadline_ns > 0 {
@@ -163,16 +161,19 @@ impl RealtimeHealthMonitor {
                 }
 
                 // CPU usage = (dur_ns / deadline_ns) * 100 * PCT_SCALE
-                let cpu_pct_scaled = ((dur_ns as f64 / deadline_ns as f64) * 100.0 * (PCT_SCALE as f64))
-                    .clamp(0.0, u32::MAX as f64) as u32;
-                self.cpu_usage_scaled.store(cpu_pct_scaled, Ordering::Relaxed);
+                let cpu_pct_scaled =
+                    ((dur_ns as f64 / deadline_ns as f64) * 100.0 * (PCT_SCALE as f64))
+                        .clamp(0.0, u32::MAX as f64) as u32;
+                self.cpu_usage_scaled
+                    .store(cpu_pct_scaled, Ordering::Relaxed);
             }
         }
 
         // Update buffer fill percentage
         if buffer_capacity > 0 {
             let fill_pct = (buffer_fill as f32 / buffer_capacity as f32) * 100.0 * PCT_SCALE;
-            self.buffer_fill_scaled.store(fill_pct as u32, Ordering::Relaxed);
+            self.buffer_fill_scaled
+                .store(fill_pct as u32, Ordering::Relaxed);
         }
     }
 
@@ -195,7 +196,8 @@ impl RealtimeHealthMonitor {
     pub fn update_drift_and_ratio(&self, drift_ppm: i32, ratio: f32) {
         self.clock_drift_ppm.store(drift_ppm, Ordering::Relaxed);
         let ratio_scaled = (ratio.clamp(0.0, 100.0) * RATIO_SCALE) as u32;
-        self.resampler_ratio_scaled.store(ratio_scaled, Ordering::Relaxed);
+        self.resampler_ratio_scaled
+            .store(ratio_scaled, Ordering::Relaxed);
     }
 
     /// Update the active graph generation.
@@ -207,7 +209,8 @@ impl RealtimeHealthMonitor {
     /// Update total pipeline latency in samples.
     #[inline]
     pub fn update_latency(&self, latency_samples: u64) {
-        self.latency_samples.store(latency_samples, Ordering::Relaxed);
+        self.latency_samples
+            .store(latency_samples, Ordering::Relaxed);
     }
 
     /// Reset the recorded worst-case callback duration (e.g. after mode/rate change).

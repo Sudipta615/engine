@@ -75,6 +75,9 @@ pub struct OutputProfile {
     /// The DSP bundle applied when this profile is active.
     #[serde(default)]
     pub dsp: DeviceProfile,
+    /// Acoustic calibration parameters (delays, gains, polarity, speaker geometry, correction IR).
+    #[serde(default)]
+    pub calibration: Option<super::calibration::OutputCalibration>,
 }
 
 impl Default for OutputProfile {
@@ -95,6 +98,7 @@ impl Default for OutputProfile {
             dsd_policy: None,
             volume_mode: None,
             dsp: DeviceProfile::flat(),
+            calibration: None,
         }
     }
 }

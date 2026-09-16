@@ -122,9 +122,13 @@ impl DspGraph {
                 } else {
                     0.0
                 };
-                crate::dsp::graph2::diagnostics::NodeDiagnostics::new(idx as u32, info.name, info.active)
-                    .with_latency_and_tail(latency_samples, info.latency_ms, tail_samples, info.tail_ms)
-                    .with_metering(-120.0, -120.0, gr_db)
+                crate::dsp::graph2::diagnostics::NodeDiagnostics::new(
+                    idx as u32,
+                    info.name,
+                    info.active,
+                )
+                .with_latency_and_tail(latency_samples, info.latency_ms, tail_samples, info.tail_ms)
+                .with_metering(-120.0, -120.0, gr_db)
             })
             .collect()
     }

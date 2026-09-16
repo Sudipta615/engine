@@ -7,8 +7,8 @@
 //! Old valid configurations fail gracefully or migrate automatically (`v1 → v2 → v3`)
 //! rather than silently corrupting state or crashing the engine.
 
-use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use super::{AudioBackend, DsdOutput, EngineConfig, SpatialSceneConfig};
 
@@ -16,7 +16,7 @@ use super::{AudioBackend, DsdOutput, EngineConfig, SpatialSceneConfig};
 pub const STATE_SCHEMA_VERSION: u32 = 1;
 
 /// Engine version producing this schema.
-pub const CURRENT_ENGINE_VERSION: &str = "5.3.0";
+pub const CURRENT_ENGINE_VERSION: &str = "5.5.0";
 
 /// Errors encountered during state loading, validation, or schema migration.
 #[derive(Debug, Clone, PartialEq)]
@@ -32,7 +32,10 @@ pub enum StateMigrationError {
 impl std::fmt::Display for StateMigrationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            StateMigrationError::UnsupportedSchema { found, max_supported } => {
+            StateMigrationError::UnsupportedSchema {
+                found,
+                max_supported,
+            } => {
                 write!(
                     f,
                     "unsupported state schema version {found} (maximum supported: {max_supported})"
@@ -91,7 +94,8 @@ impl<T: Serialize + for<'de> Deserialize<'de>> VersionedEnvelope<T> {
 
     /// Serialize envelope to a pretty-printed JSON string.
     pub fn to_json_pretty(&self) -> Result<String, StateMigrationError> {
-        serde_json::to_string_pretty(self).map_err(|e| StateMigrationError::CorruptedJson(e.to_string()))
+        serde_json::to_string_pretty(self)
+            .map_err(|e| StateMigrationError::CorruptedJson(e.to_string()))
     }
 
     /// Load and validate a persisted state JSON string.
@@ -198,7 +202,7 @@ pub struct SpatialSceneState {
     pub active_preset: Option<String>,
 }
 
-/// Versioned state for a calibrated output device profile.
+/// Versioned state for a calibrated output device profile (§9.2, §10.5).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutputProfileState {
     pub profile_id: String,
@@ -207,6 +211,14 @@ pub struct OutputProfileState {
     pub calibration_gain_db: f32,
     pub delay_ms: f32,
     pub eq_preset: Option<String>,
+    #[serde(default)]
+    pub layout_preset: Option<String>,
+    #[serde(default)]
+    pub per_channel_delays_ms: Vec<f32>,
+    #[serde(default)]
+    pub per_channel_gains_db: Vec<f32>,
+    #[serde(default)]
+    pub polarity_inverted: Vec<bool>,
 }
 
 #[cfg(test)]
@@ -247,7 +259,8 @@ mod tests {
             }
         }"#;
 
-        let result: Result<VersionedEnvelope<NodeState>, _> = VersionedEnvelope::from_json(future_json);
+        let result: Result<VersionedEnvelope<NodeState>, _> =
+            VersionedEnvelope::from_json(future_json);
         assert!(matches!(
             result,
             Err(StateMigrationError::UnsupportedSchema { found: 999, .. })
@@ -264,7 +277,8 @@ mod tests {
             }
         }"#;
 
-        let loaded: VersionedEnvelope<NodeState> = VersionedEnvelope::from_json(legacy_json).unwrap();
+        let loaded: VersionedEnvelope<NodeState> =
+            VersionedEnvelope::from_json(legacy_json).unwrap();
         assert_eq!(loaded.schema_version, 1);
         assert_eq!(loaded.state.node_name, "compressor");
         assert!(!loaded.state.enabled);

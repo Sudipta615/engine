@@ -95,7 +95,11 @@ impl TransitionCrossfader {
         new_planes: &[&[f32]],
         dst_planes: &mut [&mut [f32]],
     ) -> usize {
-        if !self.is_active() || old_planes.is_empty() || new_planes.is_empty() || dst_planes.is_empty() {
+        if !self.is_active()
+            || old_planes.is_empty()
+            || new_planes.is_empty()
+            || dst_planes.is_empty()
+        {
             // Passthrough new planes if inactive
             let channels = dst_planes.len().min(new_planes.len());
             for ch in 0..channels {
@@ -335,7 +339,10 @@ mod tests {
         // First sample starts at -1.0, smoothly transitions to +1.0
         let max_step = measure_max_discontinuity(&out_buf);
         // Step size per frame should be around 2.0 / 96 approx 0.021, NOT 2.0!
-        assert!(max_step < 0.05, "maximum delta {max_step} should be smooth without click");
+        assert!(
+            max_step < 0.05,
+            "maximum delta {max_step} should be smooth without click"
+        );
     }
 
     #[test]

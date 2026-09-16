@@ -41,6 +41,7 @@ pub mod bus;
 pub mod host;
 pub mod midi;
 pub mod params;
+pub mod sandbox;
 pub mod state;
 pub mod transport;
 
@@ -49,6 +50,7 @@ pub use bus::{AudioBussesMut, BusDescriptor, PluginBusLayout, PluginBusRole, MAX
 pub use host::{PluginHost, PluginInstance};
 pub use midi::{MidiEvent, MidiEventType, MidiPacket, MAX_MIDI_EVENTS_PER_BLOCK};
 pub use params::{ParamDescriptor, ParamValue, PluginParams};
+pub use sandbox::{PluginFaultKind, PluginSandboxConfig, PluginSandboxMode, PluginSandboxState};
 pub use state::{PluginStateError, StateBuffer};
 pub use transport::TransportInfo;
 

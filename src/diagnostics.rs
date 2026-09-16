@@ -23,7 +23,9 @@ use serde::{Deserialize, Serialize};
 pub mod events;
 pub mod health;
 
-pub use events::{DiagnosticEvent, DiagnosticSeverity, RawDiagnosticEvent, RealtimeDiagnosticQueue};
+pub use events::{
+    DiagnosticEvent, DiagnosticSeverity, RawDiagnosticEvent, RealtimeDiagnosticQueue,
+};
 pub use health::{RealtimeHealthMonitor, RealtimeHealthSnapshot};
 
 /// Stable, coarse category for an engine diagnostic.
