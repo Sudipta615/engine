@@ -226,4 +226,7 @@ pub struct DspGraph {
     // ── Seamless Generation Transition Blending ──
     transition_fader: crate::dsp::graph2::transitions::TransitionCrossfader,
     retiring: Option<Box<swap::GraphGeneration>>,
+
+    // ── Real-time Float Safety & Containment ──
+    pub non_finite_policy: crate::dsp::safety::NonFinitePolicy,
 }

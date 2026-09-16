@@ -131,6 +131,42 @@ impl Default for SpatialFieldOrder {
     }
 }
 
+/// Strongly-typed count of Higher-Order Ambisonics channels $(N+1)^2$ (1..=100) (§4.4, Item 22).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct HOAChannelCount(usize);
+
+impl HOAChannelCount {
+    pub const FOA: Self = Self(4);
+    pub const SOA: Self = Self(9);
+    pub const TOA: Self = Self(16);
+    pub const ORDER_9: Self = Self(100);
+
+    pub fn new(count: usize) -> Option<Self> {
+        if count > 0 && count <= MAX_HOA_CHANNELS {
+            let root = (count as f64).sqrt().round() as usize;
+            if root * root == count {
+                return Some(Self(count));
+            }
+        }
+        None
+    }
+
+    pub fn from_order(order: SpatialFieldOrder) -> Self {
+        Self(order.channels())
+    }
+
+    #[inline]
+    pub const fn get(&self) -> usize {
+        self.0
+    }
+}
+
+impl Default for HOAChannelCount {
+    fn default() -> Self {
+        Self::FOA
+    }
+}
+
 /// Strongly-typed count of active spatial objects.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,

@@ -21,7 +21,9 @@ pub mod x86;
 pub use biquad::process_biquad_stereo;
 pub use dispatch::{
     dispatch_accumulate_scaled, dispatch_dot_product, dispatch_mix_slices, dispatch_scale_slice,
-    dispatch_scale_slice_f64, execute_at_level,
+    dispatch_scale_slice_f64, execute_accumulate_scaled_at_level, execute_at_level,
+    execute_dot_product_at_level, execute_mix_at_level, execute_scale_at_level,
+    execute_scale_f64_at_level,
 };
 pub use gain::{ramp_slice, ramp_slice_f64, scale_slice, scale_slice_f64};
 pub use interpolate::{vector_bilinear, vector_lerp};

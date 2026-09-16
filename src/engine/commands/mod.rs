@@ -572,6 +572,155 @@ impl AudioEngine {
             // ── Capture ──
             EngineCommand::CaptureStart { path, device } => self.handle_capture_start(path, device),
             EngineCommand::CaptureStop => self.handle_capture_stop(),
+
+            // ── Runtime DSP & Mix Controls (Punch List P1 Items 20 & 21) ──
+            EngineCommand::SetSpatialEnabled(enabled) => {
+                self.graph.set_spatial_enabled(enabled);
+            }
+            EngineCommand::SetSpatialScreen {
+                center_azimuth_deg,
+                half_width_deg,
+                elevation_deg,
+                gain,
+            } => {
+                self.graph.set_spatial_screen(
+                    center_azimuth_deg,
+                    half_width_deg,
+                    elevation_deg,
+                    gain,
+                );
+            }
+            EngineCommand::SetSpatialRoom {
+                enabled,
+                width,
+                depth,
+                height,
+                absorption,
+                reflection_order,
+                rt60_ms,
+                late_mix,
+                late_distance,
+                wet,
+            } => {
+                self.graph.set_spatial_room(
+                    enabled,
+                    width,
+                    depth,
+                    height,
+                    absorption,
+                    reflection_order,
+                    rt60_ms,
+                    late_mix,
+                    late_distance,
+                    wet,
+                );
+            }
+            EngineCommand::SetSpatialAir(air) => {
+                self.graph.set_spatial_air(air);
+            }
+            EngineCommand::SetSpatialListener {
+                yaw_deg,
+                pitch_deg,
+                roll_deg,
+            } => {
+                self.graph
+                    .set_spatial_listener(yaw_deg, pitch_deg, roll_deg);
+            }
+            EngineCommand::SetHrtfProfile(id) => {
+                self.graph.with_graph(|g| {
+                    g.spatial_mut().set_hrtf_profile(&id);
+                });
+            }
+            EngineCommand::SetLimiterEnabled(enabled) => {
+                self.graph.set_limiter_enabled(enabled);
+            }
+            EngineCommand::SetLimiterParams {
+                lookahead_ms,
+                attack_ms,
+                release_ms,
+                ceiling_db,
+                soft_clip,
+            } => {
+                self.graph.set_limiter_params(
+                    lookahead_ms,
+                    attack_ms,
+                    release_ms,
+                    ceiling_db,
+                    soft_clip,
+                );
+            }
+            EngineCommand::SetCompressorBandFeatures {
+                band,
+                knee_db,
+                detector,
+                stereo_link,
+            } => {
+                self.graph
+                    .set_compressor_band_features(band, knee_db, detector, stereo_link);
+            }
+            EngineCommand::SetStereoEnhancerEnabled(enabled) => {
+                self.graph.set_stereo_enhancer_enabled(enabled);
+            }
+            EngineCommand::SetLoudnessMode(mode) => {
+                let dsp_mode = match mode {
+                    config::LoudnessMode::Off => crate::dsp::LoudnessMode::Off,
+                    config::LoudnessMode::TrackReplayGain => {
+                        crate::dsp::LoudnessMode::TrackReplayGain
+                    }
+                    config::LoudnessMode::AlbumReplayGain => {
+                        crate::dsp::LoudnessMode::AlbumReplayGain
+                    }
+                    config::LoudnessMode::EbuR128 => crate::dsp::LoudnessMode::EbuR128,
+                };
+                self.graph.set_loudness_mode(dsp_mode);
+            }
+            EngineCommand::SetSlotTrim {
+                slot,
+                channel,
+                gain_db,
+                invert_polarity,
+            } => {
+                self.graph
+                    .set_slot_trim(slot, channel, gain_db, invert_polarity);
+            }
+            EngineCommand::SetAux {
+                enabled,
+                return_gain,
+            } => {
+                self.graph.set_aux(enabled, return_gain);
+            }
+            EngineCommand::SetInputMute { slot, muted } => {
+                self.graph.set_input_mute(slot, muted);
+            }
+            EngineCommand::SetInputActive { slot, active } => {
+                self.graph.set_input_active(slot, active);
+            }
+            EngineCommand::SetSlotAutomation {
+                slot,
+                kind,
+                curve,
+                time_secs: _,
+            } => {
+                let target = match kind {
+                    0 => crate::dsp::graph2::prod::AutomationTarget::Gain,
+                    1 => crate::dsp::graph2::prod::AutomationTarget::Pan,
+                    _ => crate::dsp::graph2::prod::AutomationTarget::Send,
+                };
+                if let Some(c) = curve {
+                    let points: Vec<crate::dsp::graph2::prod::AutomationPoint> = c
+                        .keyframes()
+                        .iter()
+                        .take(crate::dsp::graph2::prod::MAX_AUTOMATION_POINTS)
+                        .map(|&(t, v)| crate::dsp::graph2::prod::AutomationPoint {
+                            frame: (t.max(0.0) * 48000.0) as usize,
+                            value: v,
+                        })
+                        .collect();
+                    self.graph.set_slot_automation(slot, target, &points);
+                } else {
+                    self.graph.clear_slot_automation(slot);
+                }
+            }
         }
     }
 }

@@ -369,7 +369,7 @@ impl LookaheadLimiter {
     ///
     /// When `TruePeakMode::Fir4x` is active, the peak detector runs a
     /// 4× polyphase FIR upsampler before computing the envelope maximum.
-    /// This gives accurate inter-sample peak detection per ITU-R BS.1770-4.
+    /// This gives accurate inter-sample peak detection per ITU-R BS.1770-5 Annex 2.
     ///
     /// **Note:** The old `true_peak_enabled = true` mode used 4× linear
     /// interpolation, which is NOT EBU R128-compliant.  The new FIR mode is.

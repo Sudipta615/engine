@@ -397,6 +397,87 @@ impl ParameterRegistry {
     }
 }
 
+impl From<&plugin_abi::ParamDescriptor> for ParameterDescriptor {
+    fn from(desc: &plugin_abi::ParamDescriptor) -> Self {
+        let curve = match desc.curve.as_str() {
+            "logarithmic" => ParameterCurve::Logarithmic,
+            "exponential" => ParameterCurve::Exponential,
+            "decibel" => ParameterCurve::Decibel,
+            "s_curve" => ParameterCurve::SCurve,
+            _ => ParameterCurve::Linear,
+        };
+        let smoothing = match desc.smoothing.as_str() {
+            "one_pole" => ParameterSmoothing::OnePole { tau_ms: 10.0 },
+            "linear_ramp" => ParameterSmoothing::LinearRamp { duration_ms: 10.0 },
+            _ => ParameterSmoothing::None,
+        };
+        let unit = match desc.unit.as_str() {
+            "Hz" => ParameterUnit::Hertz,
+            "dB" => ParameterUnit::Decibels,
+            "%" => ParameterUnit::Percent,
+            "ms" => ParameterUnit::Milliseconds,
+            "s" => ParameterUnit::Seconds,
+            "x" => ParameterUnit::LinearGain,
+            "st" => ParameterUnit::Semitones,
+            "ct" => ParameterUnit::Cents,
+            "Q" => ParameterUnit::QFactor,
+            "smp" => ParameterUnit::Samples,
+            "Bpm" | "BPM" => ParameterUnit::Bpm,
+            _ => ParameterUnit::Generic,
+        };
+        let mut p = ParameterDescriptor::new(
+            desc.id.clone(),
+            desc.label.clone(),
+            desc.min,
+            desc.max,
+            desc.default,
+        )
+        .with_unit(unit)
+        .with_curve(curve)
+        .with_smoothing(smoothing)
+        .with_automatable(desc.automatable)
+        .with_sample_accurate(desc.sample_accurate);
+        if let Some(step) = desc.step {
+            p = p.with_step(step);
+        }
+        p.discrete = desc.discrete;
+        p
+    }
+}
+
+impl From<&ParameterDescriptor> for plugin_abi::ParamDescriptor {
+    fn from(desc: &ParameterDescriptor) -> Self {
+        let curve = match desc.curve {
+            ParameterCurve::Linear => "linear",
+            ParameterCurve::Logarithmic => "logarithmic",
+            ParameterCurve::Exponential => "exponential",
+            ParameterCurve::Decibel => "decibel",
+            ParameterCurve::SCurve => "s_curve",
+        };
+        let smoothing = match desc.smoothing {
+            ParameterSmoothing::None => "none",
+            ParameterSmoothing::OnePole { .. } => "one_pole",
+            ParameterSmoothing::LinearRamp { .. } => "linear_ramp",
+            ParameterSmoothing::SlewRateLimit { .. } => "slew_rate",
+        };
+        Self {
+            index: 0,
+            id: desc.id.0.clone(),
+            label: desc.name.clone(),
+            unit: desc.unit.symbol().to_string(),
+            min: desc.min,
+            max: desc.max,
+            default: desc.default,
+            step: desc.step,
+            curve: curve.to_string(),
+            smoothing: smoothing.to_string(),
+            automatable: desc.automatable,
+            discrete: desc.discrete,
+            sample_accurate: desc.sample_accurate,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,5 +533,29 @@ mod tests {
         let json = serde_json::to_string(&reg).unwrap();
         let back: ParameterRegistry = serde_json::from_str(&json).unwrap();
         assert_eq!(back.len(), reg.len());
+    }
+
+    #[test]
+    fn test_plugin_param_descriptor_roundtrip() {
+        let orig = ParameterDescriptor::new("wet_mix", "Wet Mix", 0.0, 1.0, 0.5)
+            .with_unit(ParameterUnit::Percent)
+            .with_curve(ParameterCurve::Linear)
+            .with_step(0.01)
+            .with_automatable(true)
+            .with_sample_accurate(true);
+
+        let abi_desc: plugin_abi::ParamDescriptor = (&orig).into();
+        assert_eq!(abi_desc.id, "wet_mix");
+        assert_eq!(abi_desc.label, "Wet Mix");
+        assert_eq!(abi_desc.unit, "%");
+        assert_eq!(abi_desc.step, Some(0.01));
+
+        let back: ParameterDescriptor = (&abi_desc).into();
+        assert_eq!(back.id.0, orig.id.0);
+        assert_eq!(back.name, orig.name);
+        assert_eq!(back.unit, orig.unit);
+        assert_eq!(back.step, orig.step);
+        assert_eq!(back.min, orig.min);
+        assert_eq!(back.max, orig.max);
     }
 }

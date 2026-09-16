@@ -282,8 +282,8 @@ pub use bw64::{
     BextChunk, Bw64ContainerType, Bw64Error, Bw64File, Bw64Metadata, ChnaChunk, ChnaTrackUid,
 };
 pub use channels::{
-    BusChannelCount, ObjectCount, PhysicalChannelCount, SpatialFieldOrder, MAX_HOA_CHANNELS,
-    MAX_OBJECT_COUNT, MAX_PHYSICAL_CHANNELS, MAX_SPATIAL_FIELD_ORDER,
+    BusChannelCount, HOAChannelCount, ObjectCount, PhysicalChannelCount, SpatialFieldOrder,
+    MAX_HOA_CHANNELS, MAX_OBJECT_COUNT, MAX_PHYSICAL_CHANNELS, MAX_SPATIAL_FIELD_ORDER,
 };
 pub use quality_eval::{SpatialQualityEvaluator, SpatialQualityReport};
 pub use representation::{

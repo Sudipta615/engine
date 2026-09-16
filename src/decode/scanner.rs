@@ -2,7 +2,7 @@
 //!
 //! Decodes a file end to end on a background thread and measures its
 //! loudness with the **same** [`LoudnessMeter`] used everywhere else in the
-//! engine — full BS.1770-4 K-weighting, absolute + relative gating,
+//! engine — full BS.1770-5 K-weighting, absolute + relative gating,
 //! short-term/LRA, and the shared 4× polyphase FIR true-peak detector.
 //!
 //! The metadata the scanner produces (`integrated_lufs`, `lra`, `dbtp`) is
@@ -18,7 +18,7 @@ use crate::dsp::LoudnessMeter;
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoudnessScanResult {
     /// EBU R128 integrated loudness in LUFS (dual-threshold gated per
-    /// BS.1770-4 §3.2, via [`LoudnessMeter::snapshot`]).
+    /// BS.1770-5 §3.2, via [`LoudnessMeter::snapshot`]).
     pub ebu_r128_loudness: Option<f32>,
     /// True peak in dBTP — the shared 4× oversampled FIR estimate, same
     /// detector the limiter and the loudness meter use.  Never a plain
@@ -44,7 +44,7 @@ pub struct LoudnessScanResult {
 /// Returns `None` if the file cannot be opened or yields no measurable
 /// audio (e.g. a DSD file, which the Symphonia path does not decode).
 ///
-/// Measures the native channel stream directly per ITU-R BS.1770-4 / EBU R128
+/// Measures the native channel stream directly per ITU-R BS.1770-5 / EBU R128
 /// with semantic channel weighting rather than losing surround weighting by
 /// downmixing before measurement.
 pub fn scan_track_loudness(path: &Path) -> Option<LoudnessScanResult> {

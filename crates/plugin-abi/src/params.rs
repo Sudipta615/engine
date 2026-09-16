@@ -131,25 +131,102 @@ impl Default for PluginParams {
     }
 }
 
+#[cfg(feature = "serde-types")]
+fn default_true() -> bool {
+    true
+}
+
+#[cfg(feature = "serde-types")]
+fn default_curve() -> String {
+    "linear".to_string()
+}
+
+#[cfg(feature = "serde-types")]
+fn default_smoothing() -> String {
+    "none".to_string()
+}
+
 /// The shape of one declared parameter (host-side mirror of what the
-/// plugin's descriptor reports).
-#[derive(Clone, Debug)]
+/// plugin's descriptor reports, adhering to §9.1 unified parameter metadata).
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde-types", derive(Serialize, Deserialize))]
 pub struct ParamDescriptor {
     /// Stable parameter index (0..param_count).
     pub index: u32,
-    /// Human-readable label.
+    /// Unique machine identifier.
+    #[cfg_attr(feature = "serde-types", serde(default))]
+    pub id: String,
+    /// Human-readable label / name.
     pub label: String,
-    /// Default value.
-    pub default: f32,
-    /// Minimum value.
+    /// Engineering unit representation (e.g. "dB", "ms", "Hz", "%").
+    #[cfg_attr(feature = "serde-types", serde(default))]
+    pub unit: String,
+    /// Minimum allowed value.
     pub min: f32,
-    /// Maximum value.
+    /// Maximum allowed value.
     pub max: f32,
+    /// Default nominal value.
+    pub default: f32,
+    /// Discrete quantization step size (`None` for continuous parameters).
+    #[cfg_attr(feature = "serde-types", serde(default))]
+    pub step: Option<f32>,
+    /// Parameter response curve ("linear", "logarithmic", "exponential", "decibel", "s_curve").
+    #[cfg_attr(feature = "serde-types", serde(default = "default_curve"))]
+    pub curve: String,
+    /// Real-time smoothing strategy ("none", "one_pole", "linear_ramp", "slew_rate").
+    #[cfg_attr(feature = "serde-types", serde(default = "default_smoothing"))]
+    pub smoothing: String,
+    /// Whether this parameter can be modulated via host or timeline automation.
+    #[cfg_attr(feature = "serde-types", serde(default = "default_true"))]
+    pub automatable: bool,
+    /// Whether this parameter only accepts integer or stepped discrete values.
+    #[cfg_attr(feature = "serde-types", serde(default))]
+    pub discrete: bool,
+    /// Whether this parameter supports sub-block sample-accurate automation.
+    #[cfg_attr(feature = "serde-types", serde(default = "default_true"))]
+    pub sample_accurate: bool,
 }
 
-/// Convenience helpers for validating host-side parameter input.
+/// Convenience helpers for validating and mapping host-side parameter input.
 impl ParamDescriptor {
+    /// Create a fully specified parameter descriptor.
+    pub fn new(
+        index: u32,
+        id: impl Into<String>,
+        label: impl Into<String>,
+        min: f32,
+        max: f32,
+        default: f32,
+    ) -> Self {
+        let id_str = id.into();
+        Self {
+            index,
+            id: id_str,
+            label: label.into(),
+            unit: String::new(),
+            min,
+            max,
+            default: default.clamp(min, max),
+            step: None,
+            curve: "linear".to_string(),
+            smoothing: "none".to_string(),
+            automatable: true,
+            discrete: false,
+            sample_accurate: true,
+        }
+    }
+
+    /// Create a simple parameter descriptor from index and label.
+    pub fn simple(index: u32, label: impl Into<String>, min: f32, max: f32, default: f32) -> Self {
+        let lbl = label.into();
+        Self::new(index, lbl.clone(), lbl, min, max, default)
+    }
+
+    /// Access the human-readable name (alias of label).
+    pub fn name(&self) -> &str {
+        &self.label
+    }
+
     /// Clamp a value into the declared range.
     pub fn clamp(&self, value: f32) -> f32 {
         value.clamp(self.min, self.max)
@@ -158,6 +235,34 @@ impl ParamDescriptor {
     /// `true` when `value` is within the declared range.
     pub fn contains(&self, value: f32) -> bool {
         value >= self.min && value <= self.max
+    }
+
+    /// Normalize a physical parameter value to `[0.0, 1.0]`.
+    pub fn normalize(&self, value: f32) -> f32 {
+        let clamped = self.clamp(value);
+        let range = self.max - self.min;
+        if range.abs() < 1e-12 {
+            return 0.0;
+        }
+        (clamped - self.min) / range
+    }
+
+    /// Denormalize a `[0.0, 1.0]` normalized float back to the declared parameter range.
+    pub fn denormalize(&self, normalized: f32) -> f32 {
+        let norm = normalized.clamp(0.0, 1.0);
+        let range = self.max - self.min;
+        self.clamp(self.min + norm * range)
+    }
+
+    /// Quantize/snap a value to the nearest discrete step if declared.
+    pub fn snap_step(&self, value: f32) -> f32 {
+        if let Some(step) = self.step {
+            if step > 1e-12 {
+                let steps = ((value - self.min) / step).round();
+                return self.clamp(self.min + steps * step);
+            }
+        }
+        value
     }
 }
 

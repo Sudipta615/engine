@@ -32,12 +32,19 @@
 //! captured buffers). It does not touch the realtime callback.
 
 pub mod measure;
+pub mod performance_matrix;
 pub mod qualification;
 pub mod registry;
 pub mod suites;
 
 pub use measure::*;
-pub use qualification::{run_qualification_pipeline, QualificationCheck, QualificationReport};
+pub use performance_matrix::{
+    benchmark_cell, execute_performance_matrix, MatrixEntryResult, MatrixFormat,
+    PerformanceMatrixConfig, PerformanceMatrixReport,
+};
+pub use qualification::{
+    run_qualification_pipeline, QualificationCheck, QualificationReport, QualificationStatus,
+};
 pub use registry::{MetricSpec, ReferenceVector, ReferenceVectorRegistry};
 
 /// Errors produced by the evaluation harness (registry serialization and

@@ -89,4 +89,7 @@ pub use parameters::{
     ParameterCurve, ParameterDescriptor, ParameterId, ParameterRegistry, ParameterSmoothing,
     ParameterUnit,
 };
-pub use safety::{contain_non_finite_block, FloatSafetyMode, NonFiniteIncident, NonFinitePolicy};
+pub use safety::{
+    contain_non_finite_block, contain_non_finite_planes, FloatSafetyMode, NonFiniteIncident,
+    NonFinitePolicy,
+};

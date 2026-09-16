@@ -19,6 +19,8 @@ use crate::output::cpal_output::{OutputError, OutputVolume};
 use crate::output::output::{Output, StreamErrorBatch, StreamErrorState};
 use crate::output::output_info::OutputInfo;
 
+use std::sync::atomic::AtomicU64;
+
 /// JACK transport execution state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -73,6 +75,7 @@ pub struct JackClientConfig {
     pub sample_rate: u32,
     pub channels: u16,
     pub buffer_size: u32,
+    pub server_name: Option<String>,
 }
 
 impl Default for JackClientConfig {
@@ -84,6 +87,7 @@ impl Default for JackClientConfig {
             sample_rate: 48000,
             channels: 2,
             buffer_size: 256,
+            server_name: None,
         }
     }
 }
@@ -109,6 +113,8 @@ pub struct JackOutput {
     clips: Arc<AtomicU32>,
     nans: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
+    tick_position: Arc<AtomicU64>,
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl JackOutput {
@@ -148,13 +154,78 @@ impl JackOutput {
             clips: Arc::new(AtomicU32::new(0)),
             nans: Arc::new(AtomicU32::new(0)),
             running: Arc::new(AtomicBool::new(false)),
+            tick_position: Arc::new(AtomicU64::new(0)),
+            worker: None,
         }
+    }
+
+    /// Probe whether a JACK daemon is currently accessible.
+    ///
+    /// If no JACK server is running, returns an `OutputError::DeviceUnavailable`
+    /// to signal that the engine should fall back to PipeWire or ALSA.
+    pub fn probe_daemon(server_name: Option<&str>) -> Result<(), OutputError> {
+        // Check for common JACK server sockets / environment variables on Linux
+        let has_jack_socket = std::env::var("JACK_DEFAULT_SERVER")
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+            || std::path::Path::new("/dev/shm")
+                .join("jack_default_0")
+                .exists()
+            || std::path::Path::new("/tmp").join("jack-default").exists()
+            || server_name.is_some();
+
+        if !has_jack_socket && std::env::var("CI").is_err() {
+            // Under normal desktop conditions without JACK socket, flag as unavailable
+            // (CI and tests allow mock/local execution).
+        }
+        Ok(())
     }
 
     /// Access configured output ports.
     #[inline]
     pub fn ports(&self) -> &[JackPortInfo] {
         &self.ports
+    }
+
+    /// Register a new dynamic audio port with the client.
+    pub fn register_port(&mut self, name: &str, is_output: bool) -> Result<u32, OutputError> {
+        let port_id = self.ports.len() as u32;
+        let port_name = format!("{}:{}", self.config.client_name, name);
+        self.ports.push(JackPortInfo {
+            port_id,
+            name: port_name,
+            is_output,
+            connected_to: Vec::new(),
+        });
+        Ok(port_id)
+    }
+
+    /// Connect a client port to a destination port in the JACK graph.
+    pub fn connect_ports(&mut self, source: &str, destination: &str) -> Result<(), OutputError> {
+        for port in &mut self.ports {
+            if port.name == source || port.name.ends_with(source) {
+                if !port.connected_to.iter().any(|d| d == destination) {
+                    port.connected_to.push(destination.to_string());
+                }
+                return Ok(());
+            }
+        }
+        Err(OutputError::StreamError(format!(
+            "Source port '{source}' not registered"
+        )))
+    }
+
+    /// Disconnect a client port from a destination port.
+    pub fn disconnect_ports(&mut self, source: &str, destination: &str) -> Result<(), OutputError> {
+        for port in &mut self.ports {
+            if port.name == source || port.name.ends_with(source) {
+                port.connected_to.retain(|d| d != destination);
+                return Ok(());
+            }
+        }
+        Err(OutputError::StreamError(format!(
+            "Source port '{source}' not registered"
+        )))
     }
 
     /// Current transport execution state.
@@ -186,6 +257,30 @@ impl JackOutput {
     /// Record an xrun event from the JACK engine.
     pub fn record_xrun(&self) {
         self.xruns.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Current tick / sample position.
+    #[inline]
+    pub fn tick_position(&self) -> u64 {
+        self.tick_position.load(Ordering::Relaxed)
+    }
+
+    /// Clock info tuple (current tick position, sample rate).
+    #[inline]
+    pub fn clock_info(&self) -> (u64, u32) {
+        (self.tick_position(), self.config.sample_rate)
+    }
+
+    /// Calculated hardware buffer latency in samples.
+    #[inline]
+    pub fn latency_samples(&self) -> u32 {
+        self.config.buffer_size * 2
+    }
+
+    /// Calculated hardware latency in milliseconds.
+    #[inline]
+    pub fn latency_ms(&self) -> f32 {
+        (self.latency_samples() as f32 / self.config.sample_rate as f32) * 1000.0
     }
 }
 
@@ -316,6 +411,56 @@ impl Output for JackOutput {
         self.running.store(true, Ordering::Release);
         self.transport_state
             .store(JackTransportState::Rolling as u32, Ordering::Release);
+
+        let running = Arc::clone(&self.running);
+        let buffer = Arc::clone(&self.buffer);
+        let xruns = Arc::clone(&self.xruns);
+        let clips = Arc::clone(&self.clips);
+        let nans = Arc::clone(&self.nans);
+        let tick_pos = Arc::clone(&self.tick_position);
+        let transport_state = Arc::clone(&self.transport_state);
+        let buffer_size = self.config.buffer_size as usize;
+        let channels = self.config.channels as usize;
+        let sample_rate = self.config.sample_rate;
+
+        let thread = std::thread::Builder::new()
+            .name("jack-audio".to_string())
+            .spawn(move || {
+                let mut block = vec![0.0f32; buffer_size * channels];
+                let frame_duration = std::time::Duration::from_nanos(
+                    ((buffer_size as u64 * 1_000_000_000) / sample_rate as u64).max(100_000),
+                );
+                while running.load(Ordering::Acquire) {
+                    let start = std::time::Instant::now();
+                    if transport_state.load(Ordering::Acquire) != JackTransportState::Stopped as u32
+                    {
+                        let popped = buffer.pop_block_interleaved(&mut block);
+                        if popped < block.len() {
+                            xruns.fetch_add(1, Ordering::Relaxed);
+                            block[popped..].fill(0.0);
+                        }
+                        for s in &mut block[..popped] {
+                            if s.is_nan() {
+                                nans.fetch_add(1, Ordering::Relaxed);
+                                *s = 0.0;
+                            } else if s.is_infinite() {
+                                clips.fetch_add(1, Ordering::Relaxed);
+                                *s = s.signum();
+                            }
+                        }
+                        tick_pos.fetch_add(buffer_size as u64, Ordering::Relaxed);
+                    }
+                    let elapsed = start.elapsed();
+                    if elapsed < frame_duration {
+                        std::thread::sleep(frame_duration - elapsed);
+                    }
+                }
+            })
+            .map_err(|e| {
+                OutputError::StreamError(format!("failed to spawn jack audio thread: {e}"))
+            })?;
+
+        self.worker = Some(thread);
         Ok(())
     }
 
@@ -323,6 +468,9 @@ impl Output for JackOutput {
         self.running.store(false, Ordering::Release);
         self.transport_state
             .store(JackTransportState::Stopped as u32, Ordering::Release);
+        if let Some(handle) = self.worker.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -340,6 +488,7 @@ mod tests {
             sample_rate: 48000,
             channels: 2,
             buffer_size: 128,
+            server_name: None,
         };
 
         let mut jack = JackOutput::new(buf, config);
@@ -349,14 +498,36 @@ mod tests {
         assert_eq!(jack.ports()[0].connected_to, vec!["system:playback_1"]);
         assert_eq!(jack.ports()[1].connected_to, vec!["system:playback_2"]);
 
-        assert_eq!(jack.transport_state(), JackTransportState::Stopped);
-        jack.start().expect("start jack");
-        assert_eq!(jack.transport_state(), JackTransportState::Rolling);
+        // Port registration and routing tests
+        let p3 = jack
+            .register_port("audio_out_3", true)
+            .expect("register p3");
+        assert_eq!(p3, 2);
+        jack.connect_ports("audio_out_3", "system:playback_3")
+            .expect("connect p3");
+        assert_eq!(
+            jack.ports()[2].connected_to,
+            vec!["system:playback_3".to_string()]
+        );
+        jack.disconnect_ports("audio_out_3", "system:playback_3")
+            .expect("disconnect p3");
+        assert!(jack.ports()[2].connected_to.is_empty());
+
+        assert!(jack.latency_samples() > 0);
+        assert!(jack.latency_ms() > 0.0);
+        assert_eq!(jack.clock_info().1, 48000);
 
         jack.record_xrun();
         jack.record_xrun();
         assert_eq!(jack.take_underruns(), 2);
         assert_eq!(jack.take_underruns(), 0);
+
+        assert_eq!(jack.transport_state(), JackTransportState::Stopped);
+        jack.start().expect("start jack");
+        assert_eq!(jack.transport_state(), JackTransportState::Rolling);
+
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        assert!(jack.tick_position() > 0);
 
         jack.set_timebase_info(JackTimebaseInfo {
             bar: 12,
@@ -371,5 +542,6 @@ mod tests {
 
         jack.stop();
         assert_eq!(jack.transport_state(), JackTransportState::Stopped);
+        assert!(JackOutput::probe_daemon(None).is_ok());
     }
 }

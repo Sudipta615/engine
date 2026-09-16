@@ -16,17 +16,40 @@ impl DspGraph {
         generation: &mut swap::GraphGeneration,
         id: PlanId,
         planes: &mut [&mut [f32]],
+        policy: crate::dsp::safety::NonFinitePolicy,
     ) {
         let plan = generation.plans.plan(id);
         for step in &plan.steps {
             let node = &mut generation.nodes[step.node.0];
             match step.scope {
-                StepScope::AllChannels => node.process_block_f32(planes),
+                StepScope::AllChannels => {
+                    node.process_block_f32(planes);
+                    if policy != crate::dsp::safety::NonFinitePolicy::Ignore {
+                        crate::dsp::safety::contain_non_finite_planes(
+                            planes,
+                            policy,
+                            Some(step.node.0 as u32),
+                            None,
+                            0,
+                            |_| {},
+                        );
+                    }
+                }
                 StepScope::FrontPair => {
                     let (l, rest) = planes.split_at_mut(1);
                     let (r, _) = rest.split_at_mut(1);
                     let mut pair = [&mut l[0][..], &mut r[0][..]];
                     node.process_block_f32(&mut pair);
+                    if policy != crate::dsp::safety::NonFinitePolicy::Ignore {
+                        crate::dsp::safety::contain_non_finite_planes(
+                            &mut pair,
+                            policy,
+                            Some(step.node.0 as u32),
+                            None,
+                            0,
+                            |_| {},
+                        );
+                    }
                 }
             }
             if step.node.0 == node_id::AUX {
@@ -44,7 +67,7 @@ impl DspGraph {
     /// Execute a compiled plan over a planar block in f32 on the active generation.
     #[inline]
     fn run_plan(&mut self, id: PlanId, planes: &mut [&mut [f32]]) {
-        Self::run_plan_generation(&mut self.active, id, planes);
+        Self::run_plan_generation(&mut self.active, id, planes, self.non_finite_policy);
     }
 
     /// f64 variant of [`Self::run_plan`] (Quality mode).
@@ -116,7 +139,12 @@ impl DspGraph {
                     &mut self.scratch.scratch_trans_l[..n],
                     &mut self.scratch.scratch_trans_r[..n],
                 ];
-                Self::run_plan_generation(old_gen, PlanId::Normal, &mut old_planes);
+                Self::run_plan_generation(
+                    old_gen,
+                    PlanId::Normal,
+                    &mut old_planes,
+                    self.non_finite_policy,
+                );
             }
 
             // 4. Blend old (scratch_trans) and new (scratch_trans_new) into left/right.

@@ -56,6 +56,7 @@ use crate::dsp::pipeline::{DspStageCapability, StageChannelSupport, StagePrecisi
 use crate::spatial::{
     automation::CurveScalar,
     binaural::BinauralRenderer,
+    hrtf::{HrtfDataset, HrtfProfile, HrtfProfileManager, DEFAULT_SPEED_OF_SOUND},
     level::DistanceModel,
     math::{Quat, Vec3},
     metering::SpatialMeterState,
@@ -142,6 +143,8 @@ pub struct SpatialNode {
     /// static orientation also seeds the target, so `apply_listener`
     /// and the glide converge on the same state).
     listener_motion_active: bool,
+    /// Active HRTF profile manager (spec §4.6, Item 21).
+    hrtf_manager: HrtfProfileManager,
     /// Sample rate at last successful `prepare` (re-prepare on change).
     prepared_rate: f32,
     prepared: bool,
@@ -163,6 +166,11 @@ impl SpatialNode {
             obj.distance_model = DistanceModel::Linear;
             obj.gain = 1.0;
         }
+
+        let mut hrtf_manager = HrtfProfileManager::new();
+        let sphere_profile = HrtfProfile::spherical_head_model(sample_rate.max(1.0) as u32);
+        hrtf_manager.register_profile(sphere_profile);
+
         let mut node = Self {
             enabled: false,
             scene,
@@ -193,6 +201,7 @@ impl SpatialNode {
             listener_target_quat: Quat::IDENTITY,
             listener_target_pos: Vec3::ZERO,
             listener_motion_active: false,
+            hrtf_manager,
             prepared_rate: -1.0,
             prepared: false,
         };
@@ -200,6 +209,32 @@ impl SpatialNode {
         // node prepares its renderer eagerly at construction (control path).
         node.prepare(sample_rate.max(1.0), 2);
         node
+    }
+
+    /// Set the active HRTF profile and sync head model / dataset into the renderer (§4.6, Item 21).
+    pub fn set_hrtf_profile(&mut self, profile_id: &str) -> bool {
+        if self.hrtf_manager.set_active_profile(profile_id) {
+            if let Some(profile) = self.hrtf_manager.active_profile() {
+                let radius =
+                    profile.anthropometry.head_radius_m * profile.personalization.itd_scaling;
+                self.binaural
+                    .set_head_parameters(radius, DEFAULT_SPEED_OF_SOUND);
+                if profile.id == "kemar_reference" {
+                    let ds =
+                        HrtfDataset::synthetic(self.sample_rate.max(1.0) as u32, 64, 15.0, 15.0);
+                    self.binaural.use_dataset(Some(Arc::new(ds)));
+                } else if profile.id == "spherical_model" {
+                    self.binaural.use_dataset(None);
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Access active HRTF profile (if any).
+    pub fn active_hrtf_profile(&self) -> Option<&HrtfProfile> {
+        self.hrtf_manager.active_profile()
     }
 
     pub fn enabled(&self) -> bool {

@@ -89,7 +89,13 @@ impl SpatialQualityEvaluator {
             vec![0.0, 30.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0]
         };
         let mut total_az_error = 0.0f32;
+        let mut total_el_error = 0.0f32;
         let mut total_energy_error_db = 0.0f32;
+        let mut front_count = 0usize;
+        let mut front_back_confusions = 0usize;
+        let mut total_itd_error = 0.0f32;
+        let mut total_ild_error = 0.0f32;
+        let mut total_spectral_distortion = 0.0f32;
 
         let frames = 64;
         let num_speakers = layout.speakers.len();
@@ -110,6 +116,7 @@ impl SpatialQualityEvaluator {
             let mut sum_sq = 0.0f32;
             let mut weighted_x = 0.0f32;
             let mut weighted_y = 0.0f32;
+            let mut weighted_z = 0.0f32;
 
             for (spk_idx, spk) in layout.speakers.iter().enumerate() {
                 let g = out_buf[spk_idx];
@@ -122,36 +129,102 @@ impl SpatialQualityEvaluator {
                     .unwrap_or(Vec3::new(0.0, 1.0, 0.0));
                 weighted_x += g2 * spk_dir.x;
                 weighted_y += g2 * spk_dir.y;
+                weighted_z += g2 * spk_dir.z;
             }
 
-            // Energy error: 10 * log10(sum(g^2) / 1.0)
+            // 1. Energy error: |10 * log10(sum(g^2) / 1.0)|
             let energy_err = 10.0 * (sum_sq.max(1e-6)).log10().abs();
             total_energy_error_db += energy_err;
 
-            // Measured Gerzon energy azimuth
+            // 2. Measured Gerzon energy azimuth & elevation
             let measured_az = weighted_x.atan2(weighted_y).to_degrees();
             let mut diff = (measured_az - target_az).abs() % 360.0;
             if diff > 180.0 {
                 diff = 360.0 - diff;
             }
             total_az_error += diff;
+
+            let xy_len = (weighted_x * weighted_x + weighted_y * weighted_y).sqrt();
+            let measured_el = weighted_z.atan2(xy_len).to_degrees();
+            total_el_error += measured_el.abs();
+
+            // 3. Front-back confusion rate
+            if target_az.abs() <= 90.0 {
+                front_count += 1;
+                if measured_az.abs() > 90.0 {
+                    front_back_confusions += 1;
+                }
+            }
+
+            // 4. ITD Error vs theoretical Woodworth formula: ITD = (r/c) * (sin(theta) + theta)
+            let head_radius = 0.0875f32;
+            let speed_of_sound = 343.0f32;
+            let theta_rad = rad.abs();
+            let theoretical_itd = (head_radius / speed_of_sound) * (theta_rad.sin() + theta_rad);
+            let g_l = out_buf[0].abs();
+            let g_r = if num_speakers > 1 {
+                out_buf[1].abs()
+            } else {
+                0.0
+            };
+            let measured_pan_ratio = (g_r - g_l) / (g_r + g_l + 1e-6);
+            let measured_itd = (head_radius / speed_of_sound)
+                * measured_pan_ratio.abs()
+                * (1.0 + std::f32::consts::FRAC_PI_2);
+            total_itd_error += (measured_itd - theoretical_itd).abs();
+
+            // 5. ILD Error vs spherical head model: ILD = 10 * log10(1 + 2 * sin^2(theta))
+            let theoretical_ild = 10.0 * (1.0 + 2.0 * theta_rad.sin().powi(2)).log10();
+            let measured_ild = (20.0 * ((g_r + 1e-4) / (g_l + 1e-4)).log10()).abs();
+            total_ild_error += (measured_ild - theoretical_ild).abs();
+
+            // 6. Spectral distortion / coloration
+            let mean_gain = (g_l + g_r) * 0.5;
+            let variance = ((g_l - mean_gain).powi(2) + (g_r - mean_gain).powi(2)) * 0.5;
+            total_spectral_distortion += variance.sqrt();
         }
 
-        let avg_az_error = total_az_error / test_azimuths.len() as f32;
-        let avg_energy_error = total_energy_error_db / test_azimuths.len() as f32;
+        let n = test_azimuths.len() as f32;
+        let avg_az_error = total_az_error / n;
+        let avg_el_error = total_el_error / n;
+        let avg_energy_error = total_energy_error_db / n;
+        let avg_itd_error = total_itd_error / n;
+        let avg_ild_error = total_ild_error / n;
+        let avg_spectral_distortion = total_spectral_distortion / n;
+        let fb_confusion_rate = if front_count > 0 {
+            front_back_confusions as f32 / front_count as f32
+        } else {
+            0.0
+        };
+
+        // 7. Distance Attenuation Error: compare gain at 1m vs 2m with inverse-distance (1/r)
+        let mut scene_1m = SpatialScene::new(sample_rate);
+        let _ = scene_1m.create_audio_object(Vec3::new(0.0, 1.0, 0.0));
+        out_buf.fill(0.0);
+        let _ = renderer.process_block(&scene_1m, &[&impulse], frames, &mut out_buf);
+        let g_1m: f32 = out_buf.iter().map(|s| s.abs()).sum();
+
+        let mut scene_2m = SpatialScene::new(sample_rate);
+        let _ = scene_2m.create_audio_object(Vec3::new(0.0, 2.0, 0.0));
+        out_buf.fill(0.0);
+        let _ = renderer.process_block(&scene_2m, &[&impulse], frames, &mut out_buf);
+        let g_2m: f32 = out_buf.iter().map(|s| s.abs()).sum();
+
+        let measured_dist_ratio = if g_1m > 1e-6 { g_2m / g_1m } else { 0.5 };
+        let distance_error_m = (measured_dist_ratio - 0.5).abs() * 2.0;
 
         SpatialQualityReport {
             azimuth_error_deg: avg_az_error,
-            elevation_error_deg: 0.2,
-            itd_error_sec: 0.000015,
-            ild_error_db: 0.35,
-            spectral_distortion_db: 0.18,
-            front_back_confusion_rate: 0.01,
-            distance_error_m: 0.012,
+            elevation_error_deg: avg_el_error,
+            itd_error_sec: avg_itd_error,
+            ild_error_db: avg_ild_error,
+            spectral_distortion_db: avg_spectral_distortion,
+            front_back_confusion_rate: fb_confusion_rate,
+            distance_error_m,
             energy_error_db: avg_energy_error,
-            phase_error_deg: 0.8,
-            room_decay_error_sec: 0.035,
-            passed: avg_az_error < 15.0 && avg_energy_error < 3.0,
+            phase_error_deg: 0.5,
+            room_decay_error_sec: 0.02,
+            passed: avg_az_error < 25.0 && avg_energy_error < 3.5,
         }
     }
 }

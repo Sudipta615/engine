@@ -79,6 +79,14 @@ impl DspGraph {
         self.precision_mode
     }
 
+    pub fn set_non_finite_policy(&mut self, policy: crate::dsp::safety::NonFinitePolicy) {
+        self.non_finite_policy = policy;
+    }
+
+    pub fn non_finite_policy(&self) -> crate::dsp::safety::NonFinitePolicy {
+        self.non_finite_policy
+    }
+
     /// Toggle bit-perfect transport. Queued: the flag and its side effects
     /// (volume snap, seek-fade reset) apply at the next block boundary, so
     /// the call is safe from any thread that holds a control handle.

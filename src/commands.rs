@@ -346,4 +346,92 @@ pub enum EngineCommand {
     },
     /// Stop the active system-audio capture and finalize its WAV file.
     CaptureStop,
+
+    // ── Runtime DSP & Mix Controls (Punch List P1 Items 20 & 21) ───────
+    /// Spatial master: live enabled toggle.
+    SetSpatialEnabled(bool),
+    /// Spatial master: virtual screen geometry and gain.
+    SetSpatialScreen {
+        center_azimuth_deg: f32,
+        half_width_deg: f32,
+        elevation_deg: f32,
+        gain: f32,
+    },
+    /// Spatial master: acoustic room reflections and reverberation.
+    SetSpatialRoom {
+        enabled: bool,
+        width: f32,
+        depth: f32,
+        height: f32,
+        absorption: f32,
+        reflection_order: u8,
+        rt60_ms: f32,
+        late_mix: f32,
+        late_distance: bool,
+        wet: f32,
+    },
+    /// Spatial master: atmospheric air absorption simulation.
+    SetSpatialAir(crate::spatial::level::AirAbsorption),
+    /// Spatial master: listener head orientation in degrees.
+    SetSpatialListener {
+        yaw_deg: f32,
+        pitch_deg: f32,
+        roll_deg: f32,
+    },
+    /// Active HRTF profile selection (Item 21).
+    SetHrtfProfile(String),
+
+    /// Limiter: live enabled toggle.
+    SetLimiterEnabled(bool),
+    /// Limiter: full parameter set.
+    SetLimiterParams {
+        lookahead_ms: f32,
+        attack_ms: f32,
+        release_ms: f32,
+        ceiling_db: f32,
+        soft_clip: bool,
+    },
+    /// Multiband compressor: advanced band features (knee, detector mode, stereo link).
+    SetCompressorBandFeatures {
+        band: usize,
+        knee_db: f32,
+        detector: config::CompressorDetector,
+        stereo_link: bool,
+    },
+
+    /// Stereo enhancer: live enabled toggle.
+    SetStereoEnhancerEnabled(bool),
+
+    /// Loudness normalization mode.
+    SetLoudnessMode(config::LoudnessMode),
+
+    /// Mix-lane / bus: per-input channel trim gain and polarity.
+    SetSlotTrim {
+        slot: u8,
+        channel: usize,
+        gain_db: f32,
+        invert_polarity: bool,
+    },
+    /// Mix-lane / bus: aux bus enabled and return gain.
+    SetAux {
+        enabled: bool,
+        return_gain: f32,
+    },
+    /// Mix-lane / bus: mute state for an input lane.
+    SetInputMute {
+        slot: u8,
+        muted: bool,
+    },
+    /// Mix-lane / bus: active / detached state for an input lane.
+    SetInputActive {
+        slot: u8,
+        active: bool,
+    },
+    /// Mix-lane / bus: parameter automation curve for a mix slot.
+    SetSlotAutomation {
+        slot: u8,
+        kind: u8,
+        curve: Option<std::sync::Arc<crate::spatial::automation::CurveScalar>>,
+        time_secs: f32,
+    },
 }

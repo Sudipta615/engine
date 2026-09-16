@@ -8,6 +8,7 @@
 //! - [`NonFiniteIncident`]: Structured diagnostic identifying the offending node, channel, and value.
 
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 use crate::buffer::flush_denormal;
 use crate::dsp_utils::enable_flush_zero_denormals_on_current_thread;
@@ -68,7 +69,7 @@ pub struct NonFiniteIncident {
     /// ID of the node that produced the non-finite value, if known.
     pub node_id: Option<u32>,
     /// Name or descriptor of the stage.
-    pub node_name: Option<String>,
+    pub node_name: Option<Cow<'static, str>>,
     /// Frame index within the processed audio block.
     pub sample_index: usize,
     /// Audio channel where the non-finite occurred.
@@ -88,7 +89,7 @@ pub fn contain_non_finite_block<F>(
     channels: usize,
     policy: NonFinitePolicy,
     node_id: Option<u32>,
-    node_name: Option<&str>,
+    node_name: Option<&'static str>,
     generation: u64,
     mut on_incident: F,
 ) -> usize
@@ -111,7 +112,7 @@ where
 
                 on_incident(NonFiniteIncident {
                     node_id,
-                    node_name: node_name.map(str::to_string),
+                    node_name: node_name.map(Cow::Borrowed),
                     sample_index: frame_idx,
                     channel: c,
                     value: s,
@@ -141,6 +142,68 @@ where
     if policy == NonFinitePolicy::BypassNode && non_finite_count > 0 {
         // If node bypass requested on failure, silence entire output block
         samples.fill(0.0);
+    }
+
+    non_finite_count
+}
+
+/// Scans and remediates planar audio blocks in-place according to [`NonFinitePolicy`].
+///
+/// **Realtime guarantee**: Zero dynamic allocations.
+pub fn contain_non_finite_planes<F>(
+    planes: &mut [&mut [f32]],
+    policy: NonFinitePolicy,
+    node_id: Option<u32>,
+    node_name: Option<&'static str>,
+    generation: u64,
+    mut on_incident: F,
+) -> usize
+where
+    F: FnMut(NonFiniteIncident),
+{
+    if policy == NonFinitePolicy::Ignore || planes.is_empty() {
+        return 0;
+    }
+
+    let mut non_finite_count = 0usize;
+
+    for (c, plane) in planes.iter_mut().enumerate() {
+        for (i, s) in plane.iter_mut().enumerate() {
+            if !s.is_finite() {
+                non_finite_count += 1;
+
+                on_incident(NonFiniteIncident {
+                    node_id,
+                    node_name: node_name.map(Cow::Borrowed),
+                    sample_index: i,
+                    channel: c,
+                    value: *s,
+                    graph_generation: generation,
+                });
+
+                match policy {
+                    NonFinitePolicy::Ignore | NonFinitePolicy::Detect => {}
+                    NonFinitePolicy::Clamp => {
+                        *s = if s.is_nan() {
+                            0.0
+                        } else if s.is_sign_positive() {
+                            1.0
+                        } else {
+                            -1.0
+                        };
+                    }
+                    NonFinitePolicy::Silence | NonFinitePolicy::BypassNode => {
+                        *s = 0.0;
+                    }
+                }
+            }
+        }
+    }
+
+    if policy == NonFinitePolicy::BypassNode && non_finite_count > 0 {
+        for plane in planes.iter_mut() {
+            plane.fill(0.0);
+        }
     }
 
     non_finite_count

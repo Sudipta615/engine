@@ -13,10 +13,10 @@ use std::collections::BTreeMap;
 use super::{AudioBackend, DsdOutput, EngineConfig, SpatialSceneConfig};
 
 /// Canonical schema version for all persisted state envelopes.
-pub const STATE_SCHEMA_VERSION: u32 = 1;
+pub const STATE_SCHEMA_VERSION: u32 = 2;
 
 /// Engine version producing this schema.
-pub const CURRENT_ENGINE_VERSION: &str = "5.5.0";
+pub const CURRENT_ENGINE_VERSION: &str = "5.7.0";
 
 /// Errors encountered during state loading, validation, or schema migration.
 #[derive(Debug, Clone, PartialEq)]
@@ -55,7 +55,7 @@ pub struct VersionedEnvelope<T> {
     /// Stored schema version (defaults to current version for legacy payloads).
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
-    /// Semantic engine release version string (e.g. "5.3.0").
+    /// Semantic engine release version string (e.g. "5.6.0").
     #[serde(default = "default_engine_version")]
     pub engine_version: String,
     /// Component-specific version (e.g. plugin or node format version).
@@ -108,7 +108,7 @@ impl<T: Serialize + for<'de> Deserialize<'de>> VersionedEnvelope<T> {
             .get("schema_version")
             .and_then(|v| v.as_u64())
             .map(|v| v as u32)
-            .unwrap_or(1);
+            .unwrap_or(0);
 
         if schema > STATE_SCHEMA_VERSION {
             return Err(StateMigrationError::UnsupportedSchema {
@@ -126,7 +126,7 @@ impl<T: Serialize + for<'de> Deserialize<'de>> VersionedEnvelope<T> {
 }
 
 /// Perform step-wise JSON tree migration from `from_ver` to `target_ver`.
-fn migrate_json_value(
+pub fn migrate_json_value(
     mut val: serde_json::Value,
     from_ver: u32,
     target_ver: u32,
@@ -134,12 +134,29 @@ fn migrate_json_value(
     let mut current = from_ver;
     while current < target_ver {
         match current {
-            // Schema 0 -> 1 migration placeholder
+            // Schema 0 -> 1: Initialize baseline schema version
             0 => {
                 if let Some(obj) = val.as_object_mut() {
                     obj.insert("schema_version".to_string(), serde_json::json!(1));
                 }
                 current = 1;
+            }
+            // Schema 1 -> 2: Forward-fill missing model properties & upgrade schema
+            1 => {
+                if let Some(obj) = val.as_object_mut() {
+                    obj.insert("schema_version".to_string(), serde_json::json!(2));
+                    obj.insert(
+                        "engine_version".to_string(),
+                        serde_json::json!(CURRENT_ENGINE_VERSION),
+                    );
+
+                    if let Some(state_val) = obj.get_mut("state").and_then(|s| s.as_object_mut()) {
+                        migrate_state_map(state_val);
+                    } else {
+                        migrate_state_map(obj);
+                    }
+                }
+                current = 2;
             }
             other => {
                 return Err(StateMigrationError::MigrationFailed(format!(
@@ -150,6 +167,51 @@ fn migrate_json_value(
         }
     }
     Ok(val)
+}
+
+fn migrate_state_map(state_val: &mut serde_json::Map<String, serde_json::Value>) {
+    // EngineState migrations
+    if state_val.contains_key("volume") {
+        if !state_val.contains_key("speed") {
+            state_val.insert("speed".to_string(), serde_json::json!(1.0));
+        }
+        if !state_val.contains_key("bit_perfect") {
+            state_val.insert("bit_perfect".to_string(), serde_json::json!(false));
+        }
+        if !state_val.contains_key("dop_active") {
+            state_val.insert("dop_active".to_string(), serde_json::json!(false));
+        }
+        if !state_val.contains_key("dsd_output") {
+            state_val.insert("dsd_output".to_string(), serde_json::json!("PcmConvert"));
+        }
+        if !state_val.contains_key("output_backend") {
+            state_val.insert("output_backend".to_string(), serde_json::json!("Auto"));
+        }
+        if !state_val.contains_key("output_device") {
+            state_val.insert("output_device".to_string(), serde_json::Value::Null);
+        }
+        if !state_val.contains_key("config") {
+            let default_cfg = serde_json::to_value(crate::EngineConfig::default())
+                .unwrap_or(serde_json::json!({}));
+            state_val.insert("config".to_string(), default_cfg);
+        }
+    }
+    // PluginState migrations
+    if state_val.contains_key("plugin_id") && !state_val.contains_key("custom_chunk") {
+        state_val.insert("custom_chunk".to_string(), serde_json::json!([]));
+    }
+    // OutputProfileState migrations
+    if state_val.contains_key("profile_id") {
+        if !state_val.contains_key("polarity_inverted") {
+            state_val.insert("polarity_inverted".to_string(), serde_json::json!([]));
+        }
+        if !state_val.contains_key("per_channel_delays_ms") {
+            state_val.insert("per_channel_delays_ms".to_string(), serde_json::json!([]));
+        }
+        if !state_val.contains_key("per_channel_gains_db") {
+            state_val.insert("per_channel_gains_db".to_string(), serde_json::json!([]));
+        }
+    }
 }
 
 // ── Concrete State Models ───────────────────────────────────────────────────
@@ -279,8 +341,29 @@ mod tests {
 
         let loaded: VersionedEnvelope<NodeState> =
             VersionedEnvelope::from_json(legacy_json).unwrap();
-        assert_eq!(loaded.schema_version, 1);
+        assert_eq!(loaded.schema_version, 2);
         assert_eq!(loaded.state.node_name, "compressor");
         assert!(!loaded.state.enabled);
+    }
+
+    #[test]
+    fn v1_payload_migrates_to_v2() {
+        let v1_json = r#"{
+            "schema_version": 1,
+            "engine_version": "5.5.0",
+            "component_version": 1,
+            "state": {
+                "plugin_id": "test_plugin",
+                "plugin_name": "Test Plugin",
+                "enabled": true,
+                "params": [[0, 0.5]]
+            }
+        }"#;
+
+        let loaded: VersionedEnvelope<PluginState> = VersionedEnvelope::from_json(v1_json).unwrap();
+        assert_eq!(loaded.schema_version, 2);
+        assert_eq!(loaded.engine_version, CURRENT_ENGINE_VERSION);
+        assert_eq!(loaded.state.plugin_id, "test_plugin");
+        assert_eq!(loaded.state.custom_chunk, Vec::<u8>::new());
     }
 }

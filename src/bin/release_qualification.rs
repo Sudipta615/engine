@@ -9,7 +9,7 @@
 //! cargo run --bin release-qualification -- --json
 //! ```
 
-use engine::eval::run_qualification_pipeline;
+use engine::eval::{run_qualification_pipeline, QualificationStatus};
 use std::env;
 
 fn main() {
@@ -24,7 +24,7 @@ fn main() {
         println!("{}", report.render_text());
     }
 
-    if report.qualification_status != "PASS" {
+    if report.qualification_status != QualificationStatus::Pass {
         std::process::exit(1);
     }
 }

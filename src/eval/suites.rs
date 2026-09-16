@@ -389,7 +389,7 @@ pub fn loudness(reg: &ReferenceVectorRegistry) -> ComponentReport {
         let s = (TAU * 1_000.0 * i as f64 / sr).sin();
         meter.process_stereo(s as f32, s as f32);
     }
-    // ITU-R BS.1770-4 §1.4: a 1 kHz 0 dBFS stereo tone reads −0.02 ± 0.2 LUFS.
+    // ITU-R BS.1770-5 §1.4: a 1 kHz 0 dBFS stereo tone reads −0.02 ± 0.2 LUFS.
     let integrated_lufs = meter.snapshot().integrated_lufs;
     ComponentReport {
         component: "EBU R128 loudness".to_string(),

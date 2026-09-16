@@ -269,7 +269,7 @@ fn test_incoming_track_loudness_scan() {
         .pending_incoming_loudness_metadata
         .and_then(|m| m.ebu_r128_loudness)
         .expect("scan result present");
-    // Stereo full-scale 1 kHz sine measures ≈ -0.02 LUFS (BS.1770-4 channel sum).
+    // Stereo full-scale 1 kHz sine measures ≈ -0.02 LUFS (BS.1770-5 channel sum).
     assert!(
         (lufs - (-0.02)).abs() < 0.6,
         "expected ≈ -0.02 LUFS, got {lufs:.2}"

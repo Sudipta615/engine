@@ -10,7 +10,8 @@ CLI players, desktop GUIs (Slint, Iced, Qt, GTK, egui), streaming daemons, test
 harnesses, or pro-audio suites — and it ships with a stable **C FFI** so it can be driven
 from C, C++, Python, C#, Node.js, and any language that can call C.
 
-> **Documentation:** [Owner's Guide](docs/OWNERS_GUIDE.md) (plain-English, full-system map) ·
+> **Documentation:** [Canonical Specification](docs/ENGINE_SPEC.md) (authoritative engineering contract) ·
+> [Owner's Guide](docs/OWNERS_GUIDE.md) (plain-English, full-system map) ·
 > [Architecture](docs/ARCHITECTURE.md) · [Signal Flow](docs/SIGNAL_FLOW.md) ·
 > [Embedding guide](docs/EMBEDDING.md) · [Contributing & versioning](AGENTS.md)
 

@@ -30,6 +30,7 @@ pub mod measurement;
 pub mod profile;
 pub mod spatial_average;
 pub mod target_curve;
+pub mod validation;
 
 pub use analysis::{analyze_ir, RoomCorrectionTarget, RoomIrAnalysis};
 pub use correction::{
@@ -44,3 +45,7 @@ pub use measurement::{
 pub use profile::{ChannelCorrectionMetrics, CorrectionProfile};
 pub use spatial_average::{average_frequency_responses, SpatialAverageStrategy};
 pub use target_curve::{TargetCurve, TargetCurveKind};
+pub use validation::{
+    validate_biquad_bands_stability, validate_correction_filter, validate_multichannel_consistency,
+    CorrectionValidationReport,
+};

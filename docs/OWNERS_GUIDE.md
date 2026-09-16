@@ -351,7 +351,7 @@ the real-time audio path · **Seam** = designed for, not yet implemented.
 | 3-band multiband compressor | Full | Per-band threshold/ratio/attack/release/makeup; peak or RMS detector; enable toggle. |
 | Lookahead limiter | Full | Final safety limiter: configurable ceiling, attack/release, lookahead (default 5 ms), true-peak FIR oversampling (4×) on/off, Transparent/Saturate modes; runs in the output domain in f32. |
 | TPDF dither | Full | Triangular dither at the integer conversion boundary; global toggle + per-device force overrides. |
-| Loudness normalization | Full | EBU R128 / ReplayGain modes (track or album), applied as per-slot preamp in the mix bus; measurement per BS.1770-4 (momentary 400 ms / 100 ms hop, short-term 3 s, gated). |
+| Loudness normalization | Full | EBU R128 / ReplayGain modes (track or album), applied as per-slot preamp in the mix bus; measurement per BS.1770-5 (momentary 400 ms / 100 ms hop, short-term 3 s, gated). |
 | Stereo enhancer | Full | Mid-side width control + balance. |
 | Headphone crossfeed | Full | Bauer, Chu Moy, J. Meier, and custom (frequency/Q/delay); simulates speaker listening on headphones. |
 | Convolution engine | Full | FFT partitioned convolution (`realfft`), used for reverb/IRs, aux insert, correction node, and long-kernel graph nodes; real-time safe. |
@@ -479,7 +479,7 @@ the real-time audio path · **Seam** = designed for, not yet implemented.
 | Convolution | Full | Reverb/correction/IRs | realfft partitioned FFT | IR reload needed on rate change |
 | Crossfeed | Full | Headphone imaging | 4 profiles | — |
 | Time-stretch/pitch | Full | Varispeed/WSOLA | WSOLA core | Core is f32 in both modes; latency grows with quality |
-| Loudness (R128/RG) | Full | Consistent level | BS.1770-4 meter | — |
+| Loudness (R128/RG) | Full | Consistent level | BS.1770-5 meter | — |
 | Tag write-back | Full | Persist scans | lofty (feature) | Feature-gated |
 | Fingerprinting | Full | Identify tracks | chromaprint (feature) | Feature-gated |
 | Resampler | Full | Rate conversion | Rubato | Quality tier costs CPU/latency |
@@ -1089,7 +1089,7 @@ tick rate. **Location.** `src/dsp/analyzer.rs`.
 **Purpose.** Measure perceived loudness the way broadcast standards define
 it, and normalize playback / write tags. **Mental model.** A calibrated
 ear that averages loudness over time with a gating curve. **Inputs.**
-PCM. **Processing.** BS.1770-4: 400 ms momentary blocks on 100 ms hops,
+PCM. **Processing.** BS.1770-5: 400 ms momentary blocks on 100 ms hops,
 3 s short-term window, gating → LUFS, dBTP (true peak), LRA, ReplayGain
 gain/peak. **Outputs.** `LoudnessScanResult`; applied normalization;
 tags written; events. **Depends on.** true_peak, dither-era math. **Used
@@ -1228,7 +1228,7 @@ gates. **Runtime.** offline. **Location.** `src/eval/`.
 file's character (loudness, dynamics, spectrum, transients, stereo,
 spatial, content class) for smart defaults. **Mental model.** A lab report
 on the audio's personality. **Inputs.** PCM (streaming pass). **Processing.**
-BS.1770-4 loudness (shared meter), Hann-windowed FFT averages, onset
+BS.1770-5 loudness (shared meter), Hann-windowed FFT averages, onset
 detection, running L/R + mid/side stats; `AnalysisMask` for selective
 analysis; confidence semantics; on-disk cache (size/mtime or content-
 fingerprint keyed). **Outputs.** `AudioProfile`. **Used by.** hosts

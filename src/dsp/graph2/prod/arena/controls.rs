@@ -44,6 +44,7 @@ pub(crate) enum NodeCmd {
     SetBitPerfect(bool),
     SetDoPBypass(bool),
     SetSpeed(f32),
+    SetNonFinitePolicy(crate::dsp::safety::NonFinitePolicy),
 
     // ── Volume / balance ──────────────────────────────────────────────────
     SetVolumeTarget(f32),
@@ -739,6 +740,11 @@ impl GraphControlHandle {
     /// Audio-written once per block; safe from any thread.
     pub fn slot_meters(&self, slot: usize) -> (f32, f32) {
         self.bus.slot_meters(slot)
+    }
+
+    /// Set the real-time non-finite floating point containment policy for the DSP graph.
+    pub fn set_non_finite_policy(&self, policy: crate::dsp::safety::NonFinitePolicy) {
+        self.enqueue(NodeId::SHELL.0, NodeCmd::SetNonFinitePolicy(policy));
     }
 
     /// Publish a fully-built generation for the audio thread to swap in at
@@ -1438,6 +1444,7 @@ impl DspGraph {
                 self.speed = speed;
                 self.timestretch_mut().stretcher.set_speed(speed);
             }
+            NodeCmd::SetNonFinitePolicy(policy) => self.non_finite_policy = policy,
             _ => {}
         }
     }

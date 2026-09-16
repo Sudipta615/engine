@@ -231,4 +231,65 @@ mod tests {
         assert_eq!(rescale_clock_frames(12345, 48000, 48000), 12345);
         assert_eq!(rescale_clock_frames(12345, 0, 48000), 12345);
     }
+
+    #[test]
+    fn hot_plug_disconnect_reconnect_preserves_playhead_and_rescales() {
+        let mut controller = OutputRecoveryController::new(5);
+
+        // 1. Playback starts at 44.1 kHz, playhead reaches 132,300 frames (3.00 seconds)
+        let initial_playhead_44k = 132_300u64;
+        let initial_rate = 44_100u32;
+        let initial_volume = 0.85f32;
+
+        // 2. Simulate device disconnect (DeviceNotAvailable / disconnect)
+        controller.on_device_disappeared();
+        assert_eq!(controller.phase(), RecoveryPhase::DeviceDisappeared);
+
+        // 3. Preserve state: audio pauses, playhead is snapshotted
+        controller.preserve_state(PreservedPlaybackSnapshot {
+            source_frames: initial_playhead_44k,
+            source_sample_rate: 44_100,
+            old_output_sample_rate: initial_rate,
+            volume: initial_volume,
+            output_profile_id: Some("dac_usb_zone".to_string()),
+            was_playing: true,
+        });
+        assert_eq!(controller.phase(), RecoveryPhase::PreserveEngineState);
+
+        // 4. Simulate device reconnect with DIFFERENT sample rate (44.1 kHz -> 48 kHz)
+        let new_rate = 48_000u32;
+        controller.on_device_reopened();
+        assert_eq!(controller.phase(), RecoveryPhase::ReopenDevice);
+
+        controller.on_format_reconfigured();
+        assert_eq!(controller.phase(), RecoveryPhase::ReconfigureFormat);
+
+        // 5. Verify clock frame rescaling: playhead_48k = playhead_44k * 48000 / 44100
+        let snapshot = controller
+            .preserved_snapshot()
+            .expect("snapshot must exist");
+        let rescaled_frames = rescale_clock_frames(
+            snapshot.source_frames,
+            snapshot.old_output_sample_rate,
+            new_rate,
+        );
+        let expected_frames = (132_300u128 * 48_000 / 44_100) as u64; // Exactly 144,000 frames = 3.00 seconds!
+        assert_eq!(rescaled_frames, expected_frames);
+        assert_eq!(rescaled_frames, 144_000);
+
+        controller.on_clock_restored();
+        assert_eq!(controller.phase(), RecoveryPhase::RestoreClock);
+
+        // 6. Restore profile and resume playback seamlessly
+        controller.on_profile_restored();
+        assert_eq!(controller.phase(), RecoveryPhase::RestoreOutputProfile);
+
+        controller.on_playback_resumed();
+        assert_eq!(controller.phase(), RecoveryPhase::Idle);
+
+        // 7. Verify zero sample loss: time duration before and after matches exactly
+        let duration_before_s = initial_playhead_44k as f64 / initial_rate as f64;
+        let duration_after_s = rescaled_frames as f64 / new_rate as f64;
+        assert!((duration_after_s - duration_before_s).abs() < 1e-9);
+    }
 }

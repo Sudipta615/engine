@@ -1,7 +1,7 @@
 //! Offline ReplayGain / EBU R128 scanner + tag writer.
 //!
 //! Walks a directory tree for supported audio files, measures each file's
-//! integrated loudness with the engine's BS.1770-4 meter (the *same* meter
+//! integrated loudness with the engine's BS.1770-5 meter (the *same* meter
 //! used during playback), and optionally writes the results back into the
 //! file's ReplayGain / R128 tags.
 //!

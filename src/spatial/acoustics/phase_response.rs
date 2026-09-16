@@ -41,7 +41,7 @@ pub fn unwrap_phase(phase: &[f64]) -> Vec<f64> {
 /// Extracts unwrapped phase response from an impulse response.
 pub fn compute_phase_response(ir: &[f32], sample_rate: f64) -> PhaseResponse {
     let mut fft_size = 1024;
-    while fft_size < ir.len() {
+    while fft_size < ir.len() * 2 {
         fft_size <<= 1;
     }
 

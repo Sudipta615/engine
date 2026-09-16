@@ -161,41 +161,264 @@ pub fn dispatch_dot_product(a: &[f32], b: &[f32], n: usize) -> f32 {
     super::scalar::dot_product(a, b, n)
 }
 
-/// Explicit level-directed execution for testing, verification, and diagnostics.
-pub fn execute_at_level(level: SimdLevel, dst: &mut [f32], g: f32, n: usize) {
+/// Explicit level-directed execution for scale: `dst[i] *= g`.
+pub fn execute_scale_at_level(level: SimdLevel, dst: &mut [f32], g: f32, n: usize) {
     match level {
         SimdLevel::Scalar => super::scalar::scale_slice(dst, g, n),
         SimdLevel::Sse2 => {
             #[cfg(target_arch = "x86_64")]
-            unsafe {
-                super::x86::sse2::scale_slice_sse2(dst, g, n);
+            {
+                if is_x86_feature_detected!("sse2") {
+                    unsafe {
+                        return super::x86::sse2::scale_slice_sse2(dst, g, n);
+                    }
+                }
             }
-            #[cfg(not(target_arch = "x86_64"))]
             super::scalar::scale_slice(dst, g, n);
         }
         SimdLevel::Neon => {
             #[cfg(target_arch = "aarch64")]
-            unsafe {
-                super::arm::neon::scale_slice_neon(dst, g, n);
+            {
+                #[cfg(target_feature = "neon")]
+                unsafe {
+                    return super::arm::neon::scale_slice_neon(dst, g, n);
+                }
             }
-            #[cfg(not(target_arch = "aarch64"))]
             super::scalar::scale_slice(dst, g, n);
         }
         SimdLevel::Avx2 => {
             #[cfg(target_arch = "x86_64")]
-            unsafe {
-                super::x86::avx2::scale_slice_avx2(dst, g, n);
+            {
+                if is_x86_feature_detected!("avx2") {
+                    unsafe {
+                        return super::x86::avx2::scale_slice_avx2(dst, g, n);
+                    }
+                }
             }
-            #[cfg(not(target_arch = "x86_64"))]
             super::scalar::scale_slice(dst, g, n);
         }
         SimdLevel::Avx512 => {
             #[cfg(target_arch = "x86_64")]
-            unsafe {
-                super::x86::avx512::scale_slice_avx512(dst, g, n);
+            {
+                if is_x86_feature_detected!("avx512f") {
+                    unsafe {
+                        return super::x86::avx512::scale_slice_avx512(dst, g, n);
+                    }
+                }
             }
-            #[cfg(not(target_arch = "x86_64"))]
             super::scalar::scale_slice(dst, g, n);
         }
     }
+}
+
+/// Explicit level-directed execution for double-precision scale: `dst[i] *= g`.
+pub fn execute_scale_f64_at_level(level: SimdLevel, dst: &mut [f64], g: f64, n: usize) {
+    match level {
+        SimdLevel::Scalar => super::scalar::scale_slice_f64(dst, g, n),
+        SimdLevel::Sse2 => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if is_x86_feature_detected!("sse2") {
+                    unsafe {
+                        return super::x86::sse2::scale_slice_f64_sse2(dst, g, n);
+                    }
+                }
+            }
+            super::scalar::scale_slice_f64(dst, g, n);
+        }
+        SimdLevel::Neon => {
+            #[cfg(target_arch = "aarch64")]
+            {
+                #[cfg(target_feature = "neon")]
+                unsafe {
+                    return super::arm::neon::scale_slice_f64_neon(dst, g, n);
+                }
+            }
+            super::scalar::scale_slice_f64(dst, g, n);
+        }
+        SimdLevel::Avx2 => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if is_x86_feature_detected!("avx2") {
+                    unsafe {
+                        return super::x86::avx2::scale_slice_f64_avx2(dst, g, n);
+                    }
+                }
+            }
+            super::scalar::scale_slice_f64(dst, g, n);
+        }
+        SimdLevel::Avx512 => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if is_x86_feature_detected!("avx512f") {
+                    unsafe {
+                        return super::x86::avx512::scale_slice_f64_avx512(dst, g, n);
+                    }
+                }
+            }
+            super::scalar::scale_slice_f64(dst, g, n);
+        }
+    }
+}
+
+/// Explicit level-directed execution for mix: `dst[i] += src[i]`.
+pub fn execute_mix_at_level(level: SimdLevel, dst: &mut [f32], src: &[f32], n: usize) {
+    match level {
+        SimdLevel::Scalar => super::scalar::mix_slices(dst, src, n),
+        SimdLevel::Sse2 => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if is_x86_feature_detected!("sse2") {
+                    unsafe {
+                        return super::x86::sse2::mix_slices_sse2(dst, src, n);
+                    }
+                }
+            }
+            super::scalar::mix_slices(dst, src, n);
+        }
+        SimdLevel::Neon => {
+            #[cfg(target_arch = "aarch64")]
+            {
+                #[cfg(target_feature = "neon")]
+                unsafe {
+                    return super::arm::neon::mix_slices_neon(dst, src, n);
+                }
+            }
+            super::scalar::mix_slices(dst, src, n);
+        }
+        SimdLevel::Avx2 => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if is_x86_feature_detected!("avx2") {
+                    unsafe {
+                        return super::x86::avx2::mix_slices_avx2(dst, src, n);
+                    }
+                }
+            }
+            super::scalar::mix_slices(dst, src, n);
+        }
+        SimdLevel::Avx512 => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if is_x86_feature_detected!("avx512f") {
+                    unsafe {
+                        return super::x86::avx512::mix_slices_avx512(dst, src, n);
+                    }
+                }
+            }
+            super::scalar::mix_slices(dst, src, n);
+        }
+    }
+}
+
+/// Explicit level-directed execution for accumulate scaled: `dst[i] += src[i] * gain`.
+pub fn execute_accumulate_scaled_at_level(
+    level: SimdLevel,
+    dst: &mut [f32],
+    src: &[f32],
+    gain: f32,
+    n: usize,
+) {
+    match level {
+        SimdLevel::Scalar => super::scalar::accumulate_scaled(dst, src, gain, n),
+        SimdLevel::Sse2 => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if is_x86_feature_detected!("sse2") {
+                    unsafe {
+                        return super::x86::sse2::accumulate_scaled_sse2(dst, src, gain, n);
+                    }
+                }
+            }
+            super::scalar::accumulate_scaled(dst, src, gain, n);
+        }
+        SimdLevel::Neon => {
+            #[cfg(target_arch = "aarch64")]
+            {
+                #[cfg(target_feature = "neon")]
+                unsafe {
+                    return super::arm::neon::accumulate_scaled_neon(dst, src, gain, n);
+                }
+            }
+            super::scalar::accumulate_scaled(dst, src, gain, n);
+        }
+        SimdLevel::Avx2 => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+                    unsafe {
+                        return super::x86::avx2::accumulate_scaled_avx2(dst, src, gain, n);
+                    }
+                }
+            }
+            super::scalar::accumulate_scaled(dst, src, gain, n);
+        }
+        SimdLevel::Avx512 => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if is_x86_feature_detected!("avx512f") {
+                    unsafe {
+                        return super::x86::avx512::accumulate_scaled_avx512(dst, src, gain, n);
+                    }
+                }
+            }
+            super::scalar::accumulate_scaled(dst, src, gain, n);
+        }
+    }
+}
+
+/// Explicit level-directed execution for dot product: `∑ a[i] * b[i]`.
+pub fn execute_dot_product_at_level(level: SimdLevel, a: &[f32], b: &[f32], n: usize) -> f32 {
+    match level {
+        SimdLevel::Scalar => super::scalar::dot_product(a, b, n),
+        SimdLevel::Sse2 => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if is_x86_feature_detected!("sse2") {
+                    unsafe {
+                        return super::x86::sse2::dot_product_sse2(a, b, n);
+                    }
+                }
+            }
+            super::scalar::dot_product(a, b, n)
+        }
+        SimdLevel::Neon => {
+            #[cfg(target_arch = "aarch64")]
+            {
+                #[cfg(target_feature = "neon")]
+                unsafe {
+                    return super::arm::neon::dot_product_neon(a, b, n);
+                }
+            }
+            super::scalar::dot_product(a, b, n)
+        }
+        SimdLevel::Avx2 => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+                    unsafe {
+                        return super::x86::avx2::dot_product_avx2(a, b, n);
+                    }
+                }
+            }
+            super::scalar::dot_product(a, b, n)
+        }
+        SimdLevel::Avx512 => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if is_x86_feature_detected!("avx512f") {
+                    unsafe {
+                        return super::x86::avx512::dot_product_avx512(a, b, n);
+                    }
+                }
+            }
+            super::scalar::dot_product(a, b, n)
+        }
+    }
+}
+
+/// Backward compatibility alias for [`execute_scale_at_level`].
+#[inline(always)]
+pub fn execute_at_level(level: SimdLevel, dst: &mut [f32], g: f32, n: usize) {
+    execute_scale_at_level(level, dst, g, n);
 }

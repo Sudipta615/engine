@@ -4,7 +4,7 @@
 //! - Exact numerical PCM impulse and step responses for parametric EQ biquads
 //! - Exact mathematical power-conservation for equal-power crossfade curves
 //! - Strict ceiling and envelope compliance for lookahead true-peak limiter
-//! - Standard ITU-R BS.1770-4 calibration tone loudness reference vectors
+//! - Standard ITU-R BS.1770-5 calibration tone loudness reference vectors
 //! - Statistical variance, mean, and bounds for TPDF dither
 
 use engine::dsp::biquad::{BiquadCoeffsF64, BiquadStateF64};
@@ -151,7 +151,7 @@ fn test_limiter_ceiling_golden_vector() {
 
 #[test]
 fn test_ebu_r128_itu_bs1770_stereo_1khz_calibration_vector() {
-    // Per ITU-R BS.1770-4 §1.4:
+    // Per ITU-R BS.1770-5 §1.4:
     // A 1000 Hz stereo sine tone at 0 dBFS peak in both channels (left = sin, right = sin)
     // with BS.1770 channel summation measures -0.02 ± 0.2 LUFS.
     let sample_rate = 48000.0;
@@ -167,7 +167,7 @@ fn test_ebu_r128_itu_bs1770_stereo_1khz_calibration_vector() {
     let diff = (meas.integrated_lufs - (-0.02)).abs();
     assert!(
         diff < 0.25,
-        "BS.1770-4 1kHz 0 dBFS reference tone produced {:.2} LUFS (expected -0.02 ± 0.25 LUFS)",
+        "BS.1770-5 1kHz 0 dBFS reference tone produced {:.2} LUFS (expected -0.02 ± 0.25 LUFS)",
         meas.integrated_lufs
     );
 }

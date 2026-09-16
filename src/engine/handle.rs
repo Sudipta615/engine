@@ -720,4 +720,168 @@ impl EngineHandle {
     pub fn analyzer(&self) -> Arc<crate::dsp::AudioAnalyzer> {
         Arc::clone(&self.analyzer)
     }
+
+    // ── Runtime Controls (Punch List P1 Items 20 & 21) ─────────────────
+
+    /// Live toggle of the spatial layer.
+    pub fn set_spatial_enabled(&self, enabled: bool) {
+        let _ = self.send_command(EngineCommand::SetSpatialEnabled(enabled));
+    }
+
+    /// Configure virtual screen geometry and gain.
+    pub fn set_spatial_screen(
+        &self,
+        center_azimuth_deg: f32,
+        half_width_deg: f32,
+        elevation_deg: f32,
+        gain: f32,
+    ) {
+        let _ = self.send_command(EngineCommand::SetSpatialScreen {
+            center_azimuth_deg,
+            half_width_deg,
+            elevation_deg,
+            gain,
+        });
+    }
+
+    /// Configure the acoustic room reflections and reverb parameters.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_spatial_room(
+        &self,
+        enabled: bool,
+        width: f32,
+        depth: f32,
+        height: f32,
+        absorption: f32,
+        reflection_order: u8,
+        rt60_ms: f32,
+        late_mix: f32,
+        late_distance: bool,
+        wet: f32,
+    ) {
+        let _ = self.send_command(EngineCommand::SetSpatialRoom {
+            enabled,
+            width,
+            depth,
+            height,
+            absorption,
+            reflection_order,
+            rt60_ms,
+            late_mix,
+            late_distance,
+            wet,
+        });
+    }
+
+    /// Configure atmospheric air absorption simulation.
+    pub fn set_spatial_air(&self, air: crate::spatial::level::AirAbsorption) {
+        let _ = self.send_command(EngineCommand::SetSpatialAir(air));
+    }
+
+    /// Set listener orientation angles in degrees.
+    pub fn set_spatial_listener(&self, yaw_deg: f32, pitch_deg: f32, roll_deg: f32) {
+        let _ = self.send_command(EngineCommand::SetSpatialListener {
+            yaw_deg,
+            pitch_deg,
+            roll_deg,
+        });
+    }
+
+    /// Select active HRTF profile by ID (Item 21).
+    pub fn set_hrtf_profile(&self, profile_id: impl Into<String>) {
+        let _ = self.send_command(EngineCommand::SetHrtfProfile(profile_id.into()));
+    }
+
+    /// Live toggle of the peak limiter.
+    pub fn set_limiter_enabled(&self, enabled: bool) {
+        let _ = self.send_command(EngineCommand::SetLimiterEnabled(enabled));
+    }
+
+    /// Configure peak limiter time constants, ceiling, and soft clipping.
+    pub fn set_limiter_params(
+        &self,
+        lookahead_ms: f32,
+        attack_ms: f32,
+        release_ms: f32,
+        ceiling_db: f32,
+        soft_clip: bool,
+    ) {
+        let _ = self.send_command(EngineCommand::SetLimiterParams {
+            lookahead_ms,
+            attack_ms,
+            release_ms,
+            ceiling_db,
+            soft_clip,
+        });
+    }
+
+    /// Configure compressor band advanced features.
+    pub fn set_compressor_band_features(
+        &self,
+        band: usize,
+        knee_db: f32,
+        detector: config::CompressorDetector,
+        stereo_link: bool,
+    ) {
+        let _ = self.send_command(EngineCommand::SetCompressorBandFeatures {
+            band,
+            knee_db,
+            detector,
+            stereo_link,
+        });
+    }
+
+    /// Live toggle of the stereo enhancer stage.
+    pub fn set_stereo_enhancer_enabled(&self, enabled: bool) {
+        let _ = self.send_command(EngineCommand::SetStereoEnhancerEnabled(enabled));
+    }
+
+    /// Set loudness normalization mode.
+    pub fn set_loudness_mode(&self, mode: config::LoudnessMode) {
+        let _ = self.send_command(EngineCommand::SetLoudnessMode(mode));
+    }
+
+    /// Set per-slot channel trim gain and polarity.
+    pub fn set_slot_trim(&self, slot: u8, channel: usize, gain_db: f32, invert_polarity: bool) {
+        let _ = self.send_command(EngineCommand::SetSlotTrim {
+            slot,
+            channel,
+            gain_db,
+            invert_polarity,
+        });
+    }
+
+    /// Configure aux bus enable and return gain.
+    pub fn set_aux(&self, enabled: bool, return_gain: f32) {
+        let _ = self.send_command(EngineCommand::SetAux {
+            enabled,
+            return_gain,
+        });
+    }
+
+    /// Set mute state for an input mix slot.
+    pub fn set_input_mute(&self, slot: u8, muted: bool) {
+        let _ = self.send_command(EngineCommand::SetInputMute { slot, muted });
+    }
+
+    /// Set active / detached state for an input mix slot.
+    pub fn set_input_active(&self, slot: u8, active: bool) {
+        let _ = self.send_command(EngineCommand::SetInputActive { slot, active });
+    }
+
+    /// Attach or clear parameter automation curve for a mix slot.
+    pub fn set_slot_automation(
+        &self,
+        slot: u8,
+        kind: u8,
+        curve: Option<std::sync::Arc<crate::spatial::automation::CurveScalar>>,
+        time_secs: f32,
+    ) {
+        let _ = self.send_command(EngineCommand::SetSlotAutomation {
+            slot,
+            kind,
+            curve,
+            time_secs,
+        });
+    }
 }

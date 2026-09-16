@@ -3,13 +3,13 @@ members = [".", "crates/config", "crates/plugin-abi", "crates/plugin-test-echo"]
 
 [package]
 name = "engine"
-version = "5.5.0"
+version = "5.7.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"
 
 [features]
-default = ["audio-output", "resample", "all-codecs"]
+default = ["audio-output", "resample", "all-codecs", "sofa-import"]
 audio-output = ["cpal", "thread-priority"]
 pipewire = ["audio-output"]
 jack = ["audio-output"]
@@ -539,4 +539,48 @@ path = "tests/fidelity/spatial_interchange_fidelity.rs"
 [[test]]
 name = "stage4_professional_io_fidelity"
 path = "tests/fidelity/stage4_professional_io_fidelity.rs"
+
+[[test]]
+name = "realtime_qualification"
+path = "tests/fidelity/realtime_qualification.rs"
+
+[[test]]
+name = "deterministic_reference_vectors"
+path = "tests/fidelity/deterministic_reference_vectors.rs"
+
+[[test]]
+name = "coverage_guided_fuzzing"
+path = "tests/fidelity/coverage_guided_fuzzing.rs"
+
+[[test]]
+name = "professional_integration"
+path = "tests/fidelity/professional_integration.rs"
+
+[[test]]
+name = "performance_matrix"
+path = "tests/fidelity/performance_matrix.rs"
+
+[[test]]
+name = "simd_qualification"
+path = "tests/fidelity/simd_qualification.rs"
+
+[[test]]
+name = "long_duration_stress"
+path = "tests/fidelity/long_duration_stress.rs"
+
+[[test]]
+name = "nan_inf_fault_injection"
+path = "tests/fidelity/nan_inf_fault_injection.rs"
+
+[[test]]
+name = "denormal_stress"
+path = "tests/fidelity/denormal_stress.rs"
+
+[[test]]
+name = "acoustic_measurement_verification"
+path = "tests/fidelity/acoustic_measurement_verification.rs"
+
+[[test]]
+name = "room_correction_validation"
+path = "tests/fidelity/room_correction_validation.rs"
 

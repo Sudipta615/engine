@@ -16,7 +16,7 @@ pub enum DetectionMode {
     Rms,
     /// Mean-square level (energy-proportional without square root).
     MeanSquare,
-    /// ITU-R BS.1770-4 class 4× oversampled true-peak follower.
+    /// ITU-R BS.1770-5 Annex 2 class 4× oversampled true-peak follower.
     TruePeak,
     /// BS.1770 K-weighted energy filter before detection.
     LufsEnergy,

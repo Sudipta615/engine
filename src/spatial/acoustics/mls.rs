@@ -22,10 +22,10 @@ impl MlsOrder {
     /// Primitive feedback taps (0-indexed from bit 0 to N-1).
     pub fn feedback_mask(&self) -> u32 {
         match self {
-            Self::Order10 => (1 << 9) | (1 << 6), // x^10 + x^7 + 1
-            Self::Order12 => (1 << 11) | (1 << 10) | (1 << 9) | (1 << 3), // x^12 + x^11 + x^10 + x^4 + 1
-            Self::Order14 => (1 << 13) | (1 << 12) | (1 << 11) | (1 << 1), // x^14 + x^13 + x^12 + x^2 + 1
-            Self::Order16 => (1 << 15) | (1 << 14) | (1 << 12) | (1 << 3), // x^16 + x^15 + x^13 + x^4 + 1
+            Self::Order10 => (1 << 0) | (1 << 3), // x^10 + x^3 + 1
+            Self::Order12 => (1 << 0) | (1 << 1) | (1 << 2) | (1 << 8), // x^12 + x^8 + x^2 + x + 1
+            Self::Order14 => (1 << 0) | (1 << 1) | (1 << 2) | (1 << 12), // x^14 + x^12 + x^2 + x + 1
+            Self::Order16 => (1 << 0) | (1 << 1) | (1 << 3) | (1 << 12), // x^16 + x^12 + x^3 + x + 1
         }
     }
 }

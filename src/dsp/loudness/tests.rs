@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn test_k_weight_stage1_shelf_response() {
-    // BS.1770-4 (DeMan) stage-1 high shelf: +0.67 dB at 1 kHz (below the
+    // BS.1770-5 (DeMan) stage-1 high shelf: +0.67 dB at 1 kHz (below the
     // 1682 Hz corner), approaching +4 dB well above the corner.
     let sr = 48000.0f32;
     for (freq, expected_db, tol) in [(1000.0, 0.67, 0.4), (5000.0, 3.9, 0.6), (10000.0, 4.0, 0.4)] {
@@ -29,7 +29,7 @@ fn test_k_weight_stage1_shelf_response() {
 
 #[test]
 fn test_meter_channel_sum_calibration() {
-    // BS.1770-4 channel-sum semantics for identical stereo input.
+    // BS.1770-5 channel-sum semantics for identical stereo input.
     let sr = 48000.0f32;
     let mut meter = LoudnessMeter::new(sr, 2);
     let n = 48000 * 5;
@@ -52,7 +52,7 @@ fn test_meter_channel_sum_calibration() {
 
 #[test]
 fn test_channel_sum_stereo_vs_mono() {
-    // BS.1770-4 sums channel energies: identical stereo content measures
+    // BS.1770-5 sums channel energies: identical stereo content measures
     // exactly 10*log10(2) ≈ 3.01 LU louder than mono.
     let sr = 48000.0f32;
     let mut mono = LoudnessMeter::new(sr, 1);

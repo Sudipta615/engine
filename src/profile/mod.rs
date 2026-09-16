@@ -9,7 +9,7 @@
 //! # Design rules
 //!
 //! - **Deterministic DSP only.** Every feature is derived from standard
-//!   measurements (BS.1770-4 loudness via the shared [`LoudnessMeter`], a
+//!   measurements (BS.1770-5 loudness via the shared [`LoudnessMeter`], a
 //!   Hann-windowed FFT, running mid/side and L/R statistics, onset energy
 //!   deltas). There is no learned model; the interface is deliberately shaped
 //!   so a future tiny ML feature-supplier can fill the same fields without
@@ -104,7 +104,7 @@ impl AnalysisMask {
     }
 }
 
-/// Perceived loudness and loudness stability (EBU R128 / BS.1770-4).
+/// Perceived loudness and loudness stability (EBU R128 / BS.1770-5).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct LoudnessProfile {
     /// Integrated loudness in LUFS (dual-threshold gated). Range: typically

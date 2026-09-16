@@ -78,6 +78,7 @@ pub struct PtpClock {
     jitter_ns: f64,
     drift_ppm: f64,
     last_offset_ns: f64,
+    last_sync_time_ns: Option<i128>,
     sync_samples: u64,
     lock_loss_count: u32,
     /// Threshold (ns) below which clock is considered locked (e.g., 1000 ns = 1 µs).
@@ -103,6 +104,7 @@ impl PtpClock {
             jitter_ns: 0.0,
             drift_ppm: 0.0,
             last_offset_ns: 0.0,
+            last_sync_time_ns: None,
             sync_samples: 0,
             lock_loss_count: 0,
             lock_threshold_ns: 1_000.0, // 1 microsecond lock target
@@ -130,22 +132,40 @@ impl PtpClock {
         // Offset = ((t2 - t1) - (t4 - t3)) / 2
         let raw_offset = (master_to_slave - slave_to_master) / 2.0;
 
+        let current_time_ns = t2.as_total_nanos();
         self.sync_samples += 1;
 
         if self.sync_samples == 1 {
             self.filtered_offset_ns = raw_offset;
             self.filtered_path_delay_ns = raw_delay.max(0.0);
             self.last_offset_ns = raw_offset;
+            self.last_sync_time_ns = Some(current_time_ns);
             self.state = PtpClockState::Synchronizing;
         } else {
             // Update jitter metric: deviation between raw offset and filtered offset
             let dev = (raw_offset - self.filtered_offset_ns).abs();
             self.jitter_ns = (1.0 - self.filter_alpha) * self.jitter_ns + self.filter_alpha * dev;
 
-            // Frequency drift estimation (derivative of offset in PPM: ns/s = 1e-9 = 1 ppb = 1e-3 ppm)
+            // Frequency drift estimation (derivative of offset: Δoffset / Δtime)
+            // Convert to PPM: (Δoffset_ns / Δtime_ns) * 1e6
             let delta_offset = raw_offset - self.last_offset_ns;
-            self.drift_ppm = delta_offset * 1e-3;
+            let elapsed_ns = self
+                .last_sync_time_ns
+                .map(|last_t| current_time_ns - last_t)
+                .unwrap_or(0);
+
+            // Sanity checks: require strictly positive elapsed time (>= 1000 ns)
+            if elapsed_ns >= 1_000 {
+                let raw_drift_ppm = (delta_offset / elapsed_ns as f64) * 1_000_000.0;
+                // Physical oscillator bounds check: clamp to ±1000 ppm
+                let bounded_drift = raw_drift_ppm.clamp(-1000.0, 1000.0);
+                // Low-pass EMA filter update for drift
+                self.drift_ppm =
+                    (1.0 - self.filter_alpha) * self.drift_ppm + self.filter_alpha * bounded_drift;
+            }
+
             self.last_offset_ns = raw_offset;
+            self.last_sync_time_ns = Some(current_time_ns);
 
             // Low-pass EMA filter update
             self.filtered_offset_ns = (1.0 - self.filter_alpha) * self.filtered_offset_ns
@@ -198,6 +218,107 @@ impl PtpClock {
         self.filtered_path_delay_ns = 0.0;
         self.jitter_ns = 0.0;
         self.drift_ppm = 0.0;
+        self.last_offset_ns = 0.0;
+        self.last_sync_time_ns = None;
         self.sync_samples = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ptp_drift_zero() {
+        let mut ptp = PtpClock::new("00-11-22-33-44-55");
+        // Steady 1-second intervals with constant offset = 500 ns, delay = 5000 ns
+        for i in 0..10 {
+            let sec = 100 + i;
+            let t1 = PtpTimestamp::new(sec, 0);
+            let t2 = PtpTimestamp::new(sec, 5500); // 5000 delay + 500 offset
+            let t3 = PtpTimestamp::new(sec, 10_000);
+            let t4 = PtpTimestamp::new(sec, 14_500); // 5000 delay - 500 offset
+            ptp.process_timestamp_exchange(t1, t2, t3, t4);
+        }
+        let telem = ptp.telemetry();
+        assert_eq!(telem.state, PtpClockState::Locked);
+        assert!(
+            (telem.drift_ppm).abs() < 1e-6,
+            "Expected 0 ppm drift, got {}",
+            telem.drift_ppm
+        );
+        assert!((telem.offset_ns - 500.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_ptp_drift_positive() {
+        let mut ptp = PtpClock::new("00-11-22-33-44-55");
+        // Target: +25 ppm -> over 1 second (1e9 ns), offset increases by 25,000 ns
+        // Let's run multiple 1-second intervals with +25,000 ns offset per second
+        let drift_ns_per_sec = 25_000;
+        for i in 0..50 {
+            let sec = 100 + i;
+            let offset = (i as i64) * drift_ns_per_sec;
+            let delay = 5000i64;
+            let t1 = PtpTimestamp::new(sec, 0);
+            let t2 = PtpTimestamp::from_total_nanos(t1.as_total_nanos() + (delay + offset) as i128);
+            let t3 = PtpTimestamp::from_total_nanos(t2.as_total_nanos() + 10_000);
+            let t4 = PtpTimestamp::from_total_nanos(t3.as_total_nanos() + (delay - offset) as i128);
+            ptp.process_timestamp_exchange(t1, t2, t3, t4);
+        }
+        let telem = ptp.telemetry();
+        // EMA filter will converge toward 25.0 ppm
+        assert!(
+            (telem.drift_ppm - 25.0).abs() < 1.0,
+            "Expected ~25.0 ppm positive drift, got {:.3}",
+            telem.drift_ppm
+        );
+    }
+
+    #[test]
+    fn test_ptp_drift_negative() {
+        let mut ptp = PtpClock::new("00-11-22-33-44-55");
+        // Target: -15 ppm -> over 1 second (1e9 ns), offset decreases by 15,000 ns
+        let drift_ns_per_sec = -15_000;
+        for i in 0..50 {
+            let sec = 200 + i;
+            let offset = (i as i64) * drift_ns_per_sec;
+            let delay = 5000i64;
+            let t1 = PtpTimestamp::new(sec, 0);
+            let t2 = PtpTimestamp::from_total_nanos(t1.as_total_nanos() + (delay + offset) as i128);
+            let t3 = PtpTimestamp::from_total_nanos(t2.as_total_nanos() + 10_000);
+            let t4 = PtpTimestamp::from_total_nanos(t3.as_total_nanos() + (delay - offset) as i128);
+            ptp.process_timestamp_exchange(t1, t2, t3, t4);
+        }
+        let telem = ptp.telemetry();
+        // EMA filter will converge toward -15.0 ppm
+        assert!(
+            (telem.drift_ppm - (-15.0)).abs() < 1.0,
+            "Expected ~-15.0 ppm negative drift, got {:.3}",
+            telem.drift_ppm
+        );
+    }
+
+    #[test]
+    fn test_ptp_drift_bounds_and_sanity() {
+        let mut ptp = PtpClock::new("00-11-22-33-44-55");
+        let t1 = PtpTimestamp::new(100, 0);
+        let t2 = PtpTimestamp::new(100, 5000);
+        let t3 = PtpTimestamp::new(100, 10000);
+        let t4 = PtpTimestamp::new(100, 15000);
+        ptp.process_timestamp_exchange(t1, t2, t3, t4);
+
+        // Huge anomalous offset jump (+50,000,000 ns = 50ms) in 1 second -> raw 50,000 ppm!
+        // Must clamp to 1000 ppm
+        let t1_next = PtpTimestamp::new(101, 0);
+        let t2_next = PtpTimestamp::new(101, 50_005_000);
+        let t3_next = PtpTimestamp::new(101, 50_010_000);
+        let t4_next = PtpTimestamp::new(101, 15_000);
+        ptp.process_timestamp_exchange(t1_next, t2_next, t3_next, t4_next);
+
+        let telem = ptp.telemetry();
+        // Bounded at 1000.0, filtered with alpha=0.1 -> 100.0
+        assert!(telem.drift_ppm <= 1000.0);
+        assert!(telem.drift_ppm > 0.0);
     }
 }

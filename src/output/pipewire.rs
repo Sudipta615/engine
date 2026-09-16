@@ -4,7 +4,7 @@
 //! clock domain integration, and daemon disconnect recovery.
 
 use std::sync::{
-    atomic::{AtomicBool, AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     Arc,
 };
 
@@ -109,6 +109,7 @@ pub struct PipeWireOutput {
     config: PipeWireConfig,
     quantum_info: PipeWireQuantumInfo,
     clock_info: PipeWireClockInfo,
+    tick_position: Arc<AtomicU64>,
     state: PipeWireStreamState,
     buffer: Arc<FixedFrameBuffer>,
     error_state: StreamErrorState,
@@ -117,6 +118,7 @@ pub struct PipeWireOutput {
     nans: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
     volume_linear: Arc<AtomicU32>,
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl PipeWireOutput {
@@ -137,6 +139,7 @@ impl PipeWireOutput {
                 tick_position: 0,
                 cycle_duration_ns: (1_000_000_000 / sample_rate as u64).max(1),
             },
+            tick_position: Arc::new(AtomicU64::new(0)),
             state: PipeWireStreamState::Unconnected,
             buffer,
             error_state: StreamErrorState::default(),
@@ -145,10 +148,11 @@ impl PipeWireOutput {
             nans: Arc::new(AtomicU32::new(0)),
             running: Arc::new(AtomicBool::new(false)),
             volume_linear: Arc::new(AtomicU32::new(1.0f32.to_bits())),
+            worker: None,
         }
     }
 
-    /// Enumerate sink nodes available in the PipeWire graph.
+    /// Enumerate sink nodes available in the PipeWire graph (§10.2).
     pub fn enumerate_nodes() -> Vec<PipeWireNodeInfo> {
         vec![
             PipeWireNodeInfo {
@@ -167,6 +171,14 @@ impl PipeWireOutput {
                 channels: 8,
                 sample_rate: 96000,
             },
+            PipeWireNodeInfo {
+                id: 54,
+                name: "alsa_output.usb-Studio_Master_16-00.pro-audio".to_string(),
+                description: "Studio Master Pro-Audio 9.1.6 Interface".to_string(),
+                media_class: "Audio/Sink".to_string(),
+                channels: 16,
+                sample_rate: 192000,
+            },
         ]
     }
 
@@ -176,10 +188,24 @@ impl PipeWireOutput {
         &self.quantum_info
     }
 
-    /// Current clock information.
+    /// Current clock information with dynamically advanced tick position.
     #[inline]
-    pub fn clock_info(&self) -> &PipeWireClockInfo {
-        &self.clock_info
+    pub fn clock_info(&self) -> PipeWireClockInfo {
+        let mut info = self.clock_info;
+        info.tick_position = self.tick_position.load(Ordering::Relaxed);
+        info
+    }
+
+    /// Estimated output latency in samples.
+    #[inline]
+    pub fn latency_samples(&self) -> u32 {
+        self.quantum_info.current_quantum * 2
+    }
+
+    /// Estimated output latency in milliseconds.
+    #[inline]
+    pub fn latency_ms(&self) -> f32 {
+        (self.latency_samples() as f32 / self.config.sample_rate as f32) * 1000.0
     }
 
     /// Stream lifecycle state.
@@ -188,12 +214,33 @@ impl PipeWireOutput {
         self.state
     }
 
-    /// Simulate daemon disconnect and recovery.
+    /// Active channel mapping.
+    #[inline]
+    pub fn channel_map(&self) -> &[String] {
+        &self.config.channel_map
+    }
+
+    /// Update channel map dynamically.
+    pub fn set_channel_map(&mut self, map: Vec<String>) {
+        self.config.channels = map.len() as u16;
+        self.config.channel_map = map;
+    }
+
+    /// Simulate daemon disconnect and recovery (§10.2).
     pub fn trigger_daemon_reconnect(&mut self) -> Result<(), OutputError> {
         self.state = PipeWireStreamState::Recovering;
         // Re-negotiate quantum and clock
+        self.quantum_info.current_quantum = self.config.preferred_quantum.unwrap_or(256);
+        self.clock_info.rate = self.config.sample_rate;
         self.state = PipeWireStreamState::Streaming;
         Ok(())
+    }
+
+    /// Handle dynamic node addition / removal event.
+    pub fn handle_node_event(&mut self, node_id: u32, event: &str) {
+        if event == "remove" && self.config.node_name.contains(&node_id.to_string()) {
+            let _ = self.trigger_daemon_reconnect();
+        }
     }
 }
 
@@ -315,11 +362,64 @@ impl Output for PipeWireOutput {
     fn start(&mut self) -> Result<(), OutputError> {
         self.running.store(true, Ordering::Release);
         self.state = PipeWireStreamState::Streaming;
+
+        let running = Arc::clone(&self.running);
+        let buffer = Arc::clone(&self.buffer);
+        let underruns = Arc::clone(&self.underruns);
+        let clips = Arc::clone(&self.clips);
+        let nans = Arc::clone(&self.nans);
+        let volume = Arc::clone(&self.volume_linear);
+        let tick_pos = Arc::clone(&self.tick_position);
+        let quantum = self.quantum_info.current_quantum as usize;
+        let channels = self.config.channels as usize;
+        let sample_rate = self.config.sample_rate;
+
+        let thread = std::thread::Builder::new()
+            .name("pipewire-audio".to_string())
+            .spawn(move || {
+                let mut block = vec![0.0f32; quantum * channels];
+                let frame_duration = std::time::Duration::from_nanos(
+                    ((quantum as u64 * 1_000_000_000) / sample_rate as u64).max(100_000),
+                );
+                while running.load(Ordering::Acquire) {
+                    let start = std::time::Instant::now();
+                    let popped = buffer.pop_block_interleaved(&mut block);
+                    if popped < block.len() {
+                        underruns.fetch_add(1, Ordering::Relaxed);
+                        block[popped..].fill(0.0);
+                    }
+                    let vol = f32::from_bits(volume.load(Ordering::Relaxed));
+                    for s in &mut block[..popped] {
+                        if s.is_nan() {
+                            nans.fetch_add(1, Ordering::Relaxed);
+                            *s = 0.0;
+                        } else if s.is_infinite() {
+                            clips.fetch_add(1, Ordering::Relaxed);
+                            *s = s.signum();
+                        } else {
+                            *s *= vol;
+                        }
+                    }
+                    tick_pos.fetch_add(quantum as u64, Ordering::Relaxed);
+                    let elapsed = start.elapsed();
+                    if elapsed < frame_duration {
+                        std::thread::sleep(frame_duration - elapsed);
+                    }
+                }
+            })
+            .map_err(|e| {
+                OutputError::StreamError(format!("failed to spawn pipewire thread: {e}"))
+            })?;
+
+        self.worker = Some(thread);
         Ok(())
     }
 
     fn stop(&mut self) {
         self.running.store(false, Ordering::Release);
+        if let Some(w) = self.worker.take() {
+            let _ = w.join();
+        }
         self.state = PipeWireStreamState::Paused;
     }
 }
@@ -331,9 +431,10 @@ mod tests {
     #[test]
     fn pipewire_discovery_and_stream_lifecycle() {
         let nodes = PipeWireOutput::enumerate_nodes();
-        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes.len(), 3);
         assert_eq!(nodes[0].channels, 2);
         assert_eq!(nodes[1].channels, 8);
+        assert_eq!(nodes[2].channels, 16);
 
         let buf = Arc::new(FixedFrameBuffer::new(1024).expect("buffer"));
         let config = PipeWireConfig {

@@ -3,7 +3,7 @@
 //! # Features
 //!
 //! - **Sample Peak**: Peak amplitude in dBFS per channel and max peak observed.
-//! - **True Peak**: Inter-sample true-peak in dBTP via ITU-R BS.1770-4 4× FIR oversampling.
+//! - **True Peak**: Inter-sample true-peak in dBTP via ITU-R BS.1770-5 Annex 2 4× FIR oversampling.
 //! - **RMS**: Windowed root-mean-square level in dBFS per channel.
 //! - **EBU R128 / BS.1770 LUFS**:
 //!   - Momentary LUFS (400 ms sliding window).

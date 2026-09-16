@@ -112,6 +112,7 @@ fn test_pillar3_jack_output_backend() {
         sample_rate: 48000,
         channels: 2,
         buffer_size: 256,
+        server_name: None,
     };
     assert_eq!(config.client_name, "Shadow-JACK-Test");
 

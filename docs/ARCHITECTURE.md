@@ -1,6 +1,7 @@
 # Architecture
 
-This document describes the overall structure of the engine. For the sample
+This document describes the overall structure of the engine. For the formal,
+authoritative engineering contract, see [`ENGINE_SPEC.md`](ENGINE_SPEC.md). For the sample
 flow through the DSP chain, see [`SIGNAL_FLOW.md`](SIGNAL_FLOW.md). For
 runnable embedding examples (Rust `EngineHandle` + C FFI), see
 [`EMBEDDING.md`](EMBEDDING.md).
@@ -55,7 +56,7 @@ src/
 │                             #   (consumers request only what they need) +
 │                             #   confidence semantics; analysis.rs —
 │                             #   bounded-memory streaming ProfileAnalyzer
-│                             #   (BS.1770-4 via the shared LoudnessMeter,
+│                             #   (BS.1770-5 via the shared LoudnessMeter,
 │                             #   Hann-windowed FFT power averaging, onset
 │                             #   deltas, running L/R + mid/side stats) +
 │                             #   analyze_decoder/analyze_path + cached

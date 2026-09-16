@@ -154,7 +154,7 @@ impl ProfileAnalyzer {
         }
     }
 
-    /// Set the semantic channel layout for the BS.1770-4 loudness weights
+    /// Set the semantic channel layout for the BS.1770-5 loudness weights
     /// (mirror [`crate::dsp::LoudnessMeter::set_channel_layout`]).
     pub fn set_channel_layout(&mut self, layout: &crate::decode::ChannelLayout) {
         self.meter.set_channel_layout(layout);

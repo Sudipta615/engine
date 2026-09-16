@@ -658,6 +658,7 @@ impl DspGraph {
                 crate::dsp::graph2::transitions::TransitionConfig::default(),
             ),
             retiring: None,
+            non_finite_policy: crate::dsp::safety::NonFinitePolicy::Clamp,
         }
     }
 

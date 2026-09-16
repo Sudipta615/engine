@@ -2,6 +2,106 @@
 
 All notable changes to this project are documented in this file.
 
+## [5.7.0]
+
+### Added
+
+- **Formal Performance Matrix (`src/eval/performance_matrix.rs`)**:
+  - Implemented multidimensional performance matrix benchmark across block sizes (16, 32, 64, 128, 256, 512, 1024), sample rates (44.1k, 48k, 88.2k, 96k, 176.4k, 192k, 384 kHz), and formats (Stereo, Multichannel 5.1/7.1.4, Binaural HRTF, HOA Order 1..3).
+  - Measures live CPU% against real-time block deadline, cycles/sample, memory overhead, worst-case callback duration, allocations (guaranteed 0), and execution jitter.
+- **SIMD Qualification Architecture (`src/dsp/simd/dispatch.rs`)**:
+  - Added level-directed execution entry points (`execute_scale_at_level`, `execute_scale_f64_at_level`, `execute_mix_at_level`, `execute_accumulate_scaled_at_level`, `execute_dot_product_at_level`) across `AVX-512`, `AVX2 / FMA`, `SSE2`, `Scalar`, and `NEON`.
+  - Added qualification test suite proving numerical equivalence, unaligned slice handling, and robust scalar fallback preserving low-end CPU compatibility.
+- **Long-Duration Stress Testing (`tests/fidelity/long_duration_stress.rs`)**:
+  - Validated extended realtime multi-stream graph processing over 5000+ blocks.
+  - Validated 50+ live generation swaps, continuous spatial object motion and listener rotation, device hot-plug reconnects, extended silence, and plugin crash failovers with 0 memory leaks, 0 xruns, and 100% finite samples.
+- **Real-time NaN/Inf Fault Containment (`src/dsp/safety.rs`, `src/dsp/graph2/prod/arena/`)**:
+  - Integrated `NonFinitePolicy` directly into `DspGraph` execution with planar containment (`contain_non_finite_planes`).
+  - Added runtime enforcement supporting `Ignore`, `Detect`, `Clamp`, `Silence`, and `BypassNode` across all DSP graph nodes.
+- **Denormal Stress Tests (`tests/fidelity/denormal_stress.rs`)**:
+  - Validated CPU behavior under reverb tails, compressor release, filter decay, near-silence ($10^{-38} \dots 10^{-45}$ floats), and extended silence.
+  - Proved zero CPU stalls with FTZ/DAZ enabled and clean signal decay to exact zero.
+- **Acoustic Measurement Verification (`tests/fidelity/acoustic_measurement_verification.rs`)**:
+  - Validated the acoustic measurement framework against analytical reference signals for impulse response, magnitude frequency response, linear phase, constant group delay, Schroeder RT60 ($T_{20}, T_{30}$), EDT, clarity ($C_{50}, C_{80}$), ETC, and log sweep / MLS deconvolution.
+- **Room/Output Correction Validation (`src/spatial/room_correction/validation.rs`)**:
+  - Implemented comprehensive room correction validator evaluating before/after frequency response error reduction ($\ge 6\text{ dB}$), phase/group delay linearity, IIR/FIR filter stability, peak headroom bounding (`max_boost_db`), latency, and multichannel calibration consistency.
+
+## [5.6.0]
+
+### Added
+
+- **Real PipeWire Pro-Audio Backend (`src/output/pipewire.rs`)**:
+  - Implemented real audio worker thread draining from `FixedFrameBuffer` with zero allocations on the realtime path.
+  - Added dynamic quantum negotiation, latency estimation (`latency_samples`, `latency_ms`), clock domain tick advancement (`tick_position`), and runtime channel mapping (`set_channel_map`).
+  - Added node discovery (`enumerate_nodes`) and daemon reconnect error recovery.
+- **Real JACK Pro-Audio Backend (`src/output/jack.rs`)**:
+  - Implemented dedicated realtime audio callback worker loop polling interleaved frames with volume scaling and NaN/Inf sanitization.
+  - Added dynamic port registration (`register_port`), port connection/disconnection patchbay routing (`connect_ports`, `disconnect_ports`), and hardware buffer latency calculations.
+  - Added JACK transport synchronization (rolling/stopped/looping state), BBT musical timebase integration, xrun tracking, and daemon accessibility probing (`probe_daemon`).
+- **Complete Plugin Sandbox & Process Isolation (`src/dsp/graph2/prod/arena/nodes/plugin_sandbox.rs`)**:
+  - Implemented `PluginProcessSandbox` supporting out-of-process / isolated realtime worker plugin hosting with heartbeat watchdog.
+  - Added instantaneous zero-allocation dry failover from pre-allocated scratch buffer on worker panic or crash (SIGSEGV).
+  - Added exponential backoff auto-restart scheduling ($t = \text{base\_backoff} \times 2^{\text{faults}-1}$) up to configurable retry limits.
+  - Added state recovery replaying cached parameter values (`cached_params`) and preparing fresh instances upon restart.
+- **Unified Parameter Metadata System (`crates/plugin-abi/src/params.rs`, `src/dsp/parameters.rs`)**:
+  - Expanded `ParamDescriptor` to fully support all 12 standard metadata fields: `id`, `label`/`name`, `unit`, `min`, `max`, `default`, `step`, `curve`, `smoothing`, `automatable`, `discrete`, and `sample_accurate`.
+  - Implemented bidirectional `From` conversions between `plugin_abi::ParamDescriptor` and `engine::dsp::parameters::ParameterDescriptor`.
+  - Added normalization, denormalization, quantization step snapping, and curve mapping helpers.
+- **Versioned State & Forward Migration Pipeline (`crates/config/src/versioned_state.rs`)**:
+  - Upgraded schema version to `STATE_SCHEMA_VERSION = 2`.
+  - Implemented step-wise forward migrations (`0 -> 1 -> 2`) in `migrate_json_value` for all 6 core models: `EngineState`, `GraphState`, `NodeState`, `PluginState`, `SpatialSceneState`, and `OutputProfileState`.
+  - Enabled automatic forward-filling of model defaults (`speed`, `bit_perfect`, `dop_active`, `dsd_output`, `output_backend`, `custom_chunk`, channel calibrations).
+- **Physical vs Spatial Channel Separation (`src/spatial/channels.rs`)**:
+  - Introduced strongly-typed `HOAChannelCount` (`FOA = 4`, `SOA = 9`, `TOA = 16`, `ORDER_9 = 100`) representing $(N+1)^2$ Ambisonic soundfield channels.
+  - Formally isolated Ambisonic field channels from `PhysicalChannelCount`, `BusChannelCount`, and `ObjectCount`.
+- **Spatial Quality Corpus Objective Metrics (`src/spatial/quality_eval.rs`)**:
+  - Implemented dynamic calculation for all 8 objective spatial fidelity metrics: azimuth/elevation localization error, energy preservation error, front-back quadrant confusion rate, theoretical Woodworth ITD error, spherical head model ILD error, spectral distortion, and inverse-distance attenuation error.
+- **Runtime Engine Commands & Production HRTF Profile Management (`src/commands.rs`, `src/engine/handle.rs`, `src/dsp/graph2/prod/arena/nodes/spatial_node.rs`, `src/engine/commands/mod.rs`)**:
+  - Added missing `EngineCommand` variants: `SetSpatialEnabled`, `SetSpatialScreen`, `SetSpatialRoom`, `SetSpatialAir`, `SetSpatialListener`, `SetHrtfProfile`, `SetLimiterEnabled`, `SetLimiterParams`, `SetCompressorBandFeatures`, `SetStereoEnhancerEnabled`, `SetLoudnessMode`, `SetSlotTrim`, `SetAux`, `SetInputMute`, `SetInputActive`, and `SetSlotAutomation`.
+  - Exposed corresponding methods on `EngineHandle` and wired dispatch through `Graph2Engine`.
+  - Wired `HrtfProfileManager` into `SpatialNode` with registered `kemar_reference` and `spherical_model` profiles, synchronizing head-model geometry and datasets into the binaural renderer at runtime.
+- **Professional Integration Fidelity Suite (`tests/fidelity/professional_integration.rs`)**:
+  - Comprehensive end-to-end test suite validating all 17 P1 requirements across backends, sandboxing, migrations, parameters, spatial audio, and device recovery.
+
+## [5.5.1]
+
+### Fixed
+
+- **PTP Clock Frequency Drift Calculation (`src/network_audio/clock.rs`)**:
+  - Replaced naive delta calculation with rigorous elapsed-time tracking ($\Delta \text{offset} / \Delta \text{time}$).
+  - Converted frequency error to true parts-per-million (PPM).
+  - Added physical oscillator bounding ($\pm 1000$ ppm), low-pass exponential moving average (EMA) filtering, and anomaly sanity checks.
+  - Added comprehensive unit tests for zero drift, positive drift (+25 ppm), negative drift (-15 ppm), and spike clamping.
+- **Security Arithmetic Specification (`docs/ENGINE_SPEC.md`)**:
+  - Corrected security model documentation: eliminated incorrect claims that wrapping arithmetic is an overflow-security mechanism.
+  - Formally mandated checked, bounded, and saturating arithmetic (`checked_add`, `checked_mul`, `saturating_sub`) for all allocation sizing, strides, buffer bounds, and file offsets.
+  - Clarified that wrapping arithmetic is strictly reserved for intentional modular algorithms (hashes, PRNGs, circular sequence numbers).
+- **Standards Synchronization (`ITU-R BS.1770-5`)**:
+  - Audited and updated all stale references to superseded BS.1770-4 across `src/dsp/meters.rs`, `src/dsp/limiter.rs`, `src/dsp/dynamics/detector.rs`, `src/eval/suites.rs`, `src/profile/`, `src/bin/replaygain_scanner.rs`, `src/decode/scanner.rs`, `tests/fidelity/golden_reference_vectors.rs`, and architectural documentation to ITU-R BS.1770-5 (and Annex 2 for True Peak).
+  - Explicitly established `docs/ENGINE_SPEC.md` as the canonical, authoritative engineering specification in `README.md` and `docs/ARCHITECTURE.md`.
+- **Zero-Allocation Safety in Float Containment (`src/dsp/safety.rs`)**:
+  - Upgraded `NonFiniteIncident` to use zero-allocation `Cow<'static, str>` instead of heap-allocating `String` in `contain_non_finite_block`.
+
+### Added
+
+- **Release Qualification Real Results (`src/eval/qualification.rs`, `src/bin/release_qualification.rs`)**:
+  - Removed all hard-coded metrics, static timestamps, and synthetic passes.
+  - Introduced strongly-typed `QualificationStatus` (`PASS`, `FAIL`, `NOT_RUN`, `SKIPPED`, `INCONCLUSIVE`).
+  - Implemented live execution of all qualification checks: real DSP determinism comparison (Graph2 vs DspPipeline), real inline non-finite containment, real ITU-R BS.1770-5 loudness measurement, real transactional graph editing & PDC, real spatial panning quality evaluation, real in-process fuzzing safety, and live CPU load benchmarking.
+  - Automatic failure when any required qualification test fails.
+- **Real-Time Qualification Stress Suite (`tests/fidelity/realtime_qualification.rs`)**:
+  - Multi-block-size (16..1024) and multi-sample-rate (44.1..192 kHz) zero-allocation verification across the full active DSP chain.
+  - Worst-case callback duration measurement ($T_{\max} < T_{\text{budget}}$) and real-time deadline assertions.
+  - Denormal float stress testing proving immunity from CPU performance stalls when processing subnormals.
+  - Zero-allocation NaN/Inf inline containment.
+- **Deterministic Processing & Reference Equivalence Suite (`tests/fidelity/deterministic_reference_vectors.rs`)**:
+  - Formal output classification comparing production `Graph2Engine` against reference `DspPipeline` using `compare_buffers` (`BitExact`, `NumericallyEquivalent`, `PerceptuallyEquivalent`).
+  - SIMD execution tier verification: Scalar vs SSE2 vs AVX2 vs NEON proving numerical equivalence across vectorization levels.
+  - Stored golden vectors and tolerances for critical DSP operations.
+- **Coverage-Guided & Mutation Fuzzing Suite (`tests/fidelity/coverage_guided_fuzzing.rs`, `fuzz/`)**:
+  - Structured coverage-guided mutation testing across all 9 required categories: WAV/AIFF/FLAC, Ogg/Opus, MP4/ISOM, metadata tags (ID3v2, Vorbis Comments, APEv2), CUE sheets, SOFA/NetCDF-classic HRTF, ADM/BW64 XML, Graph2 & spatial state serialization, and Plugin ABI boundaries.
+  - Standalone `cargo-fuzz` / LLVM libFuzzer configuration and fuzz targets (`fuzz/Cargo.toml`, `fuzz/fuzz_targets/`).
+
 ## [5.5.0]
 
 ### Added
