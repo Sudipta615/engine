@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## [5.8.1] — 2026-09-17
+
+### Fixed
+
+- **AudioEngine `tick_blocking` Command Dropping (`src/engine/tick.rs`, `src/engine/commands/mod.rs`)**:
+  - Resolved a critical bug where `tick_blocking` consumed incoming commands via `recv_timeout` and silently dropped them with `let _ = ...`, causing commands that woke the engine worker thread to be permanently lost.
+  - Implemented `tick_with_initial_command` and updated `process_commands(&mut self, initial_cmd: Option<EngineCommand>)` so waking commands are processed first and queued commands are processed in strictly FIFO order without allocation or latency.
+  - Added unit regression tests `test_tick_blocking_processes_waking_command` and `test_tick_blocking_processes_burst_commands_in_order`, plus an integration test `test_headless_engine_driven_by_tick_blocking_thread`.
+
+### Added
+
+- **Directory & Whitespace-Aware Path Support in CLI (`src/bin/audio_engine_cli.rs`)**:
+  - Enhanced `audio-engine-cli` `open` and `queue` commands, as well as command-line arguments, to support directories. When given a directory (e.g. `open /home/sudipta/Music`), the CLI automatically scans and filters supported audio formats (`.mp3`, `.flac`, `.opus`, `.wav`, `.m4a`, etc.), sorts them, plays the first track, and queues the rest.
+  - Added quote-stripping and full-remainder path parsing to support file and directory paths with spaces.
+  - Added user-friendly diagnostics when `play` is called with no tracks loaded instead of triggering empty queue warnings.
+
 ## [5.8.0]
 
 ### Fixed

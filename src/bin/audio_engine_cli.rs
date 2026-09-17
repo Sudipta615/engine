@@ -4,7 +4,7 @@
 //! engine via [`AudioEngine`], [`EngineHandle`], [`AudioSource`], and [`EngineEvent`].
 
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,8 +14,8 @@ use engine::{AudioEngine, EngineConfig, EngineHandle};
 
 fn print_help() {
     println!("\n=== Headless Audio Engine CLI Commands ===");
-    println!("  open <file-or-uri>   - Open and play an audio source (file path or URI)");
-    println!("  queue <file>          - Add a file to the playback queue");
+    println!("  open <file-or-dir>    - Open and play an audio source (file, directory, or URI)");
+    println!("  queue <file-or-dir>   - Add a file or directory of files to the playback queue");
     println!("  clear                 - Clear the playback queue");
     println!("  next                  - Skip to the next queue entry");
     println!("  prev                  - Skip to the previous queue entry");
@@ -151,6 +151,139 @@ fn parse_backend(s: &str) -> Option<config::AudioBackend> {
         "pipewire" => Some(config::AudioBackend::PipeWire),
         "jack" => Some(config::AudioBackend::Jack),
         _ => None,
+    }
+}
+
+const AUDIO_EXTS: &[&str] = &[
+    "flac", "mp3", "ogg", "oga", "opus", "wav", "wave", "aiff", "aif", "aifc", "m4a", "mp4", "m4b",
+    "alac", "ape", "mac", "wv", "tta", "dsf", "dff",
+];
+
+fn strip_quotes(s: &str) -> &str {
+    let s = s.trim();
+    if (s.starts_with('"') && s.ends_with('"') && s.len() >= 2)
+        || (s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2)
+    {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
+fn is_audio_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| AUDIO_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+fn collect_audio_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && is_audio_file(&path) {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+fn open_and_play_target(handle: &EngineHandle, raw_target: &str, from_cli_arg: bool) {
+    let target = strip_quotes(raw_target);
+    if target.starts_with("http://")
+        || target.starts_with("https://")
+        || target.starts_with("file://")
+    {
+        if from_cli_arg {
+            println!("Opening URI from CLI argument: {}", target);
+        } else {
+            println!("Opening URI: {}", target);
+        }
+        handle.open_uri(target);
+        handle.play();
+    } else {
+        let path = Path::new(target);
+        if path.is_dir() {
+            let files = collect_audio_files(path);
+            if files.is_empty() {
+                println!(
+                    "Error: No supported audio files found in directory: {}",
+                    target
+                );
+            } else {
+                let suffix = if from_cli_arg {
+                    " from CLI argument"
+                } else {
+                    ""
+                };
+                println!(
+                    "Opening directory{}: {} (found {} track{})",
+                    suffix,
+                    target,
+                    files.len(),
+                    if files.len() == 1 { "" } else { "s" }
+                );
+                handle.open_file(&files[0]);
+                for f in &files[1..] {
+                    handle.enqueue_file(f);
+                }
+                handle.play();
+                println!("  Playing: {}", files[0].display());
+                if files.len() > 1 {
+                    println!("  Queued {} additional track(s).", files.len() - 1);
+                }
+            }
+        } else if path.is_file() {
+            if from_cli_arg {
+                println!("Opening source from CLI argument: {}", target);
+            } else {
+                println!("Opening source: {}", target);
+            }
+            handle.open_file(path);
+            handle.play();
+        } else {
+            println!("Error: File or directory does not exist: {}", target);
+        }
+    }
+}
+
+fn queue_target(handle: &EngineHandle, raw_target: &str) {
+    let target = strip_quotes(raw_target);
+    if target.starts_with("http://")
+        || target.starts_with("https://")
+        || target.starts_with("file://")
+    {
+        handle.enqueue_file(PathBuf::from(target));
+        println!("Added to queue: {}", target);
+    } else {
+        let path = Path::new(target);
+        if path.is_dir() {
+            let files = collect_audio_files(path);
+            if files.is_empty() {
+                println!(
+                    "Error: No supported audio files found in directory: {}",
+                    target
+                );
+            } else {
+                for f in &files {
+                    handle.enqueue_file(f);
+                }
+                println!(
+                    "Added {} track{} to queue from directory: {}",
+                    files.len(),
+                    if files.len() == 1 { "" } else { "s" },
+                    target
+                );
+            }
+        } else if path.is_file() {
+            handle.enqueue_file(path);
+            println!("Added to queue: {}", target);
+        } else {
+            println!("Error: File or directory does not exist: {}", target);
+        }
     }
 }
 
@@ -297,23 +430,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })?;
     }
 
-    // If a file was given on the command-line, play it immediately.
+    // If a file or directory was given on the command-line, play it immediately.
     let play_arg = args
         .iter()
         .skip(1)
         .find(|a| !a.starts_with("--") && !a.starts_with('-'));
     if let Some(target) = play_arg {
-        let target = target.clone();
-        println!("Opening source from CLI argument: {}", target);
-        if target.starts_with("http://")
-            || target.starts_with("https://")
-            || target.starts_with("file://")
-        {
-            handle.open_uri(&target);
-        } else {
-            handle.open_file(PathBuf::from(&target));
-        }
-        handle.play();
+        open_and_play_target(&handle, target, true);
     }
 
     println!("\nHeadless Audio Engine ready. Type 'help' for commands, 'quit' to exit.");
@@ -336,36 +459,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        let mut parts = trimmed.split_whitespace();
-        let cmd = parts.next().unwrap_or("").to_lowercase();
+        let (cmd, rest) = match trimmed.find(char::is_whitespace) {
+            Some(idx) => (trimmed[..idx].to_lowercase(), trimmed[idx..].trim()),
+            None => (trimmed.to_lowercase(), ""),
+        };
+        let path_arg = if rest.is_empty() {
+            None
+        } else {
+            Some(strip_quotes(rest))
+        };
+        let mut parts = rest.split_whitespace();
         let arg = parts.next();
 
         match cmd.as_str() {
             "help" => print_help(),
 
             "open" => {
-                if let Some(target) = arg {
-                    println!("Opening source: {}", target);
-                    if target.starts_with("http://")
-                        || target.starts_with("https://")
-                        || target.starts_with("file://")
-                    {
-                        handle.open_uri(target);
-                    } else {
-                        handle.open_file(PathBuf::from(target));
-                    }
-                    handle.play();
+                if let Some(target) = path_arg {
+                    open_and_play_target(&handle, target, false);
                 } else {
-                    println!("Error: 'open' requires a file path or URI argument.");
+                    println!("Error: 'open' requires a file path, directory, or URI argument.");
                 }
             }
 
             "queue" => {
-                if let Some(path) = arg {
-                    handle.enqueue_file(PathBuf::from(path));
-                    println!("Added to queue: {}", path);
+                if let Some(path) = path_arg {
+                    queue_target(&handle, path);
                 } else {
-                    println!("Error: 'queue' requires a file path.");
+                    println!("Error: 'queue' requires a file path or directory.");
                 }
             }
 
@@ -401,8 +522,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             "play" => {
-                handle.play();
-                println!("Sent Play command.");
+                let info = handle.playback_info();
+                if info.current_source.is_none() && handle.playlist_len() == 0 {
+                    println!("Nothing to play: no track loaded and queue is empty. Use 'open <file-or-dir>' first.");
+                } else {
+                    handle.play();
+                    println!("Sent Play command.");
+                }
             }
 
             "pause" => {
@@ -526,7 +652,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             "scan" => {
-                if let Some(path) = arg {
+                if let Some(path) = path_arg {
                     do_scan(path);
                 } else {
                     println!("Error: 'scan' requires a file path.");
@@ -549,7 +675,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
 
             "fingerprint" => {
-                if let Some(path) = arg {
+                if let Some(path) = path_arg {
                     #[cfg(feature = "fingerprint")]
                     {
                         match engine::decode::extract_fingerprint(std::path::Path::new(path)) {
@@ -590,7 +716,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             "device" => {
-                if let Some(dev_name) = arg {
+                if let Some(dev_name) = path_arg {
                     if dev_name.eq_ignore_ascii_case("default")
                         || dev_name.eq_ignore_ascii_case("none")
                     {

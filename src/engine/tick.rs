@@ -12,15 +12,15 @@ use std::{
 use arc_swap::ArcSwap;
 use log::{error, info, warn};
 
-use config;
-
 use crate::{
     buffer::{PlaybackInfo, PlaybackState},
+    commands::EngineCommand,
     dsp::graph2::prod::Graph2Engine,
     dsp::pipeline::{LatencyReport, OutputSampleFormat, VolumePath},
     events::OutputEvent,
     source::AudioSource,
 };
+use config;
 
 use super::{AudioClock, AudioEngine, EngineError, PlaybackStream};
 
@@ -61,22 +61,25 @@ impl AudioEngine {
         {}
     }
 
-    /// Drive one engine tick, blocking up to `max_wait` for an incoming
-    /// command so the caller does not busy-poll.
+    /// Block until at least one command arrives or `max_wait` elapses,
+    /// then run one engine tick.
     ///
-    /// This is the preferred entry point for hosts that drive the engine
-    /// from their own thread (the reference CLI, the C FFI tick thread): it
-    /// wakes immediately when a command arrives (no 5 ms polling latency)
-    /// and sleeps efficiently when idle. If the channel is disconnected
-    /// (engine torn down), the tick still runs so final state is published.
+    /// This gives worker threads a zero-CPU wait path: when no stream is
+    /// playing and no command is queued, the engine thread stops spinning
+    /// and sleeps efficiently when idle. Any command that wakes the thread
+    /// is preserved and processed during the tick without loss. If the
+    /// channel is disconnected (engine torn down), the tick still runs so
+    /// final state is published.
     pub fn tick_blocking(&mut self, max_wait: std::time::Duration) {
-        // Consume one command so the caller wakes the moment work arrives;
-        // `tick` → `process_commands` drains the remainder of the queue.
-        let _ = self.cmd_rx.recv_timeout(max_wait);
-        self.tick();
+        let initial_cmd = self.cmd_rx.recv_timeout(max_wait).ok();
+        self.tick_with_initial_command(initial_cmd);
     }
 
     pub fn tick(&mut self) {
+        self.tick_with_initial_command(None);
+    }
+
+    fn tick_with_initial_command(&mut self, initial_cmd: Option<EngineCommand>) {
         let now = Instant::now();
         let initial_state = self.current_state();
 
@@ -97,7 +100,7 @@ impl AudioEngine {
         }
         self.telemetry.tick_start = Some(now);
 
-        self.process_commands();
+        self.process_commands(initial_cmd);
         self.preload.poll_results(&mut self.track_cache);
         self.maybe_preload_next();
         #[cfg(feature = "audio-output")]

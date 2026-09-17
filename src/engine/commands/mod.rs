@@ -60,9 +60,13 @@ fn merge_scan_result(
 }
 
 impl AudioEngine {
-    pub(super) fn process_commands(&mut self) {
+    pub(super) fn process_commands(&mut self, initial_cmd: Option<EngineCommand>) {
         const MAX_COMMANDS_PER_TICK: usize = 64;
         let mut processed = 0usize;
+        if let Some(cmd) = initial_cmd {
+            self.handle_command(cmd);
+            processed += 1;
+        }
         loop {
             if processed >= MAX_COMMANDS_PER_TICK {
                 log::debug!(

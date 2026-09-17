@@ -1055,3 +1055,36 @@ fn test_endpoint_commands_update_config_without_output() {
     engine.tick();
     assert!(engine.endpoint_configs.is_empty(), "remove clears by id");
 }
+
+#[test]
+fn test_tick_blocking_processes_waking_command() {
+    let mut engine = AudioEngine::new_default().unwrap();
+    let handle = engine.handle();
+
+    // Volume default is 1.0. Send SetVolume command while engine is about to tick_blocking.
+    handle.set_volume(0.42);
+    engine.tick_blocking(std::time::Duration::from_millis(50));
+
+    assert!(
+        (handle.volume() - 0.42).abs() < 1e-4,
+        "Command waking tick_blocking must be executed, not dropped. Volume: {}",
+        handle.volume()
+    );
+}
+
+#[test]
+fn test_tick_blocking_processes_burst_commands_in_order() {
+    let mut engine = AudioEngine::new_default().unwrap();
+    let handle = engine.handle();
+
+    // Send a burst of commands: set volume, then set speed, then enqueue source.
+    handle.set_volume(0.75);
+    handle.set_speed(1.25);
+    handle.enqueue_file(std::path::PathBuf::from("/nonexistent/dummy_track.flac"));
+
+    engine.tick_blocking(std::time::Duration::from_millis(50));
+
+    assert!((handle.volume() - 0.75).abs() < 1e-4);
+    assert!((handle.speed() - 1.25).abs() < 1e-4);
+    assert_eq!(handle.playlist_len(), 1);
+}

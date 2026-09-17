@@ -168,3 +168,62 @@ fn test_headless_engine_lifecycle_and_events() {
     let _ = std::fs::remove_file(track1);
     let _ = std::fs::remove_file(track2);
 }
+
+#[test]
+fn test_headless_engine_driven_by_tick_blocking_thread() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let temp_dir = std::env::temp_dir();
+    let track = temp_dir.join("headless_tick_blocking_test.wav");
+    create_test_wav(&track, 44100, 1.0);
+
+    let config = EngineConfig::default();
+    let mut engine = AudioEngine::new(config).expect("Failed to create AudioEngine");
+    let handle = engine.handle();
+    let event_rx = handle.clone_event_receiver();
+
+    let running = Arc::new(AtomicBool::new(true));
+    let thread_running = running.clone();
+
+    let worker = std::thread::spawn(move || {
+        while thread_running.load(Ordering::Relaxed) {
+            engine.tick_blocking(Duration::from_millis(5));
+        }
+        engine.stop();
+    });
+
+    // Send open and play burst, exactly like CLI does
+    handle.open_file(track.clone());
+    handle.play();
+
+    // Wait for the track to open and play
+    let mut opened = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        if let Ok(EngineEvent::SourceOpened { .. }) =
+            event_rx.recv_timeout(Duration::from_millis(50))
+        {
+            opened = true;
+            break;
+        }
+    }
+    assert!(
+        opened,
+        "Track must open when driven by tick_blocking thread"
+    );
+
+    let info = handle.playback_info();
+    assert_eq!(info.sample_rate, 44100);
+
+    // Stop and shutdown
+    handle.stop();
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(handle.state(), PlaybackState::Stopped);
+
+    running.store(false, Ordering::Relaxed);
+    let _ = worker.join();
+
+    let _ = std::fs::remove_file(track);
+}
