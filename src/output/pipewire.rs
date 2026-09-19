@@ -224,6 +224,11 @@ impl PipeWireOutput {
             }
         }
 
+        Self::fallback_nodes()
+    }
+
+    /// Fallback simulated nodes used when PipeWire daemon is not present.
+    pub fn fallback_nodes() -> Vec<PipeWireNodeInfo> {
         vec![
             PipeWireNodeInfo {
                 id: 42,
@@ -501,10 +506,14 @@ mod tests {
     #[test]
     fn pipewire_discovery_and_stream_lifecycle() {
         let nodes = PipeWireOutput::enumerate_nodes();
-        assert_eq!(nodes.len(), 3);
-        assert_eq!(nodes[0].channels, 2);
-        assert_eq!(nodes[1].channels, 8);
-        assert_eq!(nodes[2].channels, 16);
+        assert!(!nodes.is_empty());
+        assert!(nodes[0].channels >= 1);
+
+        let fallback = PipeWireOutput::fallback_nodes();
+        assert_eq!(fallback.len(), 3);
+        assert_eq!(fallback[0].channels, 2);
+        assert_eq!(fallback[1].channels, 8);
+        assert_eq!(fallback[2].channels, 16);
 
         let buf = Arc::new(FixedFrameBuffer::new(1024).expect("buffer"));
         let config = PipeWireConfig {

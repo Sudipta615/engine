@@ -473,8 +473,16 @@ impl CpalOutput {
                     .iter()
                     .find(|c| {
                         c.sample_format() == fmt
+                            && c.channels() == 2
                             && c.min_sample_rate() <= target_sample_rate
                             && c.max_sample_rate() >= target_sample_rate
+                    })
+                    .or_else(|| {
+                        supported_configs.iter().find(|c| {
+                            c.sample_format() == fmt
+                                && c.min_sample_rate() <= target_sample_rate
+                                && c.max_sample_rate() >= target_sample_rate
+                        })
                     })
                     .map(|c| c.with_sample_rate(target_sample_rate))
             })
@@ -482,7 +490,8 @@ impl CpalOutput {
                 format_priority.iter().find_map(|&fmt| {
                     supported_configs
                         .iter()
-                        .find(|c| c.sample_format() == fmt)
+                        .find(|c| c.sample_format() == fmt && c.channels() == 2)
+                        .or_else(|| supported_configs.iter().find(|c| c.sample_format() == fmt))
                         .map(|c| {
                             let rate =
                                 target_sample_rate.clamp(c.min_sample_rate(), c.max_sample_rate());

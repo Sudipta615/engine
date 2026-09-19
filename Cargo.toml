@@ -1,9 +1,9 @@
 [workspace]
-members = [".", "crates/config", "crates/plugin-abi", "crates/plugin-test-echo"]
+members = [".", "crates/config", "crates/plugin-abi", "crates/plugin-test-echo", "crates/opus-decoder"]
 
 [package]
 name = "engine"
-version = "5.8.1"
+version = "5.8.2"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Sudipta615/engine"
@@ -595,4 +595,17 @@ path = "tests/fidelity/long_duration_realtime_qualification.rs"
 [[test]]
 name = "song_evaluation"
 path = "tests/song_evaluation.rs"
+
+[patch.crates-io]
+opus-decoder = { path = "crates/opus-decoder" }
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.opus-decoder]
+opt-level = 3
+
+[profile.dev.package.engine]
+opt-level = 2
+
 

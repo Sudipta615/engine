@@ -100,7 +100,7 @@ impl AudioEngine {
         }
         self.telemetry.tick_start = Some(now);
 
-        self.process_commands(initial_cmd);
+        let processed_commands = self.process_commands(initial_cmd);
         self.preload.poll_results(&mut self.track_cache);
         self.maybe_preload_next();
         #[cfg(feature = "audio-output")]
@@ -475,6 +475,10 @@ impl AudioEngine {
             self.telemetry.deadline_miss_window = 0;
             self.telemetry.underruns_window = 0;
             self.telemetry.last_cpu_reset = now;
+        }
+
+        if processed_commands > 0 || initial_state != self.current_state() {
+            self.telemetry.tick_start = Some(Instant::now());
         }
     }
 

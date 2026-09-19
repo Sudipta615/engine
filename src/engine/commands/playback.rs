@@ -8,13 +8,14 @@ use crate::buffer::PlaybackState;
 impl AudioEngine {
     pub(crate) fn handle_play(&mut self) {
         if self.stream.is_some() && !self.stream_ended {
-            if let Some(ref output) = self.audio_output {
-                output.resume();
-            }
             self.update_playback_state(PlaybackState::Playing);
             info!("Playback started");
         } else if self.stream_ended {
+            let msg =
+                "Track has ended — use 'open <file>' to load a new track or 'stop' then 'open'."
+                    .to_string();
             log::warn!("Play command ignored: stream has ended. Reload the track to play again.");
+            self.emit_event(crate::events::EngineEvent::Error(msg));
         } else {
             // No track loaded — try to auto-start from the playlist queue.
             // Clone the source out to avoid holding a borrow on self.playlist
@@ -31,9 +32,6 @@ impl AudioEngine {
                 self.emit_playlist_changed();
                 match self.load_source(&src) {
                     Ok(_) => {
-                        if let Some(ref output) = self.audio_output {
-                            output.resume();
-                        }
                         self.update_playback_state(PlaybackState::Playing);
                         self.maybe_preload_next();
                         info!("Auto-started playback from queue: {}", src);
@@ -44,7 +42,7 @@ impl AudioEngine {
                     }
                 }
             } else {
-                log::warn!("Play command ignored: no track loaded and queue is empty");
+                warn!("Play command ignored: no track loaded and queue is empty");
                 self.update_playback_state(PlaybackState::Stopped);
             }
         }
@@ -52,9 +50,6 @@ impl AudioEngine {
 
     pub(crate) fn handle_pause(&mut self) {
         if self.stream.is_some() {
-            if let Some(ref output) = self.audio_output {
-                output.pause();
-            }
             self.update_playback_state(PlaybackState::Paused);
             info!("Playback paused");
         }
@@ -159,7 +154,7 @@ impl AudioEngine {
             match decoder.seek(clamped_pos) {
                 Ok(()) => {
                     self.clock.set_source_frames(
-                        (clamped_pos * self.clock.source_sample_rate as f32).round() as u64,
+                        (clamped_pos as f64 * self.clock.source_sample_rate as f64).round() as u64,
                     );
                     #[cfg(feature = "resample")]
                     if let Some(ref mut r) = resampler {

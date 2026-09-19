@@ -81,6 +81,7 @@ pub fn scan_decoder(decoder: &mut Decoder) -> Option<LoudnessScanResult> {
                 meter.set_channel_layout(&chunk.channel_layout);
                 meter.process_interleaved(&chunk.samples, channels);
                 frames_scanned += chunk.frame_count as u64;
+                std::thread::yield_now();
             }
             Err(DecodeError::EndOfStream) => break,
             // Stop on any other decode error; the frames measured so far are

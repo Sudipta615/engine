@@ -157,10 +157,9 @@ impl PreloadManager {
             match res.outcome {
                 Ok(prepared) => {
                     info!("Next track prepared: '{}'", prepared.source);
-                    // Update track cache with newly inspected entry
-                    if let AudioSource::File(ref path) = prepared.source {
-                        let entry = TrackCache::create_entry_from_decoder(path, &prepared.decoder);
-                        cache.insert(entry);
+                    // Update track cache with entry computed in background worker
+                    if let Some(ref entry) = prepared.cached_info {
+                        cache.insert(entry.clone());
                     }
                     self.prepared = Some(prepared);
                     self.last_error = None;
@@ -250,22 +249,15 @@ impl PreloadManager {
         let info = decoder.info().clone();
         let format_info = Some(decoder.format_info().clone());
 
-        // Extract or reuse loudness metadata
-        let loudness = if let Some(ref c) = cached {
-            Some(c.loudness)
+        // Extract or reuse loudness metadata and build cached_info in background worker
+        let (loudness, cached_info) = if let Some(c) = cached {
+            (Some(c.loudness), Some(c))
         } else if let AudioSource::File(ref path) = source {
-            let mut meta = crate::decode::extract_loudness_metadata(path);
-            if meta.ebu_r128_loudness.is_none() {
-                if let Some(cached_res) = crate::decode::loudness_cache::lookup(path) {
-                    meta.ebu_r128_loudness = cached_res.ebu_r128_loudness;
-                    meta.ebu_r128_peak = cached_res.ebu_r128_peak_dbtp;
-                    meta.replaygain_track_db = cached_res.replaygain_track_db;
-                    meta.replaygain_track_peak = cached_res.replaygain_track_peak;
-                }
-            }
-            Some(meta)
+            let entry = TrackCache::create_entry_from_decoder(path, &decoder);
+            let meta = entry.loudness;
+            (Some(meta), Some(entry))
         } else {
-            None
+            (None, None)
         };
 
         Ok(PreparedTrack {
@@ -274,7 +266,7 @@ impl PreloadManager {
             info,
             format_info,
             loudness,
-            cached_info: cached,
+            cached_info,
         })
     }
 }

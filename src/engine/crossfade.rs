@@ -94,7 +94,9 @@ impl AudioEngine {
         if source_rate == 0 {
             return;
         }
-        let total_frames = (self.duration_secs * source_rate as f32).round() as u64;
+        // Use f64 for this product: at 192 kHz a one-hour track has ~691 M frames,
+        // which is far beyond the ~16 M integer precision of f32.
+        let total_frames = (self.duration_secs as f64 * source_rate as f64).round() as u64;
         let remaining_frames = total_frames.saturating_sub(self.clock.source_frames);
         let remaining_secs = remaining_frames as f32 / source_rate as f32;
 

@@ -98,6 +98,7 @@ impl AudioEngine {
         }
         self.output_sample_rate = output.sample_rate();
         output.start()?;
+        output.pause();
         self.audio_output = Some(output);
         if let Err(error) = self.reopen_configured_endpoints() {
             if let Some(mut endpoint) = self.endpoints.pop() {
@@ -265,9 +266,6 @@ impl AudioEngine {
         self.dsd.dsd_byte_buffer = None;
         self.dsd.dsd_transport_report = crate::decode::DsdTransportReport::default();
         self.graph.set_dop_bypass(false);
-        if let Some(ref output) = self.audio_output {
-            output.set_dither_enabled(self.config.dither_enabled);
-        }
         // Keep the published playhead consistent with the reset internal
         // clock (see the Stop command handler for the same fix).
         self.write_playback_info(|pb| pb.position_secs = 0.0);

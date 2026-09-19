@@ -1,151 +1,168 @@
+<div align="center">
+
 # Shadow Desktop — Independent Core Audio Engine
 
-A reference-grade, bit-perfect, **headless** audio playback and DSP engine written in
-**100% pure Rust**. Built for audiophile listening, pro-audio workstations, low-latency
-monitoring, and glitch-free real-time playback on modern and legacy hardware.
+[![Crate Version](https://img.shields.io/badge/version-5.8.2-blue.svg?style=flat-square)](Cargo.toml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-green.svg?style=flat-square)](LICENSE-APACHE)
+[![Rust Edition](https://img.shields.io/badge/rustc-1.85%2B%20%7C%202021-orange.svg?style=flat-square)](Cargo.toml)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg?style=flat-square)](#-output-backends--os-integration)
+[![Realtime Safety](https://img.shields.io/badge/realtime-0%20allocations%20hot%20path-brightgreen.svg?style=flat-square)](#-real-time-safety--concurrency)
+[![Test Matrix](https://img.shields.io/badge/tests-1000%2B%20passing%20%7C%2058%20suites-success.svg?style=flat-square)](#-testing--quality-gates)
 
-The engine is fully independent: **zero UI dependencies, zero database/library ties,
-zero playlist policy, zero OS-specific application assumptions**. It embeds cleanly into
-CLI players, desktop GUIs (Slint, Iced, Qt, GTK, egui), streaming daemons, test
-harnesses, or pro-audio suites — and it ships with a stable **C FFI** so it can be driven
-from C, C++, Python, C#, Node.js, and any language that can call C.
-
-> **Documentation:** [Canonical Specification](docs/ENGINE_SPEC.md) (authoritative engineering contract) ·
-> [Owner's Guide](docs/OWNERS_GUIDE.md) (plain-English, full-system map) ·
-> [Architecture](docs/ARCHITECTURE.md) · [Signal Flow](docs/SIGNAL_FLOW.md) ·
-> [Embedding guide](docs/EMBEDDING.md) · [Contributing & versioning](AGENTS.md)
+**A reference-grade, bit-perfect, headless audio playback and DSP engine written in 100% pure Rust.**  
+Built for audiophile listening, pro-audio workstations, low-latency monitoring, and glitch-free realtime playback on modern and legacy hardware.
 
 ---
 
-## ✨ Highlights
+[Key Capabilities](#-key-capabilities) •
+[Architecture](#-architecture-at-a-glance) •
+[Signal Flow](#-dsp-signal-chain) •
+[Quick Start](#-quick-start) •
+[CLI Player](#3-reference-cli) •
+[C-FFI](#4-c-ffi-c-c-python-c-nodejs) •
+[Configuration](#-configuration-model) •
+[Codecs & DSD](#-decoders-dsd--formats) •
+[Testing](#-testing--quality-gates) •
+[Documentation](#-documentation-index)
 
-| Capability | What it means |
+</div>
+
+---
+
+The engine is completely independent: **zero UI dependencies, zero database/library ties, zero playlist policy, and zero OS-specific application assumptions**. It embeds cleanly into CLI players, desktop GUIs (Slint, Iced, Qt, GTK, egui), streaming daemons, test harnesses, or pro-audio suites — and ships with a stable **C FFI** so it can be driven from C, C++, Python, C#, Node.js, and any language with C interoperability.
+
+## 📚 Documentation Index
+
+> - **[Canonical Specification](docs/ENGINE_SPEC.md)** — The authoritative engineering contract and architectural specification.
+> - **[Owner's Guide](docs/OWNERS_GUIDE.md)** — Plain-English, comprehensive full-system map and subsystem guide.
+> - **[Architecture](docs/ARCHITECTURE.md)** — Module map, concurrency model, and realtime-safety contracts.
+> - **[Signal Flow](docs/SIGNAL_FLOW.md)** — Exact sample-level signal path, precision tiers, and bypass modes.
+> - **[Embedding Guide](docs/EMBEDDING.md)** — End-to-end integration manual for Rust applications and C-ABI hosts.
+> - **[Contributing & Versioning](AGENTS.md)** — Development rules, lockstep SemVer policies, and quality checklists.
+
+---
+
+## ✨ Key Capabilities
+
+| Capability | Engineering Significance |
 |---|---|
-| **100% pure Rust** | No C/C++ codec SDKs, no `unsafe` on the DSP hot path, no FFI dependency for decoding. Fully auditable and cross-compilable. |
-| **Graph-runtime DSP core** | A node-based arena graph with **compiled execution plans lowered from a typed-port Graph 2.0 topology** is the production hot path: stage order is data, not code, and full reconfigurations are swapped in live at block boundaries — zero allocation, zero locks on the audio thread. |
-| **N-input mix bus** | The primary stream, the crossfade partner, and **independent lane tracks** each ride their own bus slot with per-slot trim, post-fader sends, pan, mute, program-gated ducking, and sample-accurate automation tracks. |
-| **Aux bus as its own plan node** | Per-slot aux sends are independently automatable (ramped, click-free), metered per send, and returned into the master before the post-mix chain — with an optional convolution **insert** (reverb / cabinet) on the send accumulator. |
-| **Multi-endpoint routing matrix** | Fan the master out to **several output devices at once**, each with its own realtime thread, rate resampler, level, and **per-endpoint clock-drift correction** (a rubato `Slip` trims the stream to the device's actual crystal — independent devices can't drift the ring full or empty). |
-| **Bit-perfect direct endpoints** | Native OS-level exclusive backends: ALSA `hw:`/`plughw:`, WASAPI Exclusive (`IAudioClient`), Steinberg ASIO (`IASIO`, no C++ SDK), CoreAudio Hog-Mode — each verified against the OS before claiming the device, with honest "bit-perfect cannot be proven" reporting rather than guesses. |
-| **Mastering-grade dual precision** | Every DSP stage runs in fast **f32** (Performance) or double-precision **f64** (Quality), selectable per session. |
-| **Real-time safety** | **Zero heap allocations** on the decode/DSP hot path (verified by `tests/fidelity/realtime_allocation.rs`), cache-padded lock-free SPSC ring buffers, no locks anywhere on the audio path. |
-| **Gapless + crossfade transitions** | Sample-accurate **gapless**, customizable **crossfade** (constant-power / linear / exponential / logarithmic / S-curve), fade, and stop transitions between tracks — all as mix-bus envelopes. |
-| **Audiophile codecs + 1-bit DSD** | FLAC, ALAC, WAV, AIFF, APE, WavPack, TTA, Opus, Ogg Vorbis, AAC, MP3 — plus native **DSD (DSF/DFF)** up to DSD512 over Native wire and DoP. |
-| **Immersive multichannel** | Mono → 7.1.4 (12 ch) and custom layouts up to 16 channels, with active bass management, per-channel distance delays, routing matrices, and per-channel EQ. || **Spatial audio (opt-in)** | An independent spatial scene layer (`spatial/`): world-space **objects** (with directivity, occlusion, angular-region spread), channel-based **beds**, diffuse **fields**, and a **room** (image-source early reflections + a Schroeder late field on the ambisonic bus), mixed through one hybrid renderer — equal-power `BasicPanner`, 3D **VBAP** (triplet solves, 2D reduction, out-of-coverage fallback), the **ambisonic** path (FOA bus encode → decode to any layout, Basic/Max-rE policies), or the **binaural** path (a Woodworth-ITD + Duda-Martens head model rendering the whole scene to headphones, optionally with **measured spectral HRTFs** — loaded from real SOFA-style corpora via `HrtfCorpus`/`from_corpus`, resampled and validated — and elevation cues) — so the *same* scene renders to stereo, 5.1, 7.1, 7.1.4, any custom array, or two ears; **head tracking** (a `HeadTracker` that interpolates and smooths IMU/VR orientation samples into the listener, the VR/AR seam) applies to every renderer unchanged; **higher-order ambisonics** (up to order-3 with exact rotation) and a **scene-file format** (Serde save/load of renderer-independent scenes) round out the layer, and a **SpatialNode** spatializes the production graph's stereo master — whose screen/room/listener state **auto-saves across sessions** (`EngineConfig::spatial_autosave_path`); conventional PCM/DSP untouched (opt in via `ChannelPolicy::SpatialRender`). | **Isolated client handle** | `EngineHandle` is a `Clone + Send` bridge over a lock-free command channel and atomic telemetry — the realtime thread is never blocked by the host. |
-| **Real-time analyzer** | Lock-free peak / RMS / dominant-frequency and FFT spectrum taps published in every telemetry snapshot. |
-| **Loudness & tags** | EBU R128 / ReplayGain measurement, normalization, and **tag write-back** (`tag-write`) in FLAC/MP3/M4A/WAV/AIFF/APE/WavPack; AcoustID **fingerprinting** (`fingerprint`). |
-| **System-audio capture** | WASAPI loopback recording of the system mix straight to a float32 WAV (Windows). |
-| **Creative FX & Modulation** | Dedicated sound-design layer (`fx/`): comb filter, stereo ping-pong delay, chorus, flanger, phaser, ring modulator, and saturator (tape/tube/wavefolder). Unified modulation engine (`dsp::modulation`): tempo-synced multi-waveform LFO, ADSR envelopes, envelope follower, and dynamic modulation matrix. |
-| **Production Plugin Host & Tail Flushing** | Full plugin hosting abstraction (`crates/plugin-abi`): multi-bus audio (sidechain, aux), sample-offset automation, full MIDI/MPE routing, musical transport sync, and error-isolated bypass. Graph tail analysis (`latency::analyze_tail`) and executor flush/render semantics. |
-| **Real-Time Psychoacoustic Analysis** | Spectral centroid, spread, flux, rolloff, flatness, sub-bass energy, crest factor, dynamic range, transient density, and harmonicity analysis (`dsp::analysis`). |
-| **Stable C FFI** | Drive the whole surface — transport, DSP, playlist, **endpoint routing**, and the **aux insert** — from C/C++ or any C-callable language. |
+| **100% Pure Rust** | No C/C++ codec SDKs, no `unsafe` on the DSP hot path, and no FFI dependencies required for decoding. Fully auditable, memory-safe, and effortlessly cross-compilable. |
+| **Graph 2.0 Runtime DSP Core** | A node-based arena graph with **compiled execution plans lowered from a typed-port Graph 2.0 topology** serves as the production hot path. Stage order is data, not code. Full reconfigurations swap live at block boundaries with **zero allocation and zero locks** on the audio thread. |
+| **N-Input Mix Bus** | The primary stream, the crossfade partner, and **independent lane tracks** each ride dedicated bus slots with per-slot trim, post-fader sends, pan, mute, program-gated ducking, and sample-accurate automation tracks. |
+| **Dedicated Aux Bus Node** | Per-slot aux sends are independently automatable (ramped, click-free), metered per send, and returned into the master before the post-mix chain — featuring an optional convolution **insert** (reverb / cabinet simulation) directly on the send accumulator. |
+| **Multi-Endpoint Routing Matrix** | Fan out the master mix to **multiple physical output devices simultaneously**. Each endpoint runs its own realtime worker thread, independent resampler, private SPSC ring, and **per-endpoint clock-drift correction** (Rubato `Slip` trimmed to the device crystal to prevent ring buffer overflow/underflow). |
+| **Bit-Perfect Direct Endpoints** | Native OS-level exclusive backends: ALSA direct `hw:` / `plughw:`, WASAPI Exclusive (`IAudioClient`), Steinberg ASIO (`IASIO`, pure Rust with no C++ SDK), and CoreAudio Hog-Mode — each verified against the OS before claiming the device, providing honest bit-perfect telemetry. |
+| **Mastering-Grade Dual Precision** | Every DSP stage runs in fast single-precision **f32** (Performance) or double-precision **f64** (Quality), selectable per session. |
+| **Real-Time Zero-Allocation Hot Path** | **Zero heap allocations** during steady-state decode and DSP processing (verified by 38 tests in `tests/fidelity/realtime_allocation.rs`). Cache-padded lock-free SPSC ring buffers; strictly no locks on the audio path. |
+| **Gapless & Crossfade Transitions** | Sample-accurate **gapless transitions**, customizable **crossfade** (constant-power, linear, exponential, logarithmic, S-curve), transition fades, and clean seek-fade operations. |
+| **Audiophile Codecs & 1-Bit DSD** | FLAC, ALAC, WAV, AIFF, APE, WavPack, TTA, Opus, Ogg Vorbis, AAC, MP3 — plus native **DSD (DSF/DFF)** up to DSD512 over Native wire and DoP (DSD-over-PCM). |
+| **Immersive Multichannel** | Mono up to 7.1.4 (12 channels) and custom arrays up to 16 channels, featuring active bass management, per-channel distance delay alignment, routing matrices, and per-channel parametric EQ. |
+| **Spatial 3D Audio (Opt-In)** | World-space **objects** (directivity, occlusion, spread), channel-based **beds**, diffuse **fields**, and **room acoustics** (image-source early reflections + Schroeder late field) rendered via equal-power `BasicPanner`, 3D **VBAP**, **Ambisonics** (FOA & HOA Order 1..3 with exact rotation), or **Binaural HRTF** (Woodworth ITD + Duda-Martens shadow + pinna notch + measured spectral SOFA datasets). Includes **head tracking** with smooth interpolation. |
+| **Plugin Host & Process Sandbox** | Versioned C-ABI plugin interface (`crates/plugin-abi`) supporting in-process effects as well as a true **out-of-process crash-isolated sandbox** over planar binary IPC with automatic zero-allocation dry-audio failover on worker fault. |
+| **Real-Time Telemetry & Analyzer** | Lock-free peak / RMS / dominant-frequency analysis, FFT spectrum taps, CPU load, and u64 hardware clip/underrun/overload counters published lock-free via `ArcSwap<PlaybackInfo>`. |
+| **Loudness & Tag Write-Back** | Integrated ITU-R BS.1770-5 / EBU R128 and ReplayGain 2.0 measurement, volume normalization, and metadata tag write-back (`tag-write` via `lofty`) across major containers. |
+| **Stable C FFI** | Exposes the complete engine surface — transport, DSP graph, multi-track lanes, playlist, multi-endpoint matrix, and aux inserts — through an opaque C-compatible ABI. |
 
 ---
 
-## 🏗 Architecture at a glance
+## 🏗 Architecture at a Glance
 
-```
-         Host application (GUI / CLI / FFI)
-           │  EngineCommand (control)
-           │  EngineEvent / OutputEvent (discrete lifecycle)
-           ▼
-      EngineHandle ───────────────────────────────┐
-           │                                      │ lock-free
-           ▼                                      ▼
-   Command channel                        ArcSwap<PlaybackInfo>
-           │
-           ▼
-   ┌──────────────────────────── AUDIO ENGINE CORE ─────────────────────────────┐
-   │  Decode loop ─▶ Mix bus ─▶ DSP graph ─▶ Output domain ─▶ safety limiter     │
-   │  (per-stream decoders +  (N slots: primary,  (compiled plan:              │
-   │   resamplers, SPSC rings) crossfade, lanes)  mix → aux → correction →   │
-   │                                              eq → … → spatial)          │
-   │  ──────────────────────────────────────────────────────────────────────────│
-   │  Each endpoint: SPSC ring → rate resampler → Slip drift correction         │
-   └────────────────────────────────────────────────────────────────────────────┘
-                             │  independent fan-out rings
-                             ▼
-        Primary DAC + configured secondary endpoints
-        (ALSA ─ WASAPI Exclusive ─ ASIO ─ CoreAudio Hog ─ CPAL fallback)
-                             ▼
-                      Hardware DAC
-```
-
-- **One tick thread** owns all engine state. The host calls `tick_blocking` (or uses the
-  built-in FFI tick thread); `tick_blocking` sleeps on the command channel so it never
-  busy-polls.
-- **Commands** are one-way `EngineCommand`s on a bounded crossbeam channel, split into
-  per-domain handlers under `src/engine/commands/` and applied at block boundaries via
-  per-node SPSC control queues.
-- **Telemetry** (`PlaybackInfo`, incl. `EngineStats`, analyzer levels, queue state, lane
-  and endpoint state, u64 clip/underrun/overload counters) is published lock-free via
-  `ArcSwap` — hosts read it from any thread.
-- **Audio** flows into cache-padded SPSC rings; the graph shell pushes the mixed block to
-  the primary ring and every endpoint's ring. Each output backend drains its own ring from
-  its own realtime thread/callback and drift-corrects against its device clock.
-- **Reconfiguration** is glitch-free: a fresh graph generation (arena + compiled plans) is
-  built on the control thread and published with a single atomic pointer swap at the next
-  block boundary; the old generation is reclaimed on the control thread.
-
-See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full module map, concurrency model,
-and realtime-safety rules, and [SIGNAL_FLOW.md](docs/SIGNAL_FLOW.md) for the exact sample
-path and precision/bypass modes.
-
-### DSP signal chain
-
-The production chain (`dsp/graph`) runs a **compiled plan** in a fixed order with
-pre-allocated scratch — no allocation on the hot path:
-
-```
-Source frames
-  ├─ Channel trim / routing / bass management / LFE   (multichannel path)
-  ├─ Mix bus: per-slot preamp + loudness normalizer  (EBU R128 / ReplayGain)
-  │  + per-slot trim, pan, mute, ducking, automation
-  │  + per-slot post-fader sends (master-send + aux-send)
-  ├─ Aux bus node: accumulate sends → per-send automation
-  │  → optional convolution insert → return into master
-  ├─ 64-band parametric EQ (+ AutoEQ presets)          (post-mix)
-  ├─ Graphic EQ layer (10 / 15 / 31 ISO bands)
-  ├─ 3-band multiband compressor
-  ├─ FFT partitioned convolution (HRTF / reverb IRs)
-  ├─ Headphone crossfeed (Bauer / Chu Moy / J. Meier / custom)
-  ├─ Mid-side stereo enhancer & balance
-  ├─ WSOLA time-stretch / pitch-shift                  (varispeed, TimeStretch, PitchShift)
-  ├─ Perceptual logarithmic volume (dB, ramped)
-  ├─ Seek / transition fade
-  ├─ Spatial master output stage                (opt-in binaural head model
-  │                                              + room; MC passes through)
-  └─ Plan done → output domain:
-      resampler (Rubato sinc) → 4× true-peak lookahead limiter → TPDF dither
-       └─▶ master ring → primary DAC + every endpoint
-           (each endpoint resamples to its own rate and trims
-            with a Slip drift corrector against its real clock)
+```text
+                     Host Application (GUI / CLI / FFI / Daemon)
+                          │  EngineCommand (one-way control)
+                          │  EngineEvent / OutputEvent (discrete lifecycle)
+                          ▼
+                     EngineHandle ──────────────────────────────┐
+                          │                                     │ lock-free
+                          ▼                                     ▼
+                   Command Channel                      ArcSwap<PlaybackInfo>
+                          │                               (atomic snapshot)
+                          ▼
+ ┌────────────────────────── AUDIO ENGINE CORE ───────────────────────────────────┐
+ │                                                                               │
+ │  ┌─────────────────┐       ┌─────────────────┐       ┌──────────────────────┐  │
+ │  │   Decode Loop   │ ────▶ │  N-Slot Mix Bus │ ────▶ │  Graph 2.0 DSP Core  │  │
+ │  │ (Decoders, SPSC,│       │ (Primary track, │       │ (Compiled plan: mix, │  │
+ │  │  resamplers)    │       │  lanes, ducking)│       │  aux, EQ, dynamics,  │  │
+ │  └─────────────────┘       └─────────────────┘       │  spatial, limiter)   │  │
+ │                                                      └──────────────────────┘  │
+ │                                                                  │             │
+ │                                                                  ▼             │
+ │  ┌──────────────────────────────────────────────────────────────────────────┐  │
+ │  │                        Multi-Endpoint Routing Matrix                     │  │
+ │  │   Each endpoint: SPSC ring ──▶ Rate Resampler ──▶ Slip Drift Correction  │  │
+ │  └──────────────────────────────────────────────────────────────────────────┘  │
+ └──────────────────────────────────────┬─────────────────────────────────────────┘
+                                        │ independent fan-out
+                                        ▼
+                  Primary DAC & Secondary Physical Endpoints
+      (ALSA Direct ─ WASAPI Exclusive ─ ASIO Native ─ CoreAudio Hog ─ CPAL)
+                                        │
+                                        ▼
+                              Physical Audio Output
 ```
 
-The plan is data: `mix → aux → correction → eq → dynamics → convolution → balance →
-crossfeed → stereo → timestretch → volume → seek_fade → spatial` (the final step
-is the Phase 17 `SpatialNode` — an opt-in binaural head-model master stage,
-skipped when disabled; `routing` is prepended on the multichannel plan; the
-correction step is the Phase 7 room/headphone correction node, skipped when
-disabled), compiled per mode (stereo f32 / f64, multichannel). Any stage can be
-selectively disabled; disabled paths are bit-exact. The output-domain resampler,
-final safety limiter, and dither run downstream of the graph.
+### Key Architectural Invariants
 
-Two **hard bypass modes** bypass the entire graph:
-- **Bit-perfect** — only volume ramps and seek fades survive; every DSP stage is skipped.
-- **DoP bypass** — pure passthrough for DSD-over-PCM bitstreams (24-bit DoP words must reach
-  the DAC unmodified; not even volume is applied).
-
-`DspPipeline` (`dsp/pipeline`) remains as the reference implementation and the
-bit-exact oracle for the graph equivalence suite; the production hot path routes
-through the Graph 2.0 engine (`dsp::graph2::prod::Graph2Engine`) whose plans are
-lowered from the production topology.
+- **Dedicated Engine Worker Thread**: A single worker thread drives `AudioEngine::tick_blocking(timeout)`. It sleeps on the crossbeam command channel when idle, eliminating busy-polling.
+- **Lock-Free Hot Path**: Audio samples flow exclusively through cache-line padded single-producer single-consumer (`PcmRingBuffer`) queues. No mutexes or heap allocations exist anywhere on the audio path.
+- **Glitch-Free Atomic Swaps**: Graph reconfigurations and topology updates build a fresh `GraphGeneration` on the control thread and publish it using an atomic pointer swap at block boundaries.
+- **Decoupled Endpoints**: Secondary output endpoints each own an independent thread, SPSC ring, resampler, and Rubato `Slip` drift controller, preventing a stalled device from interrupting the master stream.
 
 ---
 
-## 🚀 Quick start
+## 🎛 DSP Signal Chain
 
-### 1. Add as a dependency
+The production engine executes a pre-allocated, compiled execution plan lowered from the Graph 2.0 topology. All stages operate in-place with zero allocations during steady-state processing:
+
+```text
+Decoded Audio Frames
+  │
+  ├── Multichannel Routing & Bass Management (LFE crossover, channel delay, trim)
+  │
+  ├── Mix Bus Stage
+  │    ├── Per-slot gain trim, pan, and mute
+  │    ├── Per-slot loudness normalizer (EBU R128 / ReplayGain)
+  │    ├── Program-gated ducking & sample-accurate automation curves
+  │    └── Post-fader sends (Master Send & Aux Send)
+  │
+  ├── Aux Bus Node
+  │    ├── Summation of all slot aux sends
+  │    ├── Per-send automation & ducking
+  │    └── Optional Convolution Insert (Reverb / Cabinet IR) returned to Master
+  │
+  ├── Acoustic Room & Headphone Correction Node (Decoupled FIR/IIR calibration)
+  ├── 64-Band Parametric Equalizer (+ AutoEQ headphone database presets)
+  ├── Graphic Equalizer Layer (10, 15, or 31 ISO standard bands)
+  ├── 3-Band Multiband Compressor (Independent crossover thresholds, attack, release)
+  ├── Partitioned FFT Convolution (Impulse response reverb / cabinet modeling)
+  ├── Headphone Crossfeed (Bauer, Chu Moy, Jan Meier, or custom profiles)
+  ├── Mid-Side Stereo Enhancer & Channel Balance
+  ├── WSOLA Time-Stretch & Pitch-Shift (Varispeed, TimeStretch, PitchShift)
+  ├── Perceptual Logarithmic Volume (dB curve with click-free sample smoothing)
+  ├── Seek & Track Transition Fader (Micro-fade suppression of discontinuities)
+  │
+  ├── Spatial Master Output Stage (Opt-in binaural HRTF head model & 3D room)
+  │
+  └── Output Domain Processing
+       ├── High-Performance Sinc Resampling (Rubato FFT / Polynomial)
+       ├── 4× Oversampling True-Peak Lookahead Limiter (Inter-sample peak protection)
+       ├── Triangular Probability Density Function (TPDF) Dither
+       └── Master SPSC Ring Buffer ──▶ Dispatched to DAC & Output Matrix Endpoints
+```
+
+### Hardware Bypass Modes
+
+- **Bit-Perfect Direct**: Bypasses all DSP processing stages. Only unity-gain seek fades and essential volume smoothing are applied.
+- **DSD-over-PCM (DoP) Bypass**: Total bit-transparent passthrough. Raw 24-bit DoP frames pass directly to the DAC without DSP or volume alterations.
+
+---
+
+## 🚀 Quick Start
+
+### 1. Add Cargo Dependencies
+
+Add `engine` and `config` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -153,384 +170,269 @@ engine = { path = "path/to/engine" }
 config = { path = "path/to/engine/crates/config" }
 ```
 
-### 2. Embed and play
+### 2. Basic Playback in Rust
 
 ```rust
-use engine::{AudioEngine, EngineHandle, EngineConfig, EngineEvent};
+use std::time::Duration;
+use engine::{AudioEngine, EngineConfig, EngineHandle, EngineEvent};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Initialize engine with default configuration
     let mut engine = AudioEngine::new(EngineConfig::default())?;
     let handle: EngineHandle = engine.handle();
 
-    // Drive the engine on a background thread — tick_blocking sleeps between commands.
+    // 2. Drive the engine on a dedicated tick thread
     std::thread::spawn(move || {
         while engine.is_running() {
-            engine.tick_blocking(std::time::Duration::from_millis(10));
+            // Sleeps when idle, wakes immediately on new commands
+            engine.tick_blocking(Duration::from_millis(10));
         }
+        engine.stop();
     });
 
-    // Listen for discrete lifecycle events on a second thread.
+    // 3. Monitor engine lifecycle events
     let events = handle.clone_event_receiver();
     std::thread::spawn(move || {
         while let Ok(event) = events.recv() {
             match event {
-                EngineEvent::SourceOpened { source, sample_rate, channels, .. } => {
-                    println!("Opened {source:?}: {sample_rate} Hz, {channels} ch");
-                }
-                EngineEvent::PlaybackStarted => println!("Playing"),
-                EngineEvent::SourceFinished { source } => println!("Finished: {source:?}"),
+                EngineEvent::PlaybackStarted => println!("▶ Playback started"),
+                EngineEvent::PlaybackPaused  => println!("⏸ Playback paused"),
+                EngineEvent::PlaybackStopped => println!("⏹ Playback stopped"),
+                EngineEvent::Error(err)      => eprintln!("❌ Engine error: {err}"),
                 _ => {}
             }
         }
     });
 
-    // Control playback from anywhere (the handle is Clone + Send).
-    handle.open_file("/path/to/song.flac");
+    // 4. Open audio, adjust volume, and start playback
+    handle.open_file("music/sample.flac");
+    handle.set_volume_db(-6.0); // Perceptual volume in dB (-60.0 .. 0.0 dB)
     handle.play();
-    handle.set_volume_db(-6.0);               // perceptual, -60..0 dB
 
-    // Read lock-free telemetry from any thread.
+    // 5. Inspect lock-free telemetry snapshot
     let info = handle.playback_info();
     println!(
-        "{} | {} / {} s | {} Hz | bit-perfect: {}",
-        info.state, info.position_secs_compensated, info.duration_secs,
-        info.sample_rate, info.bit_perfect,
+        "State: {:?} | Playhead: {:.2}s / {:.2}s | Sample Rate: {} Hz",
+        info.state, info.position_secs_compensated, info.duration_secs, info.sample_rate
     );
+
+    // Keep main thread alive for demonstration
+    std::thread::sleep(Duration::from_secs(5));
     Ok(())
 }
 ```
 
+---
+
 ### 3. Reference CLI
 
-```bash
-# Interactive REPL (file/URI positional arg optional)
-cargo run --bin audio-engine-cli [options] [file_or_uri]
-
-# Options
---backend, -b <auto|wasapi|alsa|coreaudio|asio>
---device,  -d <device_name>
---log-level <error|warn|info|debug|trace>
-```
-
-Inside the REPL:
-
-```
-open <path|uri>      open & play a source
-queue <path|uri>     append to the playback queue
-next | prev          skip forward / backward
-shuffle [on|off]     toggle shuffle
-repeat [off|all|one] set repeat mode
-play | pause | stop  transport
-seek <seconds>       seek to position
-volume <0..1 | xdb>  set linear or dB volume
-speed <multiplier>   set playback speed
-eq on|off|<preset>   enable / disable / load an EQ preset
-eq-band <n> <freq> <gain> <q> [on|off]
-levels               live peak / RMS / dominant-frequency
-scan <file>          EBU R128 loudness scan
-capture start [f]    record system audio (Windows)
-capture stop
-devices | device <n> list / switch output endpoints
-fingerprint <file>   AcoustID/Chromaprint fingerprint (feature `fingerprint`)
-info | events        telemetry snapshot / drain events
-quit                 graceful shutdown
-```
+The repository includes a feature-packed reference CLI player:
 
 ```bash
-# Batch loudness scan + tag write-back
-cargo run --features tag-write --bin replaygain-scanner -- --write /music/album/*.flac
+# Launch interactive REPL (supports files, directories, or URIs)
+cargo run --bin audio-engine-cli -- [options] [path_or_uri]
+
+# Examples:
+cargo run --bin audio-engine-cli -- -b alsa -d "hw:0,0" /home/user/Music
+cargo run --bin audio-engine-cli -- --backend wasapi -d "default" https://stream.example.com/live.opus
 ```
 
-### 4. C FFI (any C-compatible language)
+#### Interactive Commands
 
-Enable `c-ffi` and call the opaque-handle API:
+| Command | Description |
+|---|---|
+| `open <path\|dir\|uri>` | Open and play a file, directory (auto-scanned), or HTTP(S) stream |
+| `queue <path\|dir\|uri>` | Append a file or directory of tracks to the playback queue |
+| `play` / `pause` / `stop` | Primary transport playback controls |
+| `seek <seconds>` | Precise seek to time in seconds (e.g. `seek 45.2`) |
+| `volume <0..1 \| xdB>` | Set linear gain (`volume 0.8`) or perceptual dB (`volume -12db`) |
+| `speed <multiplier>` | Set playback speed (e.g. `speed 1.25`) |
+| `next` / `prev` | Skip to next or previous track in the playlist |
+| `shuffle [on\|off]` | Toggle playlist shuffle mode |
+| `repeat [off\|all\|one]` | Configure repeat mode |
+| `eq on\|off\|<preset>` | Toggle EQ or load AutoEQ preset |
+| `eq-band <n> <f> <g> <q>` | Configure parametric band: index, frequency, gain dB, Q factor |
+| `levels` | Live peak (dBFS), RMS, and dominant frequency readout |
+| `scan <file>` | Perform EBU R128 integrated loudness & true-peak scan |
+| `devices` / `device <name>` | List audio output endpoints or switch active device |
+| `info` / `events` | Print lock-free telemetry snapshot or drain event log |
+| `quit` / `exit` | Graceful shutdown and exit |
+
+---
+
+### 4. C-FFI (C, C++, Python, C#, Node.js)
+
+Enable the `c-ffi` feature in `Cargo.toml` to access the stable C-ABI surface:
 
 ```c
-EngineHandleFFI* h = engine_create(ENGINE_BACKEND_DEFAULT);
-engine_open_file(h, "/path/to/song.flac");
-engine_play(h);
-engine_set_volume_db(h, -6.0f);
-engine_upsert_endpoint(h, "dac2", "USB DAC", ENGINE_BACKEND_WASAPI, 1.0f, 1, 1); // multi-endpoint
-engine_set_aux_insert(h, 1, 0.3f);                                          // aux insert
-float pos = engine_position_secs(h);
-engine_destroy(h);
+#include <stdio.h>
+#include "engine_ffi.h" // C bindings generated from src/ffi.rs
+
+int main() {
+    // 1. Initialize engine on dedicated background worker thread
+    EngineHandleFFI* engine = engine_create(ENGINE_BACKEND_DEFAULT);
+    if (!engine) {
+        fprintf(stderr, "Failed to initialize audio engine\n");
+        return 1;
+    }
+
+    // 2. Open file and start playback
+    engine_open_file(engine, "/music/track.flac");
+    engine_set_volume_db(engine, -6.0f);
+    engine_play(engine);
+
+    // 3. Multi-endpoint routing: Add secondary USB DAC output
+    engine_upsert_endpoint(engine, "endpoint-usb", "USB Audio DAC", ENGINE_BACKEND_ALSA, 1.0f, 1, 1);
+
+    // 4. Query playhead position
+    float pos = engine_position_secs(engine);
+    printf("Current playhead: %.2f seconds\n", pos);
+
+    // 5. Cleanup and release resources
+    engine_destroy(engine);
+    return 0;
+}
 ```
-
-Every function returns a status code (`0 = Ok`) and is safe with invalid/NULL handles; no
-panics cross the boundary. The endpoint routing matrix (`engine_upsert_endpoint` /
-`engine_remove_endpoint` / `engine_clear_endpoints` / `engine_endpoint_count` /
-`engine_endpoint_id` / `engine_endpoint_info`) and the aux insert
-(`engine_set_aux_insert` / `engine_aux_insert_state`) are part of the stable surface. See
-[`src/ffi.rs`](src/ffi.rs) for the full export list and C type mapping.
-
-For complete, runnable examples of both the Rust `EngineHandle` API and the C FFI,
-including playback, DSP control, **gapless/crossfade**, headless analysis, and sample
-capture, see the [`docs/EMBEDDING.md`](docs/EMBEDDING.md) guide.
 
 ---
 
-## 🔌 Configuration model
+## 🔌 Configuration Model
 
-[`EngineConfig`](crates/config/src/engine_config.rs) (in the `config` crate) is fully
-Serde-serializable and controls every aspect of the engine:
+[`EngineConfig`](crates/config/src/engine_config.rs) is fully Serde-serializable, enabling straightforward JSON/TOML configuration storage:
 
 ```rust
-use config::{EngineConfig, EnginePreset};
+use config::{AudioBackend, EngineConfig, EnginePreset, PrecisionMode, VolumeMode};
 
 let mut config = EngineConfig::default();
-config.output_backend = config::AudioBackend::ExclusiveAsio;
-config.precision_mode = config::PrecisionMode::Quality;   // f64 DSP path
-config.volume_mode = config::VolumeMode::HardwarePreferred;
-config.sample_rate_policy = config::SampleRatePolicy::FollowTrack;
-config.mix_slots = 4;                                     // N-slot mix bus (lanes ≥ 2)
+config.output_backend = AudioBackend::ExclusiveAlsa;
+config.precision_mode = PrecisionMode::Quality;         // Double-precision f64 DSP path
+config.volume_mode    = VolumeMode::HardwarePreferred;  // Favor hardware volume with software fallback
+config.mix_slots      = 4;                              // Primary + crossfade + 2 multi-track lanes
 
-let issues = config.validate();          // surface contradictions early
+// Validate configuration consistency before engine startup
+let issues = config.validate();
 assert!(issues.is_valid());
 
-// Or start from a preset
-let fidelity = EngineConfig::from_preset(EnginePreset::Fidelity);
+// Or initialize directly from a curated preset
+let audiophile_config = EngineConfig::from_preset(EnginePreset::Fidelity);
 ```
 
-Key configuration groups (all in `config`):
+### Curated Configuration Presets
 
-- **Output / transport** — `output_backend`, `output_device`, `sample_rate_policy`,
-  `fallback_policy`, `volume_mode`, `volume_fade_ms`, `seek_fade_ms`
-- **Mix bus** — `mix_slots` (N-slot bus; independent lanes ride slots ≥ 2), `mix_trims`
-  (per-slot channel trims), `mix_sends` (per-slot master/aux send gains), `aux`
-  (`AuxBusConfig`: enabled, return gain, insert enabled / wet mix / IR path)
-- **Format / precision** — `precision_mode`, `resampler_quality`, `dither_enabled`
-- **DSP stages** — `eq` (+ `graphic_eq` layer), `loudness` (EBU R128 / ReplayGain),
-  `limiter`, `multiband_compressor`, `convolution`, `crossfeed`, `stereo_enhancer`
-- **Transitions** — `crossfade`, `transition_mode` (Gapless / Crossfade / Fade / Stop)
-- **Speed / pitch** — `speed_mode` (Varispeed / TimeStretch / PitchShift), `timestretch_quality`
-- **Multichannel** — `channel_policy`, `channel_trim`, `channel_eq`, `channel_routing`,
-  `lfe`, `bass_management`, `channel_mix`
-- **DSD** — `dsd_output` (Native / DoP / PCM)
-- **Endpoints** — `endpoints: Vec<EndpointConfig>` configures stable IDs, backend/device
-  targets, per-endpoint gain, enabled state, and **`drift_correction`** (default on): each
-  endpoint's nominal-rate resampler is trimmed by a rubato `Slip` so the ring tracks the
-  device's real clock. Endpoint rings are independent subscribers; drops and transport
-  errors are observable in telemetry.
-
-The full per-stage tunables (band counts/frequencies/Q, limiter ceiling/attack/release,
-crossfeed profiles, multiband band params, LFE crossover, …) live in
-[`crates/config/src/dsp_config.rs`](crates/config/src/dsp_config.rs).
+- **`EnginePreset::Default`**: Balanced stereo everyday listening (f32, follow track sample rate, safety limiter active).
+- **`EnginePreset::Fidelity`**: Audiophile bit-perfect configuration (f64 quality, exclusive output backend, dither enabled).
+- **`EnginePreset::LowLatency`**: Pro-audio live monitoring configuration (minimum buffer sizing, zero lookahead).
+- **`EnginePreset::Broadcast`**: EBU R128 loudness normalization, true peak limiting, and program-gated ducking.
 
 ---
 
-## 🎛 Host-control API (`EngineHandle`)
+## 🎧 Decoders, DSD & Formats
 
-`EngineHandle` is `Clone + Send`, fully isolated from the realtime thread. Everything goes
-through non-blocking message passing + atomic telemetry.
-
-| Group | Methods |
-|---|---|
-| **Transport** | `play`, `pause`, `stop`, `seek(secs)`, `shutdown` |
-| **Sources** | `open`, `open_file`, `open_uri`, `open_memory`, `prepare_next(File/Memory)`, `prepare_next_file` |
-| **Playlist** | `enqueue`, `enqueue_file`, `play_index`, `next`, `previous`, `remove_from_playlist`, `clear_playlist`, `set_repeat_mode`, `set_shuffle`, `playlist_len`, `playlist_index` |
-| **Lane tracks** | `EngineCommand::{AddTrack, RemoveTrack, SetTrackGain, SetTrackPan, SetTrackMasterGain, SetTrackSend, DuckTracks}` via `send_command` — independent streams on bus slots ≥ 2 |
-| **Volume / gain** | `set_volume`, `set_volume_db`, `set_volume_mode`, `set_balance`, `set_preamp` |
-| **Speed / pitch** | `set_speed`, `set_speed_mode`, `set_pitch` |
-| **EQ / shaping** | `set_eq_enabled`, `set_eq_preset`, `set_eq_band`, `set_graphic_eq_layout`, `set_graphic_eq_slider`, `set_graphic_eq_enabled`, `set_stereo_width` |
-| **Spatial** | `set_crossfeed_enabled`, `set_crossfeed_profile`, `set_crossfeed_custom_params` |
-| **Aux bus** | `set_aux_insert(enabled, wet_mix)` (runtime convolution insert toggle); aux enable/return and per-slot sends via the graph control surface (`set_aux`, `set_slot_send`) |
-| **Multichannel** | `set_channel_mix`, `set_channel_policy`, `set_channel_trim`, `set_channel_routing`, `set_channel_eq`, `set_lfe_config`, `set_bass_management` |
-| **Output / audiophile** | `set_output_backend`, `set_output_device`, `set_endpoints`, `set_endpoint`, `remove_endpoint`, `clear_endpoints`, `available_devices`*, `set_sample_rate_policy`, `set_bit_perfect`, `set_dither_enabled`, `set_resampler_quality`, `set_limiter_mode`, `set_limiter_true_peak`, `open_asio_control_panel`† |
-| **Capture** | `start_capture`, `stop_capture` |
-| **Telemetry** | `playback_info`, `state`, `is_playing`, `current_source`, `position_secs`, `position_secs_compensated`, `duration_secs`, `volume`, `speed`, `latency_ms`, `analyzer`, `events`, `clone_event_receiver`, `clone_output_event_receiver` |
-
-`EngineCommand` (raw), `EngineEvent`, `OutputEvent`, and `PlaybackInfo` are all public so
-hosts can drive the engine over their own channels or persist command streams.
-
-(* = requires the `audio-output` feature · † = no-op unless the active backend is ASIO and the `asio-native` feature is compiled in.)
-
-**Telemetry** (`PlaybackInfo`) is published every tick: state, decoded + latency-compensated
-position, duration, format, volume, speed, latency, bit-perfect status, analyzer levels and
-dominant frequency, playlist index/length, per-lane state (`lanes: Vec<LaneInfo>` with slot,
-gain, pan, level), per-endpoint state (`endpoints: Vec<EndpointInfo>` with rate, gain,
-pending frames, **drift_active / drift_ppm**), and u64 counters (clips, NaNs, underruns, CPU
-overloads, deadline misses). Read it lock-free from any thread via `handle.playback_info()`.
-
-**Events** (`EngineEvent`): `SourceOpened`, `PlaybackStarted/Paused/Stopped`,
-`SourceFinished`, `FormatChanged`, `SeekCompleted`, `PlaylistChanged`, `LoudnessScanComplete`,
-`CaptureStarted/Stopped`, `CaptureError`, `Error`. Device hotplug and endpoint failures use a separate
-`OutputEvent` channel (`OutputDeviceChanged`, `DeviceListChanged`, `DeviceConnected`,
-`DeviceDisconnected`, `EndpointError`). Endpoint state and dropped frames are also
-available through `PlaybackInfo::endpoints` and `endpoint_dropped_frames`.
-
----
-
-## 🎧 Decoders, DSD & outputs
-
-**Decoders** — Symphonia (FLAC, ALAC, WAV, AIFF, MP3, AAC, Vorbis, PCM, Ogg, MP4/MKA
-containers) plus pure-Rust native backends: **DSD (DSF/DFF)** up to DSD512 with native
-wire packing and DoP, **Ogg Opus**, **True Audio (TTA)**, and **WavPack**. Unsupported
-multichannel/hybrid/DSD WavPack is rejected explicitly at open — never silently downmixed.
-A vectorized format scanner routes files by extension + magic bytes; source abstraction
-covers **file, URI, and in-memory** payloads (Gapless/crossfade and `AudioSource::Memory`
-included).
-
-**Output backends** (feature-gated, each verifies exclusivity before claiming the device):
-
-| Backend | Platform | Notes |
+| Format / Codec | Engine Implementation | Capability & Specifications |
 |---|---|---|
-| ALSA native | Linux | Direct `hw:` / `plughw:` exclusive-mode |
-| WASAPI native | Windows (`wasapi-native`) | `IAudioClient` exclusive-mode + loopback capture |
-| ASIO native | Windows (`asio-native`) | Pure-Rust `IASIO` via COM, native DSD transport, drivers’ control panel |
-| CoreAudio | macOS | Hog-mode with direct HAL IO procs + hardware endpoint volume |
-| CPAL | All | Shared-mode fallback |
-
-On top of the backends: `endpoint.rs` is the **per-endpoint worker** — one SPSC ring,
-rate resampler, `Slip` drift corrector, and realtime thread per configured endpoint, with
-start/stop/recovery lifecycle and drift telemetry. Plus `format_converter`,
-`output_profile` (per-device profiles), `device_monitor` (hotplug), and `rate_policy`
-(track-native / device / fixed rate handling).
+| **FLAC** | Symphonia Bundle | Lossless 16/24/32-bit integer PCM, multichannel up to 7.1.4 |
+| **ALAC** | Symphonia Codec | Apple Lossless 16/24-bit in M4A/CAF containers |
+| **WAV / AIFF** | Symphonia Riff / Aiff | Integer PCM (8/16/24/32-bit), IEEE float (32/64-bit), RF64, BWF |
+| **DSD (DSF / DFF)** | Pure Rust Native (`src/decode/dsd/`) | Native wire packing, DoP (DSD64–DSD512), 1-bit multistage decimation |
+| **Ogg Opus** | RFC 8251 Pure Rust (`crates/opus-decoder`) | 48 kHz float decoding, packet-loss concealment, gapless metadata |
+| **True Audio (TTA)** | Pure Rust Native (`src/decode/tta.rs`) | Lossless v1/v2 integer decoding, sample-accurate CRC32 verification |
+| **WavPack** | Pure Rust (`wavicle`) | Lossless v5 integer & 32-bit float decoding, fast seeking |
+| **Monkey's Audio (APE)** | Pure Rust (`ape-decoder`) | APEv2 metadata tags and lossless audio decompression |
+| **MP3 / AAC / Vorbis** | Symphonia Bundles | Lossy psychoacoustic decoding with gapless delay/padding trimming |
 
 ---
 
-## ⚙️ Cargo features
+## 🔊 Output Backends & OS Integration
 
-Everything is opt-in; the default set covers everyday playback.
-
-| Feature | Adds |
-|---|---|
-| `audio-output` (default) | Output backends, device monitor, hardware volume |
-| `resample` (default) | Rubato sinc resampler |
-| `all-codecs` (default) | Every codec below |
-| `codec-mp3/flac/ogg/wav/aac/alac/pcm/aiff/isomp4/mkv` | Symphonia-backed codecs/containers |
-| `codec-opus` | Pure-Rust Ogg Opus decode |
-| `codec-tta` | Native True Audio decode |
-| `codec-wavpack` | Pure-Rust WavPack v5 decode |
-| `codec-ape` | Pure-Rust Monkey’s Audio decode |
-| `codec-dsd` | DSD decode/decimation/DoP (accepted no-op; compiled unconditionally) |
-| `asio-native` | Native Steinberg ASIO backend (Windows) |
-| `wasapi-native` | Native WASAPI exclusive output + system-loopback capture (Windows) |
-| `network-streaming` | Range-request HTTP(S) streaming via `ureq` |
-| `tag-write` | EBU R128 / ReplayGain tag write-back via `lofty` |
-| `fingerprint` | AcoustID/Chromaprint fingerprinting via `chromaprint` |
-| `c-ffi` | Stable C FFI surface |
+| Output Backend | Target Operating System | Exclusivity & Hardware Verification |
+|---|---|---|
+| **ALSA Direct** | Linux (`alsa`) | Direct kernel access (`hw:`, `plughw:`), hardware MMAP, bypasses Pulse/PipeWire |
+| **WASAPI Exclusive** | Windows (`wasapi-native`) | `IAudioClient` exclusive event-driven mode, true bit-perfect bypass, system loopback |
+| **Steinberg ASIO** | Windows (`asio-native`) | Pure-Rust `IASIO` COM interface (no Steinberg C++ SDK required), native DSD transport |
+| **CoreAudio Hog** | macOS (`objc2-core-audio`) | Hardware Hog-Mode, direct HAL IO render procedures, hardware volume synchronization |
+| **PipeWire Pro** | Linux (`pipewire`) | Direct low-latency PipeWire sink discovery, dynamic quantum negotiation, zero-alloc worker |
+| **JACK Pro-Audio** | Linux / Unix (`jack`) | Low-latency synchronous audio server callbacks, BBT transport sync, patchbay routing |
+| **CPAL Universal** | All Platforms | Universal cross-platform shared-mode audio output fallback |
 
 ---
 
-## 🧪 Testing & quality gates
+## 🧪 Testing & Quality Gates
 
-The repository ships **58 test files — 55 fidelity suites under
-[`tests/fidelity/`](tests/fidelity/) plus 3 headless integration tests — with
-roughly 1,300 test functions in total** (including the in-crate unit suites).
-Dedicated suites cover EQ
-frequency response, lookahead-limiter correctness and measurement, dither measurement,
-resampler quality/measurement, EBU R128, golden reference vectors, decoder robustness +
-fuzz mutation, multichannel graph, gapless/crossfade/seamless-seek, timestretch fidelity,
-the acoustic world simulation layer, its **acoustic baking** cache, the **Graph 2.0**
-general-purpose topology runtime, the **timeline and scheduler** (sample-accurate
-events driving the graph), the **aelog deterministic recording/replay** golden-render
-pipeline (including **audio inputs and listener motion**, with **clip-addressed
-multi-input** so each recorded track routes to the nodes bearing its clip name,
-**multi-channel tracks** so stereo/spatial sessions replay per-channel exactly,
-and **baked-scene swaps** so animated acoustic worlds replay their geometry
-timeline deterministically, with the replayed **listener trajectory driving
-the Acoustic node positions** so a spatial golden render walks the baked
-cells as the listener moves, and **per-listener baked scenes** so one graph
-mixes distinct room responses for several listeners), a **golden-render cache**
-keyed by aelog hash so identical sessions reuse stored captures (durable on
-disk **and** through a thread-local in-process memo so repeated renders of
-the same log never re-render; entries are **content-addressed** by SHA-256
-of the render identity — so a synced cache directory is valid on any
-machine — under a **size-bounded LRU** budget), **musical automation** (tempo-mapped control
-curves on the AudioClock driving graph gain over time, recorded in aelog and
-replayed deterministically), **graph-wide
-latency
-and automatic delay compensation** (including **HRTF and convolver taps** so binaural
-and convolution-heavy branches align like Delay nodes), the acoustic world
-**as graph-routable nodes** (baked rooms in the topology), **graph-vs-pipeline
-bit-exact equivalence**,
-concurrent ring-buffer stress, and realtime zero-allocation validation. Benchmarks live
-in [`benches/`](benches/) (Criterion).
+The engine repository enforces rigorous fidelity and quality assurance across **58 dedicated test suites comprising over 1,000 unit, integration, and fidelity tests**:
 
 ```bash
-cargo test                                  # unit + headless integration
-cargo test --features tag-write,fingerprint # optional-feature coverage
-cargo test --test headless_playback         # embedding lifecycle
-cargo test --test realtime_allocation       # zero-allocation on the hot path
-cargo test --test graph_pipeline_equivalence# graph ≡ pipeline bit-exact oracle
-cargo test --test ring_buffer_stress        # concurrent SPSC stress
-cargo bench                                 # DSP / pipeline / graph benchmarks
+# Run all workspace unit and integration tests
+cargo test --workspace
+
+# Validate zero heap allocations on the DSP hot path
+cargo test --test realtime_allocation
+
+# Verify bit-exact equivalence between Graph 2.0 and reference pipeline
+cargo test --test graph_pipeline_equivalence
+
+# Validate lookahead true-peak limiter and inter-sample overshoot containment
+cargo test --test limiter_correctness
+
+# Execute multi-stage procedural musical composition evaluation render
+cargo test --test song_evaluation
+
+# Run full code-quality and clippy audits
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo fmt --all -- --check
 ```
 
-CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) enforces `cargo fmt`,
-`cargo clippy -D warnings`, and the test matrix across **Linux, macOS, and Windows**, plus a
-cross-target compile check of the native WASAPI/ASIO backends. Always re-run `cargo fmt`,
-`cargo clippy`, and `cargo test` before submitting changes.
+### Automated CI Safeguards
+
+- **Multi-OS Matrix**: GitHub Actions verifies Linux, macOS, and Windows on every commit.
+- **Zero Allocations**: Dedicated custom counting allocator asserts 0 allocations during steady-state audio rendering.
+- **Fuzzing & Robustness**: Malformed, truncated, and corrupted streams are tested against decoders to ensure clean error propagation without panics.
 
 ---
 
-## 📁 Project layout
+## 📁 Repository Layout
 
-```
-├── Cargo.toml                 # workspace root + `engine` crate
-├── crates/config/             # `config` crate — Serde config models, presets, validation
+```text
+├── Cargo.toml                       # Workspace root and engine crate manifest
+├── CHANGELOG.md                     # Semantic version history and release notes
+├── crates/
+│   ├── config/                      # Serde-serializable engine & DSP configuration models
+│   ├── plugin-abi/                  # C-ABI plugin specification, vtables, and host loader
+│   ├── plugin-test-echo/            # Reference delay + gain audio plugin implementation
+│   └── opus-decoder/                # Pure-Rust RFC 8251 Opus audio decoder
 ├── src/
-│   ├── lib.rs                 # crate root + prelude
-│   ├── commands.rs            # EngineCommand — the host-control surface
-│   ├── events.rs · playback_info.rs · playlist.rs · source.rs · sink.rs
-│   ├── audio_io.rs · ffi.rs · paths.rs · dsp_utils.rs
-│   ├── buffer/                # frames/chunks, lock-free SPSC rings, DSD bytes
-│   ├── engine/                # tick loop, handle, stream, construction, output_setup,
-│   │                          #   lanes, track_loading, crossfade, recovery, telemetry,
-│   │                          #   commands/ (per-domain handlers), decode_loop/, tests/
-│   ├── decode/                # Symphonia + native DSD/Opus/TTA/WavPack, channel
-│   │                          #   layout/mix, tags, fingerprint, loudness
-│   ├── dsp/                   # DSP primitives + pipeline/ (reference oracle)
-│   │   ├── modulation/        #   Unified modulation: Lfo, AdsrEnvelope, EnvelopeFollower, ModulationMatrix
-│   │   ├── analysis/          #   Spectral/psychoacoustic analysis: centroid, spread, flux, rolloff, harmonicity
-│   │   ├── timeline/          #   Sample-accurate parameter automation curves & interpolation
-│   │   ├── graph2/            #   Graph 2.0: typed-port topology + arena lowering + realtime execution
-│   │   └── resampler/         #   Rubato-based resampling
-│   ├── fx/                    # Creative sound-design DSP layer: comb, ping-pong delay, chorus, flanger, phaser, ring mod, saturation
-│   ├── spatial/               # Speaker-independent spatial layer (Phases 8–19):
-│   │                          #   math/ (Vec3+Quat+coords), scene/object/speaker/
-│   │                          #   level/render + panner/ (BasicPanner) +
-│   │                          #   vbap/ (3-triplet VBAP) + directivity/,
-│   │                          #   occlusion/, spread/ (object behavior) +
-│   │                          #   bed/ (channel-based), field/ (diffuse) +
-│   │                          #   ambisonic/ (order-1 FOA pinned + order-2/3
-│   │                          #   HOA basis, exact rotation, max-rE decoder) +
-│   │                          #   room/ (reflections + late field) +
-│   │                          #   hrtf/ (Woodworth ITD + Duda-Martens head
-│   │                          #   shadow + pinna notch + measured spectral
-│   │                          #   HrtfDataset with bilinear interpolation) +
-│   │                          #   binaural/ (head-model renderer) +
-│   │                          #   tracking/ (head tracking: nlerp + one-pole
-│   │                          #   smoothing of IMU/VR orientation samples) +
-│   │                          #   scene-file format (Serde save/load) and a
-│   │                          #   SpatialNode in the production DSP graph
-│   ├── output/                # ALSA / WASAPI / ASIO / CoreAudio / CPAL + endpoint.rs,
-│   │                          #   drift.rs (adaptive PI clock drift correction & ASRC), device
-│   │                          #   monitor, output profiles, WAV writer, loopback
-│   └── bin/                   # audio-engine-cli, replaygain-scanner
-├── benches/                   # dsp_bench, pipeline_bench, graph_plan_bench, spatial_bench
-├── docs/                      # OWNERS_GUIDE.md, ARCHITECTURE.md, SIGNAL_FLOW.md,
-│                              #   EMBEDDING.md
-└── tests/                     # headless_playback.rs + decoder_from_memory.rs +
-                               #   memory_and_hotplug.rs, fidelity/ (55 suites)
+│   ├── lib.rs                       # Crate root, feature gates, and prelude re-exports
+│   ├── commands.rs                  # EngineCommand — complete host control enumeration
+│   ├── events.rs                    # EngineEvent & OutputEvent lifecycle definitions
+│   ├── playback_info.rs             # Atomic telemetry snapshot models (ArcSwap)
+│   ├── ffi.rs                       # C Foreign Function Interface implementation
+│   ├── track_cache.rs               # Bounded in-memory metadata and analysis cache
+│   ├── buffer/                      # Lock-free SPSC PCM ring buffers and audio frames
+│   ├── decode/                      # Decoders, format scanners, channel mix, tags, loudness
+│   ├── dsp/                         # DSP filters, Graph 2.0 topology, arena, and limiter
+│   │   ├── graph2/                  # Typed-port graph engine, compilation, and realtime execution
+│   │   ├── resampler/               # Rubato-based high-performance sinc resampler
+│   │   └── safety.rs                # NaN/Inf containment and FTZ/DAZ denormal mitigation
+│   ├── spatial/                     # 3D spatial layer: VBAP, Ambisonics (HOA), Room, Binaural HRTF
+│   ├── output/                      # Hardware backends (ALSA, WASAPI, ASIO, CoreAudio, CPAL)
+│   └── bin/                         # audio-engine-cli, replaygain-scanner, release-qualification
+├── benches/                         # Criterion benchmarks (DSP, pipeline, graph, spatial)
+├── docs/                            # ENGINE_SPEC.md, OWNERS_GUIDE.md, ARCHITECTURE.md, SIGNAL_FLOW.md
+└── tests/                           # 58 test files (fidelity suites, robustness fuzzing, real-time tests)
 ```
 
 ---
 
-## 🤝 Contributing & versioning
+## 🤝 Contributing & Standards
 
-This project follows **Semantic Versioning `x.y.z`** (major.minor.patch) with the engine
-and `config` crate kept in **lockstep**, a dated `CHANGELOG.md` entry, and a `vX.Y.Z` git
-tag on every release. The codebase is deliberately modular and enforces **no god files**:
-large single-purpose DSP algorithms are fine, but oversized structs/impls that mix
-unrelated concerns must be split by concern (see the `dsp/graph/` impl-split pattern).
+We welcome contributions! Please review **[`AGENTS.md`](AGENTS.md)** before opening PRs:
 
-Full details — version-bump rules, god-file detection signals, the completeness checklist,
-realtime/concurrency rules, and testing guidance for agents and humans — are in
-**[`AGENTS.md`](AGENTS.md)**.
+1. **Strict Semantic Versioning**: `engine`, `config`, `plugin-abi`, and `plugin-test-echo` version numbers must always remain in lockstep.
+2. **Modular Architecture**: Strictly avoid god files or oversized structs. New features follow the established house pattern (e.g. concern-scoped implementation modules in `src/engine/commands/` or `src/dsp/graph2/prod/arena/`).
+3. **Audio-Path Realtime Safety**: No heap allocations (`Vec::push`, `Box::new`, `format!`), no system locks (mutexes), and no blocking filesystem/network I/O on the audio thread.
+4. **Clean Quality Verification**: Every PR must pass `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace`.
 
 ---
 
 ## 📄 License
 
-Licensed under the [Apache License, Version 2.0](LICENSE-APACHE).
+Licensed under the **[Apache License, Version 2.0](LICENSE-APACHE)**.

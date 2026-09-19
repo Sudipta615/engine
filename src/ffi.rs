@@ -1217,6 +1217,11 @@ fn diagnostic_kind_code(k: crate::DiagnosticKind) -> i32 {
         crate::DiagnosticKind::Configuration => 7,
         crate::DiagnosticKind::Spatial => 8,
         crate::DiagnosticKind::Loudness => 9,
+        crate::DiagnosticKind::Dsp => 10,
+        crate::DiagnosticKind::Clock => 11,
+        crate::DiagnosticKind::Plugin => 12,
+        crate::DiagnosticKind::Graph => 13,
+        crate::DiagnosticKind::Security => 14,
     }
 }
 

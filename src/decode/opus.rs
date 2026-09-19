@@ -371,10 +371,18 @@ impl OpusSource {
             {
                 continue;
             }
-            let frames = self
-                .decoder
-                .decode_float(&packet.data, &mut self.scratch, false)
-                .map_err(|e| DecodeError::Decode(format!("Opus decode: {e}")))?;
+            let decode_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.decoder
+                    .decode_float(&packet.data, &mut self.scratch, false)
+            }));
+            let frames = match decode_res {
+                Ok(Ok(f)) => f,
+                Ok(Err(e)) => return Err(DecodeError::Decode(format!("Opus decode: {e}"))),
+                Err(_) => {
+                    log::warn!("Opus decoder panicked on malformed packet; skipping packet");
+                    continue;
+                }
+            };
             if frames == 0 {
                 continue;
             }
@@ -928,5 +936,33 @@ mod tests {
         let meta = extract_loudness_metadata(&path);
         assert!(meta.replaygain_track_db.is_none(), "no gain tag in fixture");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_real_paaro_opus_file_if_present() {
+        let path = std::path::Path::new("/home/sudipta/Music/Paaro.opus");
+        if !path.exists() {
+            return;
+        }
+        let start = std::time::Instant::now();
+        let mut src = OpusSource::open(path).expect("open real opus");
+        let mut total_frames = 0usize;
+        let mut chunks = 0usize;
+        while chunks < 50 {
+            match src.decode_next(960) {
+                Ok(c) => {
+                    total_frames += c.frame_count;
+                    chunks += 1;
+                }
+                Err(DecodeError::EndOfStream) => break,
+                Err(e) => panic!("Decode error at chunk {chunks}, frame {total_frames}: {e}"),
+            }
+        }
+        let elapsed = start.elapsed();
+        println!(
+            "Decoded {} frames ({} chunks) of Paaro.opus in {:?}",
+            total_frames, chunks, elapsed
+        );
+        assert!(total_frames > 0);
     }
 }

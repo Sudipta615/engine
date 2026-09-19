@@ -256,7 +256,8 @@ fn queue_target(handle: &EngineHandle, raw_target: &str) {
         || target.starts_with("https://")
         || target.starts_with("file://")
     {
-        handle.enqueue_file(PathBuf::from(target));
+        // URIs must be sent as AudioSource::Uri, not as a file path.
+        handle.enqueue(engine::source::AudioSource::Uri(target.to_string()));
         println!("Added to queue: {}", target);
     } else {
         let path = Path::new(target);
@@ -293,10 +294,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-
+    // Parse CLI args first so --log-level can be applied before the logger
+    // is initialized. (env_logger can only be initialized once per process.)
     let args: Vec<String> = std::env::args().collect();
     let mut config = EngineConfig::default();
+    let mut log_level = "info".to_string();
 
     let mut i = 1;
     while i < args.len() {
@@ -324,12 +326,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--log-level" => {
                 i += 1;
                 if i < args.len() {
-                    std::env::set_var("RUST_LOG", &args[i]);
-                    // Re-init with new level.
-                    let _ = env_logger::Builder::from_env(
-                        env_logger::Env::default().default_filter_or(&args[i]),
-                    )
-                    .try_init();
+                    log_level = args[i].clone();
                 }
             }
             "--help" | "-h" => {
@@ -352,9 +349,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         i += 1;
     }
 
+    // Initialize the logger once, after all args have been parsed so that
+    // the --log-level flag is honoured. RUST_LOG still takes precedence
+    // when set externally (env_logger semantics).
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level.as_str()))
+        .init();
+
     println!("Initializing Independent Headless Audio Engine...");
 
     let mut engine = AudioEngine::new(config)?;
+    #[cfg(feature = "audio-output")]
+    if let Err(e) = engine.start() {
+        eprintln!("Warning: Failed to start audio output device: {}", e);
+    }
     let handle = engine.handle();
 
     let running = Arc::new(AtomicBool::new(true));

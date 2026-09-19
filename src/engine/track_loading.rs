@@ -290,6 +290,7 @@ impl AudioEngine {
 
         if let Some(ref output) = self.audio_output {
             output.reset_buffer();
+            let _ = output.take_underruns();
         } else {
             self.sample_sink.reset();
         }

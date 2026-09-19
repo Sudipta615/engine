@@ -31,9 +31,24 @@ impl AudioEngine {
         let prev_state = self.current_state();
         if prev_state != state {
             match state {
-                PlaybackState::Playing => self.emit_event(EngineEvent::PlaybackStarted),
-                PlaybackState::Paused => self.emit_event(EngineEvent::PlaybackPaused),
-                PlaybackState::Stopped => self.emit_event(EngineEvent::PlaybackStopped),
+                PlaybackState::Playing => {
+                    if let Some(ref output) = self.audio_output {
+                        output.resume();
+                    }
+                    self.emit_event(EngineEvent::PlaybackStarted);
+                }
+                PlaybackState::Paused => {
+                    if let Some(ref output) = self.audio_output {
+                        output.pause();
+                    }
+                    self.emit_event(EngineEvent::PlaybackPaused);
+                }
+                PlaybackState::Stopped => {
+                    if let Some(ref output) = self.audio_output {
+                        output.pause();
+                    }
+                    self.emit_event(EngineEvent::PlaybackStopped);
+                }
                 PlaybackState::Buffering => {}
             }
         }

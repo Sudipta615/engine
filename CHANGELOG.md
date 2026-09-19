@@ -2,6 +2,36 @@
 
 All notable changes to this project are documented in this file.
 
+## [5.8.2] — 2026-09-19
+
+### Fixed
+
+- **C-FFI `DiagnosticKind` Exhaustiveness (`src/ffi.rs`)**:
+  - Added missing enum arms (`Dsp`, `Clock`, `Plugin`, `Graph`, `Security`) to `diagnostic_kind_code` across the C-ABI boundary, resolving compiler error `E0004` when compiling with the `c-ffi` feature and `--all-features`.
+- **Seek Timeline Precision (`src/engine/commands/playback.rs`)**:
+  - Upgraded seek frame product calculation from `(clamped_pos * self.clock.source_sample_rate as f32).round()` to `f64` arithmetic, eliminating integer truncation and frame jitter on long audio tracks (>1 hour) at high sample rates (192 kHz).
+- **Crossfade Decoder Error Counter Isolation (`src/engine/decode_loop/crossfade.rs`)**:
+  - Separated outgoing and incoming error tracking into dedicated `out_errors` and `in_errors` per-side counters, preventing transient decode errors on both streams from spuriously summing to trip the circuit breaker.
+- **Crossfade Frame Math Precision (`src/engine/crossfade.rs`)**:
+  - Upgraded duration-to-frames calculation to `f64` precision, preventing frame offset drift at 192 kHz.
+- **Engine Startup & Hardware Pause Management (`src/engine/output_setup.rs`, `src/engine/helpers.rs`)**:
+  - Paused audio output device on initial start to prevent premature device buffer requests and underruns prior to first track playback.
+  - Synchronized `output.pause()` and `output.resume()` calls with `PlaybackState` transitions.
+  - Removed unreachable dead code in `AudioEngine::stop()` attempting to configure dither on an already-taken output handle.
+- **CPAL Channel Negotiation (`src/output/cpal_output/mod.rs`)**:
+  - Added stereo (2-channel) priority in format negotiation to avoid selecting unwanted multichannel/surround configurations when stereo hardware is available.
+- **Opus Real-File Test Execution (`src/decode/opus.rs`)**:
+  - Bounded `test_real_paaro_opus_file_if_present` to 50 chunks, reducing test execution time from 106+ seconds down to 0.65 seconds.
+  - Allowed `clippy::unnecessary_cast` in `crates/opus-decoder/src/lib.rs` for strict `-D warnings` compliance.
+
+### Changed
+
+- **Modernized Documentation & Formatting (`README.md`)**:
+  - Overhauled `README.md` with modern badge ribbons, structured tables, and improved ASCII architectural and DSP signal flow diagrams.
+  - Fixed malformed table rows in the capability matrix and aligned formatting with `cargo fmt`.
+- **Background Track Preloading Optimization (`src/engine/preload.rs`)**:
+  - Shifted `CachedTrackInfo` creation to the background preload worker thread to keep the realtime audio thread free of metadata analysis and disk operations.
+
 ## [5.8.1] — 2026-09-17
 
 ### Fixed

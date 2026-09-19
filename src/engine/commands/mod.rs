@@ -60,7 +60,7 @@ fn merge_scan_result(
 }
 
 impl AudioEngine {
-    pub(super) fn process_commands(&mut self, initial_cmd: Option<EngineCommand>) {
+    pub(super) fn process_commands(&mut self, initial_cmd: Option<EngineCommand>) -> usize {
         const MAX_COMMANDS_PER_TICK: usize = 64;
         let mut processed = 0usize;
         if let Some(cmd) = initial_cmd {
@@ -88,6 +88,7 @@ impl AudioEngine {
                 }
             }
         }
+        processed
     }
 
     // ── Shared profile and device helpers ──────────────────────────────────

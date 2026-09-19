@@ -27,16 +27,33 @@ impl AudioEngine {
     /// single transient error does not tear down the transition, but repeated
     /// failures halt playback exactly like the single-stream path.
     ///
+    /// `side_errors` is a per-decoder counter local to the current transition;
+    /// using a per-side counter prevents N outgoing errors + M incoming errors
+    /// from spuriously summing to the circuit-breaker threshold when neither
+    /// individual stream has failed persistently.
+    ///
     /// Returns `true` when the breaker has tripped and the caller must abort
     /// the current tick.
-    fn handle_transition_decode_error(&mut self, e: DecodeError) -> bool {
-        self.recovery.consecutive_decode_errors += 1;
+    fn handle_transition_decode_error(
+        &mut self,
+        e: DecodeError,
+        side: &str,
+        side_errors: &mut u32,
+    ) -> bool {
+        *side_errors += 1;
+        // Keep the shared counter in sync so single-stream logic after the
+        // transition sees an accurate state.
+        self.recovery.consecutive_decode_errors =
+            self.recovery.consecutive_decode_errors.max(*side_errors);
         warn!(
-            "Crossfade decode error ({}/{}): {}",
-            self.recovery.consecutive_decode_errors, DECODE_ERROR_THRESHOLD, e
+            "Crossfade {} decode error ({}/{}): {}",
+            side, side_errors, DECODE_ERROR_THRESHOLD, e
         );
-        if self.recovery.consecutive_decode_errors >= DECODE_ERROR_THRESHOLD {
-            warn!("Too many consecutive decode errors; stopping playback");
+        if *side_errors >= DECODE_ERROR_THRESHOLD {
+            warn!(
+                "Too many consecutive decode errors on {} side; stopping playback",
+                side
+            );
             self.update_playback_state(PlaybackState::Stopped);
             self.stream_ended = true;
             true
@@ -112,6 +129,11 @@ impl AudioEngine {
         // begun (so the incoming track starts from its own sample 0).
         let incoming_live_at_tick_start = !is_fade || elapsed_frames >= fade_in_start_frame;
 
+        // Per-side error counters for this tick. Kept separate so N outgoing
+        // errors + M incoming errors cannot spuriously sum to the threshold.
+        let mut out_errors: u32 = 0;
+        let mut in_errors: u32 = 0;
+
         let (out_chunk, out_start_idx): (Option<crate::decode::DecodedChunk>, usize) =
             match self.scratch.pending_chunk.take() {
                 Some((c, start)) => (Some(c), start),
@@ -129,7 +151,7 @@ impl AudioEngine {
                         // silently treating it as end-of-stream. For this tick
                         // the side is treated as ended so the transition can
                         // still complete, but repeated failures halt playback.
-                        if self.handle_transition_decode_error(e) {
+                        if self.handle_transition_decode_error(e, "outgoing", &mut out_errors) {
                             return;
                         }
                         (None, 0)
@@ -149,7 +171,7 @@ impl AudioEngine {
                             (None, 0)
                         }
                         Err(e) => {
-                            if self.handle_transition_decode_error(e) {
+                            if self.handle_transition_decode_error(e, "incoming", &mut in_errors) {
                                 return;
                             }
                             (None, 0)
